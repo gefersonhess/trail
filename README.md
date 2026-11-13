@@ -7,3 +7,18 @@ trail splits a change into paths: threads of related changes, each starting from
 Status: design. See [docs/design.md](docs/design.md).
 
 Languages: Go and Rust first.
+
+## Engine
+
+```sh
+cd engine && cargo build
+./target/debug/trail serve
+```
+
+`trail serve` reads JSON-RPC 2.0 requests from stdin, one per line, and writes one response per line to stdout. Logs go to stderr. It exits when stdin closes.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"open","params":{"repo":"/path/to/repo","base":"main","head":"feature"}}
+```
+
+`open` diffs `head` against its merge base with `base`, ignoring whitespace, and returns `files` (path, status, language, is_test) and `hunks` (id, file, old and new line ranges). Hunk ids hash the file and changed lines, so they stay the same when other hunks shift.

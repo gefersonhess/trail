@@ -1,0 +1,108 @@
+use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::diff;
+
+const PARSE_ERROR: i64 = -32700;
+const METHOD_NOT_FOUND: i64 = -32601;
+const INVALID_PARAMS: i64 = -32602;
+const GIT_ERROR: i64 = 1;
+
+#[derive(Deserialize)]
+struct Request {
+    id: Option<Value>,
+    method: String,
+    #[serde(default)]
+    params: Value,
+}
+
+#[derive(Deserialize)]
+struct OpenParams {
+    repo: PathBuf,
+    base: String,
+    head: String,
+}
+
+struct RpcError {
+    code: i64,
+    message: String,
+}
+
+pub fn serve(input: impl BufRead, mut output: impl Write) -> io::Result<()> {
+    log("serving");
+    for line in input.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let started = Instant::now();
+        let (id, method, result) = match serde_json::from_str::<Request>(&line) {
+            Ok(req) => {
+                let result = dispatch(&req.method, req.params);
+                (req.id, req.method, result)
+            }
+            Err(e) => (
+                Some(Value::Null),
+                String::from("<unparsed>"),
+                Err(RpcError {
+                    code: PARSE_ERROR,
+                    message: e.to_string(),
+                }),
+            ),
+        };
+        let elapsed = started.elapsed().as_millis();
+        match &result {
+            Ok(_) => log(&format!("{method} ok in {elapsed}ms")),
+            Err(e) => log(&format!("{method} failed in {elapsed}ms: {}", e.message)),
+        }
+        let Some(id) = id else { continue };
+        let response = match result {
+            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Err(e) => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": e.code, "message": e.message },
+            }),
+        };
+        writeln!(output, "{response}")?;
+        output.flush()?;
+    }
+    log("stdin closed, exiting");
+    Ok(())
+}
+
+fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
+    match method {
+        "open" => {
+            let p: OpenParams = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            let diff = diff::compute(&p.repo, &p.base, &p.head).map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
+            log(&format!(
+                "open: {} files, {} hunks",
+                diff.files.len(),
+                diff.hunks.len()
+            ));
+            Ok(serde_json::to_value(diff).expect("diff serializes"))
+        }
+        _ => Err(RpcError {
+            code: METHOD_NOT_FOUND,
+            message: format!("unknown method {method}"),
+        }),
+    }
+}
+
+fn log(message: &str) {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    eprintln!("[{ms}] {message}");
+}
