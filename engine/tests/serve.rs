@@ -1626,3 +1626,87 @@ fn changed_types_and_constants_pull_in_the_code_that_uses_them() {
         "an import-only change stays out of the nodes"
     );
 }
+
+#[test]
+fn open_and_file_diff_do_not_need_the_git_command() {
+    let (repo, _) = branch_with(&[("auth.go", OLD_AUTH)], &[("auth.go", NEW_AUTH)], &[]);
+    let difft = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v difft"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let no_git = [("PATH", "/nonexistent"), ("TRAIL_DIFFT", difft.trim())];
+
+    let responses = serve_with_env(
+        &[
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "open", "params": { "repo": repo.path(), "base": "main", "head": "feature" } }),
+        ],
+        &no_git,
+    );
+    let review = &responses[0]["result"];
+    assert_eq!(
+        node_ids(review),
+        [
+            "go:auth.Gone",
+            "go:auth.Login",
+            "go:auth.VerifyHash",
+            "go:auth.hashOf"
+        ],
+        "{}",
+        responses[0]
+    );
+
+    let diff = file_diff(&repo, review, Some("auth.go"), Some("auth.go"), &no_git);
+    assert_eq!(diff["engine"], "difftastic");
+}
+
+#[test]
+fn whitespace_only_changes_are_ignored_without_difftastic_too() {
+    let repo = Repo::new();
+    repo.write("a.go", "func A() {\n\treturn\n}\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("a.go", "func A() {\n    return  \n}\n");
+    repo.commit("feature");
+
+    let responses = serve_with_env(
+        &[
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "open", "params": { "repo": repo.path(), "base": "main", "head": "feature" } }),
+        ],
+        &[("TRAIL_DIFFT", "/nonexistent/difft")],
+    );
+
+    assert_no_changes(&responses[0]["result"]);
+}
+
+#[test]
+fn added_and_deleted_files_number_their_empty_side_from_zero() {
+    let (repo, _) = branch_with(
+        &[("gone.go", "package a\n\nfunc G() {}\n")],
+        &[("new.go", "package a\n")],
+        &["gone.go"],
+    );
+
+    let response = open(&repo, "main", "feature");
+    let result = &response["result"];
+
+    assert_eq!(
+        hunks_of(result, "new.go")[0]["old"],
+        json!({ "start": 0, "len": 0 })
+    );
+    assert_eq!(
+        hunks_of(result, "new.go")[0]["new"],
+        json!({ "start": 1, "len": 1 })
+    );
+    assert_eq!(
+        hunks_of(result, "gone.go")[0]["old"],
+        json!({ "start": 1, "len": 3 })
+    );
+    assert_eq!(
+        hunks_of(result, "gone.go")[0]["new"],
+        json!({ "start": 0, "len": 0 })
+    );
+}

@@ -87,9 +87,7 @@ pub enum NodeStatus {
 pub fn open(repo: &Path, base: &str, head: &str, lsp: bool) -> Result<Review, String> {
     let head_commit = git::commit(repo, head)?;
     let base_tip = git::commit(repo, base)?;
-    let base_commit = git::run(repo, &["merge-base", &base_tip, &head_commit])?
-        .trim()
-        .to_string();
+    let base_commit = git::merge_base(repo, &base_tip, &head_commit)?;
     let mut diff = diff::compute(repo, &base_commit, &head_commit, &[])?;
     let mut nodes = Vec::new();
     let mut formatting_only: Vec<String> = Vec::new();
