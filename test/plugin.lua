@@ -235,15 +235,20 @@ end
 
 cursor_on(hash_call, "hashOf")
 vim.api.nvim_feedkeys("gd", "x", false)
+local review_tab = vim.api.nvim_get_current_tabpage()
 check(wait_for(function()
-  local w = float_win()
-  return w and vim.api.nvim_get_current_win() == w and vim.bo[vim.api.nvim_win_get_buf(w)].buftype == ""
-end), "gd opens the definition as a real buffer in a float")
+  return vim.api.nvim_get_current_tabpage() ~= review_tab and vim.bo.buftype == ""
+end), "gd opens the definition as a real buffer in its own tab")
+check(vim.api.nvim_win_get_config(0).relative == "", "the definition window is a normal window")
 local worktree_file = vim.fs.normalize(cache .. "/trail/worktrees/" .. vim.fn.resolve(repo):gsub("[/\\:]", "-") .. "/auth/auth.go")
 check(vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == worktree_file, "head definitions open from the review worktree: " .. vim.api.nvim_buf_get_name(0) .. " vs " .. worktree_file)
 check(vim.api.nvim_win_get_cursor(0)[1] == 16 and vim.api.nvim_get_current_line():match("^func hashOf"), "the buffer opens at the function")
 check(vim.bo.filetype == "go", "the opened buffer is a go file")
-check(title_of(0):match("review worktree"), "the title says where the file comes from: " .. title_of(0))
+local before = vim.api.nvim_win_get_buf(uwin)
+vim.fn.setqflist({ { filename = worktree_file, lnum = 1 } })
+vim.cmd("cfirst")
+check(vim.api.nvim_win_get_buf(uwin) == before, "a jump from the opened buffer leaves the review window alone")
+check(vim.api.nvim_get_current_tabpage() ~= review_tab, "the jump stays in the definition's tab")
 check(vim.wo.statuscolumn == vim.go.statuscolumn and not vim.wo.scrollbind and not vim.wo.cursorbind and vim.wo.winbar == vim.go.winbar,
   "the definition window uses the user's settings, not the diff's gutter and scroll binding")
 vim.cmd("q")
