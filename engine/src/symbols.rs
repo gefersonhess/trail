@@ -232,3 +232,114 @@ fn callee(function: Node, src: &[u8]) -> Option<Call> {
 fn text<'a>(node: Node, src: &'a [u8]) -> &'a str {
     node.utf8_text(src).unwrap_or("")
 }
+
+/// A name brought into a Rust file by `use`. `module` is the last segment of
+/// the path it comes from (`""` for the crate root); `None` when it cannot be
+/// told (`super`, `self`). A glob import (`use super::*`) brings unknown names.
+#[derive(Clone)]
+pub struct Import {
+    pub local: String,
+    pub target: String,
+    pub module: Option<String>,
+    pub glob: bool,
+}
+
+pub fn rust_imports(source: &str) -> Vec<Import> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .expect("grammar matches tree-sitter version");
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+    let src = source.as_bytes();
+    let mut out = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "use_declaration" {
+            if let Some(argument) = node.child_by_field_name("argument") {
+                collect_use(argument, None, src, &mut out);
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    out
+}
+
+fn module_of(path: Node, src: &[u8]) -> Option<String> {
+    match path.kind() {
+        "crate" => Some(String::new()),
+        "identifier" => Some(text(path, src).to_string()),
+        "scoped_identifier" => path
+            .child_by_field_name("name")
+            .map(|n| text(n, src).to_string()),
+        _ => None,
+    }
+}
+
+fn collect_use(node: Node, module: Option<String>, src: &[u8], out: &mut Vec<Import>) {
+    let mut push = |local: &str, target: &str, module: Option<String>| {
+        out.push(Import {
+            local: local.to_string(),
+            target: target.to_string(),
+            module,
+            glob: false,
+        });
+    };
+    match node.kind() {
+        "identifier" if module.is_some() => {
+            let name = text(node, src);
+            push(name, name, module);
+        }
+        "scoped_identifier" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                let from = node
+                    .child_by_field_name("path")
+                    .and_then(|p| module_of(p, src));
+                let name = text(name, src);
+                push(name, name, from);
+            }
+        }
+        "use_as_clause" => {
+            let (Some(path), Some(alias)) = (
+                node.child_by_field_name("path"),
+                node.child_by_field_name("alias"),
+            ) else {
+                return;
+            };
+            let (target, from) = match path.kind() {
+                "scoped_identifier" => (
+                    path.child_by_field_name("name")
+                        .map_or("", |n| text(n, src)),
+                    path.child_by_field_name("path")
+                        .and_then(|p| module_of(p, src)),
+                ),
+                _ => (text(path, src), module),
+            };
+            push(text(alias, src), target, from);
+        }
+        "scoped_use_list" => {
+            let inner = node
+                .child_by_field_name("path")
+                .and_then(|p| module_of(p, src));
+            if let Some(list) = node.child_by_field_name("list") {
+                collect_use(list, inner, src, out);
+            }
+        }
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_use(child, module.clone(), src, out);
+            }
+        }
+        "use_wildcard" => out.push(Import {
+            local: String::new(),
+            target: String::new(),
+            module: None,
+            glob: true,
+        }),
+        _ => {}
+    }
+}

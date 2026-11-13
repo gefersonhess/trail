@@ -1484,3 +1484,37 @@ fn go_ids_use_the_package_folder_and_keep_init_apart_per_file() {
         "a qualified call matches every package whose folder ends in the qualifier"
     );
 }
+
+#[test]
+fn bare_rust_calls_reach_other_modules_only_through_use() {
+    let (repo, _) = branch_with(
+        &[],
+        &[
+            ("src/a.rs", "pub fn run() {}\n"),
+            ("src/b.rs", "pub fn run() {}\n\npub fn show() {}\n"),
+            ("src/c.rs", "use crate::a::run;\n\npub fn go() { run() }\n"),
+            (
+                "src/d.rs",
+                "use crate::b::{show as display};\n\npub fn go2() { display() }\n",
+            ),
+            ("src/e.rs", "pub fn go3() { run() }\n"),
+            ("src/f.rs", "use super::*;\n\npub fn go4() { show() }\n"),
+            ("src/lib.rs", "pub fn top() {}\n"),
+            ("src/g.rs", "use crate::top;\n\npub fn go5() { top() }\n"),
+            ("src/h.rs", "pub fn top() {}\n"),
+        ],
+        &[],
+    );
+
+    let response = open(&repo, "main", "feature");
+
+    assert_eq!(
+        edges(&response["result"]),
+        [
+            edge("rust:c::go", "rust:a::run", "added"),
+            edge("rust:d::go2", "rust:b::show", "added"),
+            edge("rust:f::go4", "rust:b::show", "added"),
+            edge("rust:g::go5", "rust:top", "added"),
+        ]
+    );
+}

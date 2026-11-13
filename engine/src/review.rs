@@ -11,7 +11,7 @@ use crate::git;
 use crate::lsp;
 use crate::paths;
 use crate::rpc::log;
-use crate::symbols::{self, Call, Kind, Symbol, Via};
+use crate::symbols::{self, Call, Import, Kind, Symbol, Via};
 use crate::worktree;
 
 #[derive(Serialize)]
@@ -44,6 +44,10 @@ pub struct Node {
     new_calls: Vec<Call>,
     #[serde(skip)]
     new_name_at: Option<(u32, usize)>,
+    #[serde(skip)]
+    old_imports: Vec<Import>,
+    #[serde(skip)]
+    new_imports: Vec<Import>,
 }
 
 #[derive(Serialize)]
@@ -103,7 +107,22 @@ pub fn open(repo: &Path, base: &str, head: &str, lsp: bool) -> Result<Review, St
         }
         let old = symbols::extract(language, old_path, &old_src);
         let new = symbols::extract(language, &file.path, &new_src);
-        nodes.extend(changed_nodes(file, language, &old, &new, &hunks));
+        let imports = |src: &str| {
+            if language == "rust" {
+                symbols::rust_imports(src)
+            } else {
+                Vec::new()
+            }
+        };
+        let files_imports = (imports(&old_src), imports(&new_src));
+        nodes.extend(changed_nodes(
+            file,
+            language,
+            &old,
+            &new,
+            &hunks,
+            &files_imports,
+        ));
     }
     diff.hunks.retain(|h| !formatting_only.contains(&h.id));
     let hunks = &diff.hunks;
@@ -158,6 +177,7 @@ fn changed_nodes(
     old: &[Symbol],
     new: &[Symbol],
     hunks: &[&Hunk],
+    imports: &(Vec<Import>, Vec<Import>),
 ) -> Vec<Node> {
     let old_by_id: HashMap<String, &Symbol> = with_ids(old).collect();
     let new_ids: Vec<(String, &Symbol)> = with_ids(new).collect();
@@ -182,6 +202,8 @@ fn changed_nodes(
                 old_calls: old.map_or_else(Vec::new, |s| s.calls.clone()),
                 new_calls: new.map_or_else(Vec::new, |s| s.calls.clone()),
                 new_name_at: new.map(|s| s.name_at),
+                old_imports: imports.0.clone(),
+                new_imports: imports.1.clone(),
             }
         };
 
@@ -246,8 +268,16 @@ fn overlaps(range: Range, symbol: &Symbol) -> bool {
 /// Matches each changed node's calls, on each side, to changed nodes by name.
 /// Calls only on the new side are added edges, only on the old side removed.
 fn edges(nodes: &[Node]) -> Vec<Edge> {
-    let old = side_edges(nodes, |n| n.status != NodeStatus::Added, |n| &n.old_calls);
-    let new = side_edges(nodes, |n| n.status != NodeStatus::Removed, |n| &n.new_calls);
+    let old = side_edges(
+        nodes,
+        |n| n.status != NodeStatus::Added,
+        |n| (&n.old_calls, &n.old_imports),
+    );
+    let new = side_edges(
+        nodes,
+        |n| n.status != NodeStatus::Removed,
+        |n| (&n.new_calls, &n.new_imports),
+    );
     let edge = |(from, to): &(&str, &str), status| Edge {
         from: from.to_string(),
         to: to.to_string(),
@@ -278,12 +308,13 @@ fn edges(nodes: &[Node]) -> Vec<Edge> {
 fn side_edges(
     nodes: &[Node],
     present: impl Fn(&Node) -> bool + Copy,
-    calls: impl Fn(&Node) -> &[Call],
+    calls: impl Fn(&Node) -> (&[Call], &[Import]),
 ) -> Vec<(&str, &str)> {
     let mut out = Vec::new();
     for caller in nodes.iter().filter(|n| present(n)) {
-        for call in calls(caller) {
-            for target in targets(nodes, present, caller, call) {
+        let (caller_calls, imports) = calls(caller);
+        for call in caller_calls {
+            for target in targets(nodes, present, caller, call, imports) {
                 let edge = (caller.id.as_str(), target.id.as_str());
                 if !out.contains(&edge) {
                     out.push(edge);
@@ -299,6 +330,7 @@ fn targets<'a, 'b>(
     present: impl Fn(&Node) -> bool,
     caller: &'b Node,
     call: &'b Call,
+    imports: &[Import],
 ) -> Vec<&'a Node> {
     let (language, caller_parent, _) = parts(&caller.id);
     let named: Vec<&Node> = nodes
@@ -342,7 +374,37 @@ fn targets<'a, 'b>(
 
     match &call.via {
         Via::Plain if language == "go" => in_caller_package(Kind::Function),
-        Via::Plain => first_nonempty(in_caller_package(Kind::Function), of_kind(Kind::Function)),
+        Via::Plain => {
+            let local = in_caller_package(Kind::Function);
+            if !local.is_empty() {
+                return local;
+            }
+            // Another module's function is reachable by a bare name only
+            // through `use`; a glob import leaves it uncertain.
+            let imported: Vec<&'a Node> = nodes
+                .iter()
+                .filter(|n| {
+                    present(n)
+                        && n.id != caller.id
+                        && (caller.is_test || !n.is_test)
+                        && n.kind == Kind::Function
+                })
+                .filter(|n| {
+                    let (lang, parent, name) = parts(&n.id);
+                    lang == language
+                        && imports.iter().any(|i| {
+                            !i.glob
+                                && i.local == call.name
+                                && i.target == name
+                                && i.module.as_deref().is_none_or(|m| m == parent)
+                        })
+                })
+                .collect();
+            if !imported.is_empty() || !imports.iter().any(|i| i.glob) {
+                return imported;
+            }
+            of_kind(Kind::Function)
+        }
         Via::Path(q) => with_parent(resolve(q), None),
         Via::Receiver(Some(q)) => {
             let q = resolve(q);
