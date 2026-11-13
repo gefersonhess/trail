@@ -309,11 +309,24 @@ fn targets<'a, 'b>(
             lang == language && name == call.name
         })
         .collect();
+    // A qualifier written in code (`auth.`) names a Go package by the last
+    // part of its folder; a bare call stays in the caller's exact package.
     let with_parent = |parent: &str, kind: Option<Kind>| -> Vec<&'a Node> {
         named
             .iter()
             .copied()
-            .filter(|n| parts(&n.id).1 == parent && kind.is_none_or(|k| n.kind == k))
+            .filter(|n| {
+                let p = parts(&n.id).1;
+                (p == parent || p.rsplit('/').next() == Some(parent))
+                    && kind.is_none_or(|k| n.kind == k)
+            })
+            .collect()
+    };
+    let in_caller_package = |kind: Kind| -> Vec<&'a Node> {
+        named
+            .iter()
+            .copied()
+            .filter(|n| parts(&n.id).1 == caller_parent && n.kind == kind)
             .collect()
     };
     let of_kind =
@@ -328,11 +341,8 @@ fn targets<'a, 'b>(
     };
 
     match &call.via {
-        Via::Plain if language == "go" => with_parent(caller_parent, Some(Kind::Function)),
-        Via::Plain => first_nonempty(
-            with_parent(caller_parent, Some(Kind::Function)),
-            of_kind(Kind::Function),
-        ),
+        Via::Plain if language == "go" => in_caller_package(Kind::Function),
+        Via::Plain => first_nonempty(in_caller_package(Kind::Function), of_kind(Kind::Function)),
         Via::Path(q) => with_parent(resolve(q), None),
         Via::Receiver(Some(q)) => {
             let q = resolve(q);
@@ -350,10 +360,11 @@ fn targets<'a, 'b>(
     }
 }
 
-/// Splits `go:auth.Store.Save#2` into language, parent (`Store`) and name (`Save`).
+/// Splits `go:auth.Store.Save#2` into language, parent (`Store`) and name
+/// (`Save`). `#n` and `@file` suffixes are not part of the name.
 fn parts(id: &str) -> (&str, &str, &str) {
     let (language, path) = id.split_once(':').unwrap_or(("", id));
-    let path = path.split_once('#').map_or(path, |(p, _)| p);
+    let path = path.split(['#', '@']).next().unwrap_or(path);
     let mut segments = path.rsplit(if language == "rust" { "::" } else { "." });
     let name = segments.next().unwrap_or("");
     (language, segments.next().unwrap_or(""), name)

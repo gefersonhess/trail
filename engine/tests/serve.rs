@@ -450,7 +450,7 @@ fn repeated_go_init_functions_get_distinct_ids() {
 
     let response = open(&repo, "main", "feature");
 
-    assert_eq!(node_ids(&response["result"]), ["go:p.init#2"]);
+    assert_eq!(node_ids(&response["result"]), ["go:p.init@p.go#2"]);
 }
 
 #[test]
@@ -1438,5 +1438,49 @@ fn a_slow_language_server_does_not_hold_up_other_requests() {
             .unwrap()
             .iter()
             .all(|e| e["source"] == "name_match")
+    );
+}
+
+#[test]
+fn go_ids_use_the_package_folder_and_keep_init_apart_per_file() {
+    let (repo, _) = branch_with(
+        &[],
+        &[
+            (
+                "internal/auth/a.go",
+                "package auth\n\nfunc VerifyHash() {}\n\nfunc init() {}\n",
+            ),
+            ("internal/auth/b.go", "package auth\n\nfunc init() {}\n"),
+            ("pkg/auth/a.go", "package auth\n\nfunc VerifyHash() {}\n"),
+            (
+                "api/api.go",
+                "package api\n\nfunc Handle() {\n\tauth.VerifyHash()\n\tlocal()\n}\n\nfunc local() {}\n",
+            ),
+        ],
+        &[],
+    );
+
+    let response = open(&repo, "main", "feature");
+    let result = &response["result"];
+
+    assert_eq!(
+        node_ids(result),
+        [
+            "go:api.Handle",
+            "go:api.local",
+            "go:internal/auth.VerifyHash",
+            "go:internal/auth.init@a.go",
+            "go:internal/auth.init@b.go",
+            "go:pkg/auth.VerifyHash",
+        ]
+    );
+    assert_eq!(
+        edges(result),
+        [
+            edge("go:api.Handle", "go:api.local", "added"),
+            edge("go:api.Handle", "go:internal/auth.VerifyHash", "added"),
+            edge("go:api.Handle", "go:pkg/auth.VerifyHash", "added"),
+        ],
+        "a qualified call matches every package whose folder ends in the qualifier"
     );
 }

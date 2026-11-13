@@ -59,7 +59,9 @@ pub fn find(
             }
             let parent = segments.next();
             let rank = (
-                qualifier.is_some() && parent != qualifier,
+                qualifier.is_some_and(|q| {
+                    parent.is_none_or(|p| p != q && p.rsplit('/').next() != Some(q))
+                }),
                 path != from_path,
                 Path::new(&path).parent() != from_dir,
             );

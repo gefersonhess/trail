@@ -51,7 +51,7 @@ pub fn extract(language: &str, path: &str, source: &str) -> Vec<Symbol> {
     let mut out = Vec::new();
     let src = source.as_bytes();
     if language == "go" {
-        go(tree.root_node(), src, &mut out);
+        go(tree.root_node(), path, src, &mut out);
     } else {
         rust(
             tree.root_node(),
@@ -64,18 +64,30 @@ pub fn extract(language: &str, path: &str, source: &str) -> Vec<Symbol> {
     out
 }
 
-fn go(root: Node, src: &[u8], out: &mut Vec<Symbol>) {
+/// Go names start with the package's folder, which is unique where package
+/// names are not (`internal/auth` and `pkg/auth`); files at the root use the
+/// package name. `init` can appear once per file, so it carries the file name.
+fn go(root: Node, path: &str, src: &[u8], out: &mut Vec<Symbol>) {
     let mut cursor = root.walk();
-    let package = root
+    let package_name = root
         .named_children(&mut cursor)
         .find(|n| n.kind() == "package_clause")
         .and_then(|n| n.named_child(0))
         .map_or("", |n| text(n, src));
+    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
+    let package = if dir.is_empty() { package_name } else { dir };
     for node in root.named_children(&mut cursor) {
         let Some(name) = node.child_by_field_name("name").map(|n| text(n, src)) else {
             continue;
         };
         match node.kind() {
+            "function_declaration" if name == "init" => push(
+                out,
+                node,
+                format!("{package}.init@{file}"),
+                Kind::Function,
+                src,
+            ),
             "function_declaration" => {
                 push(out, node, format!("{package}.{name}"), Kind::Function, src)
             }
