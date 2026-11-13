@@ -4,6 +4,7 @@ local ns = vim.api.nvim_create_namespace("trail.diffview")
 local CONTEXT = 3
 local gutters = {}
 local chosen_layout
+local chosen_folding
 
 local palettes = {
   dark = {
@@ -32,6 +33,13 @@ vim.api.nvim_create_autocmd("ColorScheme", { callback = set_highlights })
 
 local function layout()
   return chosen_layout or vim.g.trail_layout or "unified"
+end
+
+local function fold_unchanged()
+  if chosen_folding ~= nil then
+    return chosen_folding
+  end
+  return vim.g.trail_fold_unchanged ~= false
 end
 
 function M.statuscolumn()
@@ -130,36 +138,46 @@ local function unified_view(diff, old_ch, new_ch)
     table.insert(view.lines, text)
     local row = #view.lines
     view.gutter[row] = entry
-    changed[row] = entry.mark ~= nil
+    changed[row] = hl ~= nil
     add_spans(view, row, spans, hl)
   end
-  local real = {}
-  for i, r in ipairs(diff.rows) do
-    real[i] = (r[1] and old_ch[r[1]] ~= nil) or (r[2] and new_ch[r[2]] ~= nil) or false
+  local function real(r)
+    return (r[1] and old_ch[r[1]] ~= nil) or (r[2] and new_ch[r[2]] ~= nil) or false
+  end
+  local function context(r)
+    return r[1] and r[2] and not real(r)
   end
   local i = 1
   while i <= #diff.rows do
-    if not real[i] then
-      local r = diff.rows[i]
-      if r[2] then
-        add(diff.new_lines[r[2]], { old = r[1], new = r[2] })
-      end
+    local r = diff.rows[i]
+    if context(r) then
+      add(diff.new_lines[r[2]], { old = r[1], new = r[2] })
       i = i + 1
     else
-      local j = i
-      while j < #diff.rows and real[j + 1] do
+      local j, any_real = i, real(r)
+      while j < #diff.rows and not context(diff.rows[j + 1]) do
         j = j + 1
+        any_real = any_real or real(diff.rows[j])
       end
-      for k = i, j do
-        local o = diff.rows[k][1]
-        if o then
-          add(diff.old_lines[o], { old = o, mark = old_ch[o] and "-" or nil }, old_ch[o], "TrailDeleteText")
+      if not any_real then
+        for k = i, j do
+          local n = diff.rows[k][2]
+          if n then
+            add(diff.new_lines[n], { old = diff.rows[k][1], new = n })
+          end
         end
-      end
-      for k = i, j do
-        local n = diff.rows[k][2]
-        if n then
-          add(diff.new_lines[n], { new = n, mark = new_ch[n] and "+" or nil }, new_ch[n], "TrailAddText")
+      else
+        for k = i, j do
+          local o = diff.rows[k][1]
+          if o then
+            add(diff.old_lines[o], { old = o, mark = old_ch[o] and "-" or nil }, old_ch[o], "TrailDeleteText")
+          end
+        end
+        for k = i, j do
+          local n = diff.rows[k][2]
+          if n then
+            add(diff.new_lines[n], { new = n, mark = new_ch[n] and "+" or nil }, new_ch[n], "TrailAddText")
+          end
         end
       end
       i = j + 1
@@ -188,6 +206,17 @@ local function folds_and_starts(changed, total)
   return folds, starts
 end
 
+local function apply_folds(win, folds)
+  vim.api.nvim_win_call(win, function()
+    vim.cmd("normal! zE")
+    if fold_unchanged() then
+      for _, f in ipairs(folds) do
+        vim.cmd(string.format("%d,%dfold", f[1], f[2]))
+      end
+    end
+  end)
+end
+
 local function setup_window(win, title, folds, unified, bind)
   local wo = vim.wo[win]
   wo.wrap, wo.number, wo.relativenumber, wo.list = false, false, false, false
@@ -196,12 +225,7 @@ local function setup_window(win, title, folds, unified, bind)
   wo.winbar = (title:gsub("%%", "%%%%"))
   wo.scrollbind, wo.cursorbind = bind, bind
   wo.foldmethod, wo.foldenable, wo.foldlevel = "manual", true, 0
-  vim.api.nvim_win_call(win, function()
-    vim.cmd("normal! zE")
-    for _, f in ipairs(folds) do
-      vim.cmd(string.format("%d,%dfold", f[1], f[2]))
-    end
-  end)
+  apply_folds(win, folds)
 end
 
 local function row_for(view, side, line)
@@ -236,7 +260,7 @@ function M.show(diff, opts)
     vim.api.nvim_win_set_buf(first_win, buf)
     local folds, starts = folds_and_starts(changed, #view.lines)
     setup_window(first_win, new_name .. "  ·  " .. diff.engine, folds, true, false)
-    panes = { { win = first_win, buf = buf, view = view, starts = starts } }
+    panes = { { win = first_win, buf = buf, view = view, starts = starts, folds = folds } }
   else
     local left, right, changed = side_by_side_views(diff, old_ch, new_ch)
     local left_buf = make_buf("trail://base/" .. old_name, opts.old_path, left, false)
@@ -249,8 +273,8 @@ function M.show(diff, opts)
     setup_window(first_win, "base  " .. old_name, folds, false, true)
     setup_window(right_win, "head  " .. new_name .. "  ·  " .. diff.engine, folds, false, true)
     panes = {
-      { win = first_win, buf = left_buf, view = left, starts = starts },
-      { win = right_win, buf = right_buf, view = right, starts = starts },
+      { win = first_win, buf = left_buf, view = left, starts = starts, folds = folds },
+      { win = right_win, buf = right_buf, view = right, starts = starts, folds = folds },
     }
   end
   if vim.api.nvim_buf_is_valid(placeholder) and vim.fn.bufwinid(placeholder) == -1 then
@@ -315,6 +339,14 @@ function M.show(diff, opts)
     M.show(diff, opts).focus(side, line)
   end
 
+  local function toggle_folds()
+    chosen_folding = not fold_unchanged()
+    for _, p in ipairs(panes) do
+      apply_folds(p.win, p.folds)
+    end
+    vim.cmd("normal! zz")
+  end
+
   for _, p in ipairs(panes) do
     local function map(key, fn, desc)
       vim.keymap.set("n", key, fn, { buffer = p.buf, desc = desc })
@@ -326,6 +358,7 @@ function M.show(diff, opts)
       jump(-1)
     end, "Previous change")
     map("t", toggle, "Toggle unified and side-by-side")
+    map("o", toggle_folds, "Show or fold unchanged code")
     map("-", opts.on_back, "Back to trail list")
     map("q", opts.on_back, "Back to trail list")
   end
