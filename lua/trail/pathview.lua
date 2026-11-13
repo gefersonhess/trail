@@ -7,7 +7,7 @@ local ns = vim.api.nvim_create_namespace("trail.pathview")
 local view
 
 local function valid()
-  return view and vim.api.nvim_tabpage_is_valid(view.tab) and vim.api.nvim_win_is_valid(view.graph_win)
+  return view and vim.api.nvim_win_is_valid(view.graph_win) and vim.api.nvim_win_get_buf(view.graph_win) == view.graph_buf
 end
 
 local function graph_height(lines)
@@ -74,24 +74,19 @@ function M.current()
   end
 end
 
-function M.tab()
-  return valid() and view.tab or nil
-end
-
 function M.refresh_graph()
   if valid() then
     render_graph()
   end
 end
 
----Opens `path` at `step` in its own tab: the call graph on top, the diff below.
----@param ctx table callbacks from the plugin: review, show_target, home, switch_path, done_steps, on_step
+---Opens `path` at `step` in the review window: the call graph on top, the diff below.
+---@param ctx table callbacks from the plugin: review, show_target, home, window, switch_path, done_steps, on_step
 function M.open(ctx, path, step)
   if valid() then
     vim.api.nvim_set_current_tabpage(view.tab)
   else
-    vim.cmd("tabnew")
-    local diff_win = vim.api.nvim_get_current_win()
+    local diff_win = ctx.window()
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].bufhidden = "wipe"
     vim.api.nvim_buf_set_name(buf, "trail://graph")

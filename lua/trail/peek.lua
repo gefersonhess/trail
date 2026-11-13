@@ -48,14 +48,67 @@ local function at_line(win, line)
   vim.cmd("normal! zvzt")
 end
 
----Opens a real file in its own tab at `line`, as a normal buffer so language
----servers and other plugins attach, and jumps from it (gr, quickfix) stay in
----that tab instead of replacing the review. `:q` closes it.
-function M.open_file(path, line)
-  vim.cmd.tabedit(vim.fn.fnameescape(path))
+local definitions_tab
+local back_tab
+local left_tab
+
+local function definitions_open()
+  return definitions_tab ~= nil and vim.api.nvim_tabpage_is_valid(definitions_tab)
+end
+
+---Opens a real file at `line` in the definitions tab, as a normal buffer so
+---language servers and other plugins attach, and jumps from it (gr, quickfix)
+---stay in that tab instead of replacing the review. Every definition reuses
+---the same tab, and `<C-o>` goes back through them. Closing the tab returns
+---to `review_tab`.
+function M.open_file(path, line, review_tab)
+  back_tab = review_tab
+  if definitions_open() then
+    vim.api.nvim_set_current_tabpage(definitions_tab)
+    vim.cmd("normal! m'")
+    local ok, err = pcall(vim.cmd.edit, vim.fn.fnameescape(path))
+    if not ok then
+      vim.notify("trail: " .. err, vim.log.levels.ERROR)
+      return
+    end
+  else
+    vim.cmd.tabedit(vim.fn.fnameescape(path))
+    definitions_tab = vim.api.nvim_get_current_tabpage()
+    local group = vim.api.nvim_create_augroup("trail.definitions", { clear = true })
+    vim.api.nvim_create_autocmd("TabLeave", {
+      group = group,
+      callback = function()
+        left_tab = vim.api.nvim_get_current_tabpage()
+      end,
+    })
+    vim.api.nvim_create_autocmd("TabClosed", {
+      group = group,
+      callback = function()
+        if definitions_open() then
+          return
+        end
+        local was_current = left_tab == definitions_tab
+        definitions_tab = nil
+        vim.schedule(function()
+          if was_current and back_tab and vim.api.nvim_tabpage_is_valid(back_tab) then
+            vim.api.nvim_set_current_tabpage(back_tab)
+          end
+        end)
+        return true
+      end,
+    })
+  end
   local win = vim.api.nvim_get_current_win()
   at_line(win, line)
   return win
+end
+
+function M.close_definitions()
+  if definitions_open() then
+    local tab = definitions_tab
+    definitions_tab = nil
+    vim.cmd.tabclose(vim.api.nvim_tabpage_get_number(tab))
+  end
 end
 
 ---Opens a match's own lines read-only in a large floating window.
