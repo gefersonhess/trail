@@ -1,13 +1,18 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use serde_json::{Value, json};
 
 use crate::diff::{self, File, Hunk, Range, Status};
 use crate::difftastic::{self, Outcome};
 use crate::git;
+use crate::lsp;
 use crate::paths;
+use crate::rpc::log;
 use crate::symbols::{self, Call, Kind, Symbol, Via};
+use crate::worktree;
 
 #[derive(Serialize)]
 pub struct Review {
@@ -37,6 +42,8 @@ pub struct Node {
     old_calls: Vec<Call>,
     #[serde(skip)]
     new_calls: Vec<Call>,
+    #[serde(skip)]
+    new_name_at: Option<(u32, usize)>,
 }
 
 #[derive(Serialize)]
@@ -65,7 +72,7 @@ pub enum NodeStatus {
 
 /// Reviews `head` against its merge base with `base`, like `git diff base...head`,
 /// so changes that landed on `base` after the branch point are not shown.
-pub fn open(repo: &Path, base: &str, head: &str) -> Result<Review, String> {
+pub fn open(repo: &Path, base: &str, head: &str, lsp: bool) -> Result<Review, String> {
     let head_commit = git::commit(repo, head)?;
     let base_tip = git::commit(repo, base)?;
     let base_commit = git::run(repo, &["merge-base", &base_tip, &head_commit])?
@@ -103,7 +110,13 @@ pub fn open(repo: &Path, base: &str, head: &str) -> Result<Review, String> {
     diff.files.retain(|f| {
         f.status != Status::Modified || f.binary || hunks.iter().any(|h| h.file == f.path)
     });
-    let edges = edges(&nodes);
+    let mut edges = edges(&nodes);
+    if lsp {
+        match lsp_edges(repo, &head_commit, &nodes, &edges) {
+            Ok(confirmed) => edges = confirmed,
+            Err(e) => log(&format!("keeping name-matched calls: {e}")),
+        }
+    }
     let layout = paths::layout(&diff.files, &diff.hunks, &nodes, &edges);
     Ok(Review {
         base_commit,
@@ -168,6 +181,7 @@ fn changed_nodes(
                 hunks: hunks.iter().map(|h| h.id.clone()).collect(),
                 old_calls: old.map_or_else(Vec::new, |s| s.calls.clone()),
                 new_calls: new.map_or_else(Vec::new, |s| s.calls.clone()),
+                new_name_at: new.map(|s| s.name_at),
             }
         };
 
@@ -343,4 +357,137 @@ fn parts(id: &str) -> (&str, &str, &str) {
     let mut segments = path.rsplit(if language == "rust" { "::" } else { "." });
     let name = segments.next().unwrap_or("");
     (language, segments.next().unwrap_or(""), name)
+}
+
+/// Replaces the head side's name-matched calls with the language server's call
+/// hierarchy, run in a checkout of `head_commit`. Removed calls stay
+/// name-matched, since the old code has no language server.
+fn lsp_edges(
+    repo: &Path,
+    head_commit: &str,
+    nodes: &[Node],
+    edges: &[Edge],
+) -> Result<Vec<Edge>, String> {
+    let live: Vec<&Node> = nodes
+        .iter()
+        .filter(|n| n.status != NodeStatus::Removed && n.new_name_at.is_some())
+        .collect();
+    let mut languages: Vec<&str> = live.iter().map(|n| parts(&n.id).0).collect();
+    languages.sort_unstable();
+    languages.dedup();
+    if languages.is_empty() {
+        return Ok(edges.iter().map(Edge::copy).collect());
+    }
+    let root = worktree::checkout(repo, head_commit)?.path;
+    let timeout = Duration::from_secs(
+        std::env::var("TRAIL_LSP_TIMEOUT")
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(60),
+    );
+    let mut head_pairs: Vec<(String, String)> = Vec::new();
+    for language in languages {
+        lsp::with_client(language, &root, head_commit, |client| {
+            let deadline = Instant::now() + timeout;
+            let mut warm = false;
+            for node in live.iter().filter(|n| parts(&n.id).0 == language) {
+                let (line, character) = node.new_name_at.expect("filtered");
+                let params = json!({
+                    "textDocument": { "uri": lsp::uri(&root.join(&node.file)) },
+                    "position": { "line": line, "character": character },
+                });
+                let items = loop {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    let r = client.request(
+                        "textDocument/prepareCallHierarchy",
+                        params.clone(),
+                        left,
+                    )?;
+                    if r.as_array().is_some_and(|a| !a.is_empty()) {
+                        warm = true;
+                        break r;
+                    }
+                    if warm || Instant::now() >= deadline {
+                        break Value::Null;
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                };
+                for item in items.as_array().into_iter().flatten() {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    let calls = client.request(
+                        "callHierarchy/outgoingCalls",
+                        json!({ "item": item }),
+                        left,
+                    )?;
+                    for call in calls.as_array().into_iter().flatten() {
+                        let to = &call["to"];
+                        let Some(path) = to["uri"].as_str().and_then(lsp::path_of) else {
+                            continue;
+                        };
+                        let Ok(rel) = path.strip_prefix(&root) else {
+                            continue;
+                        };
+                        let line = to["selectionRange"]["start"]["line"]
+                            .as_u64()
+                            .unwrap_or(u64::MAX) as u32
+                            + 1;
+                        let target = live.iter().find(|n| {
+                            n.file.as_str() == rel.to_string_lossy()
+                                && n.new
+                                    .is_some_and(|r| line >= r.start && line < r.start + r.len)
+                        });
+                        if let Some(target) = target.filter(|t| t.id != node.id) {
+                            let pair = (node.id.clone(), target.id.clone());
+                            if !head_pairs.contains(&pair) {
+                                head_pairs.push(pair);
+                            }
+                        }
+                    }
+                }
+            }
+            if !warm {
+                return Err(format!("{language} language server gave no call hierarchy"));
+            }
+            Ok(())
+        })?;
+    }
+    let old_side = |from: &str, to: &str| {
+        edges
+            .iter()
+            .any(|e| e.from == from && e.to == to && e.status != EdgeStatus::Added)
+    };
+    let mut confirmed: Vec<Edge> = head_pairs
+        .iter()
+        .map(|(from, to)| Edge {
+            status: if old_side(from, to) {
+                EdgeStatus::Unchanged
+            } else {
+                EdgeStatus::Added
+            },
+            from: from.clone(),
+            to: to.clone(),
+            source: "lsp",
+        })
+        .collect();
+    confirmed.extend(
+        edges
+            .iter()
+            .filter(|e| {
+                e.status == EdgeStatus::Removed
+                    && !head_pairs.iter().any(|(f, t)| *f == e.from && *t == e.to)
+            })
+            .map(Edge::copy),
+    );
+    Ok(confirmed)
+}
+
+impl Edge {
+    fn copy(&self) -> Edge {
+        Edge {
+            from: self.from.clone(),
+            to: self.to.clone(),
+            status: self.status,
+            source: self.source,
+        }
+    }
 }

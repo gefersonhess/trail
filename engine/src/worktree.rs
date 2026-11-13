@@ -7,7 +7,7 @@ use crate::rpc::log;
 
 #[derive(Serialize)]
 pub struct Checkout {
-    path: PathBuf,
+    pub path: PathBuf,
     worktree: bool,
 }
 

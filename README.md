@@ -33,6 +33,8 @@ In a Go or Rust repo:
 
 A tab opens on the paths screen. Each path is a group of changed functions connected by calls, starting at the ones nothing else in the change calls, with its steps in call order. Below the paths come the test files with the changed functions they reach (and a warning for changed functions no test change covers), then the hunks that are in no path. A preview of the selected path's call graph sits at the bottom. `<CR>` or `1`–`9` enters a path, `gp` switches to another path from anywhere, `R` reloads, `q` quits. In the list and in diffs, `?` shows the keys that work there.
 
+Calls between changed functions are first matched by name with tree-sitter, so the screen appears at once; those are marked `?`. Trail then asks the language server (`gopls`, or `rust-analyzer`; override with `TRAIL_GOPLS` and `TRAIL_RUST_ANALYZER`) for its call hierarchy in a checkout of the head, replaces the matched calls with the confirmed ones, and redraws. Removed calls stay name-matched, since the old code has no language server. Without a server, or if it fails or takes longer than `TRAIL_LSP_TIMEOUT` seconds (60), the matched calls stay. `vim.g.trail_lsp = false` turns this off.
+
 Inside a path, the call graph sits on top (at most a third of the screen) with the current step marked, and the diff of that step below. In the graph, `n` and `p` move between steps and `<CR>` jumps to the step under the cursor; in the diff, `]s` and `[s` do the same (`n` stays search-next there). `-` goes back to the paths screen.
 
 Progress is tracked per function: a hunk counts as seen once its last line has been on screen, and a function is done when all its hunks are seen, in every path that contains it. The paths screen shows done/total per path, finished steps get a `✓` in the graph, and each path reopens at the step you left it on. In a diff, `cb`, `cq` and `cn` add a blocking, question or nit comment on the line under the cursor (either side), shown as virtual lines under it in both layouts; `ce` edits and `cd` deletes the comment on the line. Comments keep their line's text, so after new commits they move with their line. `S` on the paths screen opens the send screen: comments grouped by file, a verdict (`v` cycles approve, request changes, comment), and a warning listing hunks not seen yet. `y` there copies the review as markdown, `<CR>` jumps to a comment's step, `d` deletes a comment.
@@ -58,7 +60,7 @@ cd engine && cargo build
 {"jsonrpc":"2.0","id":1,"method":"open","params":{"repo":"/path/to/repo","base":"main","head":"feature"}}
 ```
 
-`open` diffs `head` against its merge base with `base`, ignoring whitespace. For modified Go and Rust files it also asks difftastic, and drops hunks that only reformat code, so a function whose only change is formatting is not listed. Without `difft`, git's whitespace-ignoring diff decides. It returns:
+`open` (with `"lsp": true` to confirm calls with the language server, answered on its own thread) diffs `head` against its merge base with `base`, ignoring whitespace. For modified Go and Rust files it also asks difftastic, and drops hunks that only reformat code, so a function whose only change is formatting is not listed. Without `difft`, git's whitespace-ignoring diff decides. It returns:
 
 - `base_commit` and `head_commit`: the merge base and head that were compared.
 - `files`: path, status, language, whether it is a test.

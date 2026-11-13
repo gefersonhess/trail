@@ -353,9 +353,11 @@ local function build_home(review)
     count(#state.tests, "test file"), count(#state.loose.steps, "hunk"), count(#store.comments(), "comment")), nil,
     { { "Comment", 0, -1 } })
   local uncertain = vim.iter(review.edges):any(function(e)
-    return e.source == "name_match"
+    return e.source == "name_match" and e.status ~= "removed"
   end)
-  add((uncertain and "Calls matched by name may be wrong.  " or "") .. "<CR> or 1-9 enters a path  ·  S send  ·  ? keys", nil,
+  local note = state.lsp_pending and "Checking calls with the language server…  "
+    or (uncertain and "Calls matched by name (?) may be wrong.  " or "")
+  add(note .. "<CR> or 1-9 enters a path  ·  S send  ·  ? keys", nil,
     { { "Comment", 0, -1 } })
 
   add("")
@@ -469,6 +471,29 @@ function M.refresh_home()
   end
 end
 
+---Asks the engine to confirm calls with the language server in the
+---background, then redraws with the confirmed calls and paths.
+local function confirm_calls()
+  local has_code = vim.iter(state.review.nodes):any(function(n)
+    return n.id:match("^go:") or n.id:match("^rust:")
+  end)
+  if vim.g.trail_lsp == false or not has_code then
+    return
+  end
+  state.lsp_pending = true
+  local review = state.review
+  engine.request("open", { repo = state.repo, base = state.base, head = state.head, lsp = true }, function(err, result)
+    if state.review ~= review then
+      return
+    end
+    state.lsp_pending = false
+    if not err then
+      state.review = result
+    end
+    M.refresh_home()
+  end)
+end
+
 local function review_range()
   store.load(state.repo, state.key)
   engine.request("open", { repo = state.repo, base = state.base, head = state.head }, function(err, result)
@@ -477,6 +502,8 @@ local function review_range()
       return
     end
     state.review = result
+    state.lsp_pending = false
+    confirm_calls()
     if vim.api.nvim_buf_is_valid(state.list_buf) then
       render()
     end

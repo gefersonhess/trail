@@ -1319,3 +1319,124 @@ fn pull_requests_are_fetched_and_reviewed_like_branches() {
         responses[1]
     );
 }
+
+fn open_lsp(repo: &Repo, env: &[(&str, &str)]) -> Value {
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "open",
+            "params": { "repo": repo.path(), "base": "main", "head": "feature", "lsp": true },
+        })],
+        env,
+    );
+    responses.into_iter().next().unwrap()["result"].clone()
+}
+
+fn method_repo() -> Repo {
+    let (repo, _) = branch_with(
+        &[
+            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+            (
+                "store/store.go",
+                "package store\n\ntype Store struct{ n int }\ntype Cache struct{ n int }\n\nfunc (s *Store) Save() {}\nfunc (c *Cache) Save() {}\n\nfunc Run(s *Store) {\n\ts.Save()\n\tOld()\n}\n\nfunc Old() {}\n",
+            ),
+        ],
+        &[(
+            "store/store.go",
+            "package store\n\ntype Store struct{ n int }\ntype Cache struct{ n int }\n\nfunc (s *Store) Save() { s.n++ }\nfunc (c *Cache) Save() { c.n-- }\n\nfunc Run(s *Store) {\n\ts.Save()\n}\n",
+        )],
+        &[],
+    );
+    repo
+}
+
+#[test]
+fn without_a_language_server_calls_stay_name_matched() {
+    let repo = method_repo();
+
+    let result = open_lsp(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+
+    assert_eq!(
+        edges(&result),
+        [
+            edge("go:store.Run", "go:store.Cache.Save", "unchanged"),
+            edge("go:store.Run", "go:store.Old", "removed"),
+            edge("go:store.Run", "go:store.Store.Save", "unchanged"),
+        ]
+    );
+}
+
+#[test]
+fn gopls_call_hierarchy_replaces_name_matched_calls_on_the_head_side() {
+    if Command::new("gopls").arg("version").output().is_err() {
+        eprintln!("gopls is not installed; skipping");
+        return;
+    }
+    let repo = method_repo();
+
+    let result = open_lsp(&repo, &[]);
+
+    let sources: Vec<(String, String, String)> = result["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["to"].as_str().unwrap().to_string(),
+                e["status"].as_str().unwrap().to_string(),
+                e["source"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            (
+                "go:store.Store.Save".to_string(),
+                "unchanged".to_string(),
+                "lsp".to_string()
+            ),
+            (
+                "go:store.Old".to_string(),
+                "removed".to_string(),
+                "name_match".to_string()
+            ),
+        ],
+        "{}",
+        result["edges"]
+    );
+}
+
+#[test]
+fn a_slow_language_server_does_not_hold_up_other_requests() {
+    let repo = method_repo();
+    let tools = Repo::new();
+    let slow = tools.path().join("slow-gopls");
+    std::fs::write(&slow, "#!/bin/sh\nsleep 2\n").unwrap();
+    Command::new("chmod").arg("+x").arg(&slow).status().unwrap();
+    let params =
+        |lsp: bool| json!({ "repo": repo.path(), "base": "main", "head": "feature", "lsp": lsp });
+
+    let responses = serve_with_env(
+        &[
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "open", "params": params(true) }),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "open", "params": params(false) }),
+        ],
+        &[("TRAIL_GOPLS", slow.to_str().unwrap())],
+    );
+
+    let order: Vec<&Value> = responses.iter().map(|r| &r["id"]).collect();
+    assert_eq!(
+        order,
+        [&json!(2), &json!(1)],
+        "the quick request is answered first"
+    );
+    assert!(
+        responses[1]["result"]["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["source"] == "name_match")
+    );
+}

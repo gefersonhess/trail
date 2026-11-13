@@ -33,6 +33,7 @@ sh("git checkout -q main")
 local cache = repo .. "-cache"
 vim.env.XDG_CACHE_HOME = cache
 
+vim.env.TRAIL_GOPLS = repo .. "-no-gopls"
 vim.cmd.cd(repo)
 vim.cmd("Trail main..feature")
 local buf = vim.api.nvim_get_current_buf()
@@ -52,6 +53,13 @@ local function line_of(pattern)
   end
 end
 
+check(vim.wait(10000, function()
+  return vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]:match("^Calls matched by name %(%?%) may be wrong%.") ~= nil
+end), "without a language server the header says calls are matched by name: " .. tostring(vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]))
+lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+text = table.concat(lines, "\n")
+check(line_of("^  │  └─ %+ auth%.hashOf .*%(new call%)  %?$"), "name-matched calls are marked uncertain in the graph")
+check(line_of("^  └─ %- auth%.Gone .*%(call removed%)$"), "removed calls are not marked uncertain")
 check(line_of("^1 path · 5 functions · 1 test file · 1 hunk not in any path · 0 comments$"), "summary line")
 check(line_of("^  1  auth%.Login  4 steps  · 0/4$"), "path listed with its step count and progress")
 check(line_of("^     auth/auth_test%.go  1 test · covers 3 functions  · 0/1$"), "test file listed with what it covers")

@@ -1,5 +1,6 @@
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -25,6 +26,8 @@ struct OpenParams {
     repo: PathBuf,
     base: String,
     head: String,
+    #[serde(default)]
+    lsp: bool,
 }
 
 #[derive(Deserialize)]
@@ -63,47 +66,76 @@ struct RpcError {
     message: String,
 }
 
-pub fn serve(input: impl BufRead, mut output: impl Write) -> io::Result<()> {
+pub fn serve(input: impl BufRead, output: impl Write + Send + 'static) -> io::Result<()> {
     log("serving");
+    let output = Arc::new(Mutex::new(output));
+    let mut background = Vec::new();
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let started = Instant::now();
-        let (id, method, result) = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => {
-                let result = dispatch(&req.method, req.params);
-                (req.id, req.method, result)
-            }
-            Err(e) => (
-                Some(Value::Null),
-                String::from("<unparsed>"),
-                Err(RpcError {
-                    code: PARSE_ERROR,
-                    message: e.to_string(),
-                }),
-            ),
-        };
-        let elapsed = started.elapsed().as_millis();
-        match &result {
-            Ok(_) => log(&format!("{method} ok in {elapsed}ms")),
-            Err(e) => log(&format!("{method} failed in {elapsed}ms: {}", e.message)),
+        let request = serde_json::from_str::<Request>(&line);
+        // Asking the language server can take long while it indexes; run it
+        // on its own thread so diffs and peeks stay responsive.
+        let slow = request
+            .as_ref()
+            .is_ok_and(|r| r.method == "open" && r.params["lsp"] == true);
+        let output = Arc::clone(&output);
+        let work = move || handle(request, &output);
+        if slow {
+            background.push(std::thread::spawn(work));
+        } else {
+            work()?;
         }
-        let Some(id) = id else { continue };
-        let response = match result {
-            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            Err(e) => json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": { "code": e.code, "message": e.message },
-            }),
-        };
-        writeln!(output, "{response}")?;
-        output.flush()?;
+    }
+    for handle in background {
+        handle
+            .join()
+            .map_err(|_| io::Error::other("request thread panicked"))??;
     }
     log("stdin closed, exiting");
     Ok(())
+}
+
+fn handle(
+    request: Result<Request, serde_json::Error>,
+    output: &Mutex<impl Write>,
+) -> io::Result<()> {
+    let started = Instant::now();
+    let (id, method, result) = match request {
+        Ok(req) => {
+            let result = dispatch(&req.method, req.params);
+            (req.id, req.method, result)
+        }
+        Err(e) => (
+            Some(Value::Null),
+            String::from("<unparsed>"),
+            Err(RpcError {
+                code: PARSE_ERROR,
+                message: e.to_string(),
+            }),
+        ),
+    };
+    let elapsed = started.elapsed().as_millis();
+    match &result {
+        Ok(_) => log(&format!("{method} ok in {elapsed}ms")),
+        Err(e) => log(&format!("{method} failed in {elapsed}ms: {}", e.message)),
+    }
+    let Some(id) = id else { return Ok(()) };
+    let response = match result {
+        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err(e) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": e.code, "message": e.message },
+        }),
+    };
+    let mut output = output
+        .lock()
+        .map_err(|_| io::Error::other("output lock poisoned"))?;
+    writeln!(output, "{response}")?;
+    output.flush()
 }
 
 fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
@@ -113,10 +145,11 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 code: INVALID_PARAMS,
                 message: e.to_string(),
             })?;
-            let review = review::open(&p.repo, &p.base, &p.head).map_err(|message| RpcError {
-                code: GIT_ERROR,
-                message,
-            })?;
+            let review =
+                review::open(&p.repo, &p.base, &p.head, p.lsp).map_err(|message| RpcError {
+                    code: GIT_ERROR,
+                    message,
+                })?;
             log(&format!(
                 "open: {} files, {} hunks, {} nodes, {} edges",
                 review.files.len(),

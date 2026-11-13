@@ -5,6 +5,8 @@ pub struct Symbol {
     pub kind: Kind,
     pub start: u32,
     pub end: u32,
+    /// Where the name itself starts: 0-based row and UTF-16 column, as LSP counts.
+    pub name_at: (u32, usize),
     pub calls: Vec<Call>,
 }
 
@@ -151,11 +153,17 @@ fn rust_module(path: &str) -> Vec<String> {
 fn push(out: &mut Vec<Symbol>, node: Node, name: String, kind: Kind, src: &[u8]) {
     let mut calls = Vec::new();
     collect_calls(node, src, &mut calls);
+    let name_node = node.child_by_field_name("name").unwrap_or(node);
+    let at = name_node.start_position();
+    let line_start = name_node.start_byte() - at.column;
+    let column = std::str::from_utf8(&src[line_start..name_node.start_byte()])
+        .map_or(at.column, |s| s.encode_utf16().count());
     out.push(Symbol {
         name,
         kind,
         start: node.start_position().row as u32 + 1,
         end: node.end_position().row as u32 + 1,
+        name_at: (at.row as u32, column),
         calls,
     });
 }

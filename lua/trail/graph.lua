@@ -87,6 +87,9 @@ function M.render(path, review, opts)
     if r.edge and edge_note[r.edge.status] then
       line = line .. "  (" .. edge_note[r.edge.status] .. ")"
     end
+    if r.edge and r.edge.source == "name_match" and r.edge.status ~= "removed" then
+      line = line .. "  ?"
+    end
     if r.repeated then
       line = line .. "  ↑ see above"
     end
