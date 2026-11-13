@@ -65,7 +65,7 @@ pub fn open(repo: &Path, base: &str, head: &str) -> Result<Review, String> {
     let base_commit = git::run(repo, &["merge-base", &base_tip, &head_commit])?
         .trim()
         .to_string();
-    let diff = diff::compute(repo, &base_commit, &head_commit)?;
+    let diff = diff::compute(repo, &base_commit, &head_commit, &[])?;
     let mut nodes = Vec::new();
     for file in &diff.files {
         let Some(language) = file.language.filter(|_| !file.binary) else {

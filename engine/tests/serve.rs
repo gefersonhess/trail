@@ -57,8 +57,13 @@ impl Drop for Repo {
 }
 
 fn serve(requests: &[Value]) -> Vec<Value> {
+    serve_with_env(requests, &[])
+}
+
+fn serve_with_env(requests: &[Value], env: &[(&str, &str)]) -> Vec<Value> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_trail"))
         .arg("serve")
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -571,5 +576,215 @@ fn go_selector_calls_reach_package_functions_and_methods() {
             edge("go:api.Handle", "go:auth.Store.Save", "added"),
             edge("go:api.Handle", "go:auth.Verify", "added"),
         ]
+    );
+}
+
+const OLD_AUTH: &str = "package auth\n\nimport \"fmt\"\n\nfunc Login(u string) bool {\n\tGone()\n\treturn VerifyHash(u)\n}\n\nfunc VerifyHash(h string) bool {\n\treturn h != \"\"\n}\n\nfunc Gone() {}\n";
+const NEW_AUTH: &str = "package auth\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc Login(user string) bool {\n\treturn VerifyHash(user)\n}\n\nfunc VerifyHash(h string) bool {\n\treturn hashOf(h) == h\n}\n\nfunc hashOf(h string) string { return strings.ToLower(h) }\n";
+
+fn branch_with(old: &[(&str, &str)], new: &[(&str, &str)], remove: &[&str]) -> (Repo, Value) {
+    let repo = Repo::new();
+    repo.write("README.md", "x\n");
+    for (path, content) in old {
+        repo.write(path, content);
+    }
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    for (path, content) in new {
+        repo.write(path, content);
+    }
+    for path in remove {
+        repo.git(&["rm", "-q", path]);
+    }
+    repo.commit("feature");
+    let review = open(&repo, "main", "feature")["result"].clone();
+    (repo, review)
+}
+
+fn file_diff(
+    repo: &Repo,
+    review: &Value,
+    old_path: Option<&str>,
+    new_path: Option<&str>,
+    env: &[(&str, &str)],
+) -> Value {
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "file_diff",
+            "params": {
+                "repo": repo.path(),
+                "base_commit": review["base_commit"],
+                "head_commit": review["head_commit"],
+                "old_path": old_path,
+                "new_path": new_path,
+            },
+        })],
+        env,
+    );
+    let result = responses[0]["result"].clone();
+    assert!(result.is_object(), "{}", responses[0]);
+    assert_rows_cover_every_line_once(&result);
+    result
+}
+
+fn assert_rows_cover_every_line_once(result: &Value) {
+    for (side, lines) in [(0, "old_lines"), (1, "new_lines")] {
+        let seen: Vec<u64> = result["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row[side].as_u64())
+            .collect();
+        let expected: Vec<u64> = (1..=result[lines].as_array().unwrap().len() as u64).collect();
+        assert_eq!(seen, expected, "{lines} in rows {}", result["rows"]);
+    }
+}
+
+fn changes(result: &Value, side: &str, line: u64) -> Option<Value> {
+    result[side]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["line"] == line)
+        .map(|c| c["spans"].clone())
+}
+
+#[test]
+fn file_diff_aligns_lines_and_marks_changed_tokens_with_difftastic() {
+    let (repo, review) = branch_with(&[("auth.go", OLD_AUTH)], &[("auth.go", NEW_AUTH)], &[]);
+
+    let result = file_diff(&repo, &review, Some("auth.go"), Some("auth.go"), &[]);
+
+    assert_eq!(result["engine"], "difftastic");
+    assert_eq!(result["old_lines"][4], "func Login(u string) bool {");
+    assert_eq!(result["new_lines"][7], "func Login(user string) bool {");
+    let rows = result["rows"].as_array().unwrap();
+    assert!(
+        rows.contains(&json!([5, 8])),
+        "Login lines pair up: {}",
+        result["rows"]
+    );
+    assert!(
+        rows.contains(&json!([null, 5])),
+        "added import line is filler on the left"
+    );
+    assert!(
+        rows.contains(&json!([6, null])),
+        "removed Gone() call is filler on the right"
+    );
+    assert_eq!(changes(&result, "old_changes", 5), Some(json!([[11, 12]])));
+    assert_eq!(changes(&result, "new_changes", 8), Some(json!([[11, 15]])));
+    assert_eq!(changes(&result, "new_changes", 1), None);
+}
+
+#[test]
+fn file_diff_reports_formatting_only_changes_as_unchanged() {
+    let (repo, review) = branch_with(
+        &[("a.go", "package a\n\nfunc A() { return }\n")],
+        &[("a.go", "package a\n\nfunc A() {\n\treturn\n}\n")],
+        &[],
+    );
+
+    let result = file_diff(&repo, &review, Some("a.go"), Some("a.go"), &[]);
+
+    assert_eq!(result["engine"], "difftastic");
+    assert_eq!(result["old_changes"], json!([]));
+    assert_eq!(result["new_changes"], json!([]));
+    assert_eq!(
+        result["rows"],
+        json!([[1, 1], [2, 2], [3, 3], [null, 4], [null, 5]])
+    );
+}
+
+#[test]
+fn file_diff_falls_back_to_a_line_diff_without_difftastic() {
+    let (repo, review) = branch_with(&[("auth.go", OLD_AUTH)], &[("auth.go", NEW_AUTH)], &[]);
+
+    let result = file_diff(
+        &repo,
+        &review,
+        Some("auth.go"),
+        Some("auth.go"),
+        &[("TRAIL_DIFFT", "/nonexistent/difft")],
+    );
+
+    assert_eq!(result["engine"], "text");
+    let rows = result["rows"].as_array().unwrap();
+    assert!(
+        rows.contains(&json!([7, null])),
+        "git pairs the replaced block in order: {}",
+        result["rows"]
+    );
+    assert!(
+        rows.contains(&json!([12, 14])),
+        "unchanged lines after it pair up"
+    );
+    assert_eq!(changes(&result, "new_changes", 8), Some(json!([])));
+    assert_eq!(changes(&result, "new_changes", 1), None);
+}
+
+#[test]
+fn file_diff_shows_added_and_deleted_files_against_filler() {
+    let (repo, review) = branch_with(
+        &[("gone.go", "package a\n\nfunc G() {}\n")],
+        &[("new.go", "package a\n")],
+        &["gone.go"],
+    );
+
+    let added = file_diff(&repo, &review, None, Some("new.go"), &[]);
+    let deleted = file_diff(&repo, &review, Some("gone.go"), None, &[]);
+
+    assert_eq!(added["rows"], json!([[null, 1]]));
+    assert_eq!(added["new_changes"], json!([{ "line": 1, "spans": [] }]));
+    assert_eq!(deleted["rows"], json!([[1, null], [2, null], [3, null]]));
+    assert_eq!(deleted["old_changes"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn file_diff_keeps_difftastic_alignment_past_its_size_limit() {
+    let (repo, review) = branch_with(&[("auth.go", OLD_AUTH)], &[("auth.go", NEW_AUTH)], &[]);
+
+    let result = file_diff(
+        &repo,
+        &review,
+        Some("auth.go"),
+        Some("auth.go"),
+        &[("DFT_BYTE_LIMIT", "10")],
+    );
+
+    assert_eq!(result["engine"], "difftastic");
+    for side in ["old_changes", "new_changes"] {
+        for change in result[side].as_array().unwrap() {
+            for span in change["spans"].as_array().unwrap() {
+                assert!(
+                    span[0].as_u64() < span[1].as_u64(),
+                    "empty span in {change}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn file_diff_fallback_places_pure_insertions_and_deletions() {
+    let (repo, review) = branch_with(
+        &[("a.txt", "a\nb\nc\nd\n")],
+        &[("a.txt", "a\nx\nb\nd\n")],
+        &[],
+    );
+
+    let result = file_diff(
+        &repo,
+        &review,
+        Some("a.txt"),
+        Some("a.txt"),
+        &[("TRAIL_DIFFT", "/nonexistent/difft")],
+    );
+
+    assert_eq!(
+        result["rows"],
+        json!([[1, 1], [null, 2], [2, 3], [3, null], [4, 4]])
     );
 }

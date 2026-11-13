@@ -1,4 +1,5 @@
 local engine = require("trail.engine")
+local sidebyside = require("trail.sidebyside")
 
 local M = {}
 
@@ -15,11 +16,6 @@ local function parse_range(arg)
     base, head = arg, ""
   end
   return base, head ~= "" and head or "HEAD"
-end
-
-local function git(args)
-  local out = vim.system(vim.list_extend({ "git", "-C", state.repo }, args), { text = true }):wait()
-  return out.code == 0 and out.stdout or nil
 end
 
 local function short_name(node)
@@ -141,21 +137,10 @@ local function build_lines(review)
   return lines, items, hls
 end
 
-local function scratch(name, content, path)
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(buf, name)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(content, "\n", { plain = true }))
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].modifiable = false
-  vim.bo[buf].filetype = vim.filetype.match({ filename = path, buf = buf }) or ""
-  for _, key in ipairs({ "-", "q" }) do
-    vim.keymap.set("n", key, function()
-      if vim.api.nvim_tabpage_is_valid(state.list_tab) then
-        vim.api.nvim_set_current_tabpage(state.list_tab)
-      end
-    end, { buffer = buf, desc = "Back to trail list" })
+local function back_to_list()
+  if vim.api.nvim_tabpage_is_valid(state.list_tab) then
+    vim.api.nvim_set_current_tabpage(state.list_tab)
   end
-  return buf
 end
 
 local function open_item(item)
@@ -164,37 +149,33 @@ local function open_item(item)
   local file = vim.iter(review.files):find(function(f)
     return f.path == path
   end)
-  local old_path = file.old_path or file.path
-  local old = file.status ~= "added" and git({ "show", review.base_commit .. ":" .. old_path }) or ""
-  local new = file.status ~= "deleted" and git({ "show", review.head_commit .. ":" .. path }) or ""
-
-  if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
-    vim.api.nvim_set_current_tabpage(state.diff_tab)
-    vim.cmd("silent! tabclose")
-  end
-  vim.cmd("tabnew")
-  state.diff_tab = vim.api.nvim_get_current_tabpage()
-  local placeholder = vim.api.nvim_get_current_buf()
-  local left_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(left_win, scratch("trail://base/" .. old_path, old, old_path))
-  vim.api.nvim_buf_delete(placeholder, { force = true })
-  vim.cmd("rightbelow vsplit")
-  local right_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(right_win, scratch("trail://head/" .. path, new, path))
-  vim.opt.diffopt:append("iwhiteall")
-  for _, win in ipairs({ left_win, right_win }) do
-    vim.api.nvim_win_call(win, function()
-      vim.cmd("diffthis")
-    end)
-  end
-
-  local target = item.node or item.hunk
-  local on_new = target.new and (item.node or target.new.len > 0)
-  local win = on_new and right_win or left_win
-  local line = math.max((on_new and target.new or target.old).start, 1)
-  vim.api.nvim_set_current_win(win)
-  vim.api.nvim_win_set_cursor(win, { math.min(line, vim.api.nvim_buf_line_count(0)), 0 })
-  vim.cmd("normal! zz")
+  local params = {
+    repo = state.repo,
+    base_commit = review.base_commit,
+    head_commit = review.head_commit,
+    old_path = file.status ~= "added" and (file.old_path or file.path) or nil,
+    new_path = file.status ~= "deleted" and file.path or nil,
+  }
+  engine.request("file_diff", params, function(err, diff)
+    if err then
+      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+      return
+    end
+    if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
+      vim.api.nvim_set_current_tabpage(state.diff_tab)
+      vim.cmd("silent! tabclose")
+    end
+    vim.cmd("tabnew")
+    state.diff_tab = vim.api.nvim_get_current_tabpage()
+    local view = sidebyside.show(diff, {
+      old_path = params.old_path,
+      new_path = params.new_path,
+      on_back = back_to_list,
+    })
+    local target = item.node or item.hunk
+    local on_new = target.new and (item.node or target.new.len > 0)
+    view.focus(on_new and "new" or "old", math.max((on_new and target.new or target.old).start, 1))
+  end)
 end
 
 local function render()

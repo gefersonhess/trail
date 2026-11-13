@@ -10,7 +10,7 @@ Languages: Go and Rust first.
 
 ## Trying it in Neovim
 
-Requires Neovim 0.10 or later and a Rust toolchain. With lazy.nvim:
+Requires Neovim 0.10 or later, a Rust toolchain, and [difftastic](https://difftastic.wilfred.me.uk/) (`difft`) on your `PATH` for the structural diff. Without `difft` the diff falls back to a plain line diff. With lazy.nvim:
 
 ```lua
 {
@@ -28,7 +28,9 @@ In a Go or Rust repo:
 :Trail main..my-branch
 ```
 
-A tab lists the changed functions as a call tree (callers with their callees indented below), then tests, then hunks that are not inside any function. `<CR>` opens a side-by-side diff of the function or hunk under the cursor, `-` goes back to the list, `R` reloads, `q` quits. `+`, `~` and `-` mark added, modified and removed functions.
+A tab lists the changed functions as a call tree (callers with their callees indented below), then tests, then hunks that are not inside any function. `+`, `~` and `-` mark added, modified and removed functions. `R` reloads, `q` quits.
+
+`<CR>` opens a side-by-side diff at the function or hunk under the cursor. Lines are aligned the way difftastic aligns them, with filler where one side has no matching line. Changed lines are tinted and the tokens that actually changed are highlighted, so formatting changes don't show up. Long unchanged stretches are folded, the gutter shows real line numbers, and both sides scroll together. `]h` and `[h` move between changes, `-` goes back to the list. The colors are the `TrailAdd`, `TrailAddText`, `TrailDelete`, `TrailDeleteText` and `TrailFiller` highlight groups.
 
 This is an early preview to check the engine's output. Paths, the graph view, comments and progress come next. Run its test with `nvim --headless -u NONE -l test/plugin.lua`.
 
@@ -52,3 +54,5 @@ cd engine && cargo build
 - `hunks`: id, file, old and new line ranges. Ids hash the file and changed lines, so they stay the same when other hunks shift.
 - `nodes`: the Go and Rust functions and methods a hunk touches, found with tree-sitter. Each has an id such as `go:auth.Store.Save` or `rust:auth::hash::verify`, a status (added, modified, removed), old and new ranges, and the ids of its hunks.
 - `edges`: calls between changed nodes, as `from`, `to` and a status: `added` (call only in the new code), `removed` (only in the old code) or `unchanged`. They are matched by name with tree-sitter, so their `source` is `name_match` and they should be shown as uncertain. A call matches by how it is written: `a::f()` only a function under `a`, `x.f()` only methods (or, in Go, a function in package `x`), and a bare `f()` only functions, in the same package for Go. Production code never links to test-only functions.
+
+`file_diff` takes `repo`, `base_commit`, `head_commit` and the file's `old_path` and `new_path` (leave one out for an added or deleted file). It returns both versions' lines, `rows` pairing old and new line numbers (`null` for filler), and `old_changes` and `new_changes`: each changed line with the byte ranges of its changed tokens. `engine` says whether difftastic (`difft`, or `TRAIL_DIFFT`) produced it or the plain line diff fallback did.

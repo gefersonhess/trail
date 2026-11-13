@@ -5,7 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::review;
+use crate::{review, sidebyside};
 
 const PARSE_ERROR: i64 = -32700;
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -25,6 +25,15 @@ struct OpenParams {
     repo: PathBuf,
     base: String,
     head: String,
+}
+
+#[derive(Deserialize)]
+struct FileDiffParams {
+    repo: PathBuf,
+    base_commit: String,
+    head_commit: String,
+    old_path: Option<String>,
+    new_path: Option<String>,
 }
 
 struct RpcError {
@@ -95,6 +104,24 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
             ));
             Ok(serde_json::to_value(review).expect("review serializes"))
         }
+        "file_diff" => {
+            let p: FileDiffParams = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            let diff = sidebyside::compute(
+                &p.repo,
+                &p.base_commit,
+                &p.head_commit,
+                p.old_path.as_deref(),
+                p.new_path.as_deref(),
+            )
+            .map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
+            Ok(serde_json::to_value(diff).expect("side by side serializes"))
+        }
         _ => Err(RpcError {
             code: METHOD_NOT_FOUND,
             message: format!("unknown method {method}"),
@@ -102,7 +129,7 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
     }
 }
 
-fn log(message: &str) {
+pub fn log(message: &str) {
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());

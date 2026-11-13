@@ -114,7 +114,7 @@ In:
 - Call edges from the LSP call hierarchy.
 - Paths built from the graph without AI: one path per connected group of changed functions, starting at its entry point. Tests separated.
 - Paths screen and path view.
-- A middle-ground diff: whitespace ignored, moved lines marked, changed words highlighted.
+- The difftastic diff: the engine runs `difft` (JSON output) on both versions of a file, and the plugin draws its line alignment and changed tokens in its own side-by-side buffers, so comments and navigation work on them. Without `difft`, a line diff with whitespace ignored. Moved code is not marked yet.
 - Comments and per-node progress, saved under `.git/`.
 - Copy comments as markdown.
 
@@ -128,4 +128,3 @@ Later:
 ## Open questions
 
 - How paths are formed without AI, in detail.
-- Diff backend: difftastic, or tree matching of our own.

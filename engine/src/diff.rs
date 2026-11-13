@@ -45,24 +45,22 @@ pub struct Range {
     pub len: u32,
 }
 
-pub fn compute(repo: &Path, from: &str, to: &str) -> Result<Diff, String> {
-    let patch = git::run(
-        repo,
-        &[
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            "--find-renames",
-            "--ignore-all-space",
-            "--unified=0",
-            from,
-            to,
-            "--",
-        ],
-    )?;
-    Ok(parse(&patch))
+pub fn compute(repo: &Path, from: &str, to: &str, paths: &[&str]) -> Result<Diff, String> {
+    let mut args = vec![
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--find-renames",
+        "--ignore-all-space",
+        "--unified=0",
+        from,
+        to,
+        "--",
+    ];
+    args.extend_from_slice(paths);
+    Ok(parse(&git::run(repo, &args)?))
 }
 
 #[derive(Default)]

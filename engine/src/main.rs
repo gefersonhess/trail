@@ -1,7 +1,9 @@
 mod diff;
+mod difftastic;
 mod git;
 mod review;
 mod rpc;
+mod sidebyside;
 mod symbols;
 
 use std::process::ExitCode;
