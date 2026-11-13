@@ -127,9 +127,7 @@ local function open_definition(match, side, filetype)
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
       return
     end
-    local where = checkout.worktree and "review worktree" or "your checkout"
-    peek.open_file(checkout.path .. "/" .. match.path, match.start,
-      string.format(" %s:%d  ·  %s  ·  :q closes ", match.path, match.start, where))
+    peek.open_file(checkout.path .. "/" .. match.path, match.start)
   end)
 end
 

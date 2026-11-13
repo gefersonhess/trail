@@ -48,11 +48,12 @@ local function at_line(win, line)
   vim.cmd("normal! zvzt")
 end
 
----Opens a real file in a large floating window at `line`, as a normal buffer
----so language servers and other plugins attach. `:q` closes it.
-function M.open_file(path, line, title)
-  local win = large_window(vim.api.nvim_create_buf(false, true), title)
-  vim.cmd.edit(vim.fn.fnameescape(path))
+---Opens a real file in its own tab at `line`, as a normal buffer so language
+---servers and other plugins attach, and jumps from it (gr, quickfix) stay in
+---that tab instead of replacing the review. `:q` closes it.
+function M.open_file(path, line)
+  vim.cmd.tabedit(vim.fn.fnameescape(path))
+  local win = vim.api.nvim_get_current_win()
   at_line(win, line)
   return win
 end
