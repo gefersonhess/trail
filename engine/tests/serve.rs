@@ -89,12 +89,19 @@ fn serve_with_env(requests: &[Value], env: &[(&str, &str)]) -> Vec<Value> {
 }
 
 fn open(repo: &Repo, base: &str, head: &str) -> Value {
-    let responses = serve(&[json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "open",
-        "params": { "repo": repo.path(), "base": base, "head": head },
-    })]);
+    open_with_env(repo, base, head, &[])
+}
+
+fn open_with_env(repo: &Repo, base: &str, head: &str, env: &[(&str, &str)]) -> Value {
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "open",
+            "params": { "repo": repo.path(), "base": base, "head": head },
+        })],
+        env,
+    );
     assert_eq!(responses.len(), 1);
     responses.into_iter().next().unwrap()
 }
@@ -787,4 +794,64 @@ fn file_diff_fallback_places_pure_insertions_and_deletions() {
         result["rows"],
         json!([[1, 1], [null, 2], [2, 3], [3, null], [4, 4]])
     );
+}
+
+fn formatting_repo() -> Repo {
+    let repo = Repo::new();
+    repo.write(
+        "a.go",
+        "package a\n\nfunc Reformatted() { return }\n\nfunc Changed() int {\n\treturn 1\n}\n",
+    );
+    repo.write("b.go", "package a\n\nfunc B() { return }\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "a.go",
+        "package a\n\nfunc Reformatted() {\n\treturn\n}\n\nfunc Changed() int {\n\treturn 2\n}\n",
+    );
+    repo.write("b.go", "package a\n\nfunc B() {\n\treturn\n}\n");
+    repo.commit("feature");
+    repo
+}
+
+#[test]
+fn formatting_only_changes_are_left_out_of_the_review() {
+    let repo = formatting_repo();
+
+    let response = open(&repo, "main", "feature");
+    let result = &response["result"];
+
+    assert_eq!(node_ids(result), ["go:a.Changed"]);
+    let paths: Vec<&Value> = result["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| &f["path"])
+        .collect();
+    assert_eq!(paths, [&json!("a.go")]);
+    let hunks = result["hunks"].as_array().unwrap();
+    assert_eq!(hunks.len(), 1, "{}", result["hunks"]);
+    assert_eq!(
+        node(result, "go:a.Changed")["hunks"],
+        json!([hunks[0]["id"]])
+    );
+}
+
+#[test]
+fn without_difftastic_formatting_changes_count_like_git_says() {
+    let repo = formatting_repo();
+
+    let response = open_with_env(
+        &repo,
+        "main",
+        "feature",
+        &[("TRAIL_DIFFT", "/nonexistent/difft")],
+    );
+    let result = &response["result"];
+
+    assert_eq!(
+        node_ids(result),
+        ["go:a.B", "go:a.Changed", "go:a.Reformatted"]
+    );
+    assert_eq!(result["files"].as_array().unwrap().len(), 2);
 }

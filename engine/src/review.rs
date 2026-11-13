@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::diff::{self, File, Hunk, Range, Status};
+use crate::difftastic::{self, Outcome};
 use crate::git;
 use crate::symbols::{self, Call, Kind, Symbol, Via};
 
@@ -65,28 +66,38 @@ pub fn open(repo: &Path, base: &str, head: &str) -> Result<Review, String> {
     let base_commit = git::run(repo, &["merge-base", &base_tip, &head_commit])?
         .trim()
         .to_string();
-    let diff = diff::compute(repo, &base_commit, &head_commit, &[])?;
+    let mut diff = diff::compute(repo, &base_commit, &head_commit, &[])?;
     let mut nodes = Vec::new();
+    let mut formatting_only: Vec<String> = Vec::new();
     for file in &diff.files {
         let Some(language) = file.language.filter(|_| !file.binary) else {
             continue;
         };
         let old_path = file.old_path.as_deref().unwrap_or(&file.path);
-        let side = |commit: &str, path: &str, present: bool| -> Result<Vec<Symbol>, String> {
-            if !present {
-                return Ok(Vec::new());
+        let read = |commit: &str, path: &str, present: bool| -> Result<String, String> {
+            if present {
+                git::show(repo, commit, path)
+            } else {
+                Ok(String::new())
             }
-            Ok(symbols::extract(
-                language,
-                path,
-                &git::show(repo, commit, path)?,
-            ))
         };
-        let old = side(&base_commit, old_path, file.status != Status::Added)?;
-        let new = side(&head_commit, &file.path, file.status != Status::Deleted)?;
-        let hunks: Vec<&Hunk> = diff.hunks.iter().filter(|h| h.file == file.path).collect();
+        let old_src = read(&base_commit, old_path, file.status != Status::Added)?;
+        let new_src = read(&head_commit, &file.path, file.status != Status::Deleted)?;
+        let mut hunks: Vec<&Hunk> = diff.hunks.iter().filter(|h| h.file == file.path).collect();
+        if matches!(file.status, Status::Modified | Status::Renamed) {
+            let (real, noise) = split_by_difftastic(&file.path, &old_src, &new_src, hunks);
+            formatting_only.extend(noise.iter().map(|h| h.id.clone()));
+            hunks = real;
+        }
+        let old = symbols::extract(language, old_path, &old_src);
+        let new = symbols::extract(language, &file.path, &new_src);
         nodes.extend(changed_nodes(file, language, &old, &new, &hunks));
     }
+    diff.hunks.retain(|h| !formatting_only.contains(&h.id));
+    let hunks = &diff.hunks;
+    diff.files.retain(|f| {
+        f.status != Status::Modified || f.binary || hunks.iter().any(|h| h.file == f.path)
+    });
     Ok(Review {
         base_commit,
         head_commit,
@@ -95,6 +106,26 @@ pub fn open(repo: &Path, base: &str, head: &str) -> Result<Review, String> {
         edges: edges(&nodes),
         nodes,
     })
+}
+
+/// Splits a file's hunks into those with a change difftastic sees and those
+/// that only reformat code. Without difftastic every hunk counts as real.
+fn split_by_difftastic<'a>(
+    path: &str,
+    old: &str,
+    new: &str,
+    hunks: Vec<&'a Hunk>,
+) -> (Vec<&'a Hunk>, Vec<&'a Hunk>) {
+    match difftastic::diff(path, old, new) {
+        None => (hunks, Vec::new()),
+        Some(Outcome::Unchanged) => (Vec::new(), hunks),
+        Some(Outcome::Changed(s)) => hunks.into_iter().partition(|h| {
+            let touches = |r: Range, lines: &std::collections::BTreeMap<u32, _>| {
+                r.len > 0 && lines.range(r.start..r.start + r.len).next().is_some()
+            };
+            touches(h.old, &s.old) || touches(h.new, &s.new)
+        }),
+    }
 }
 
 fn changed_nodes(

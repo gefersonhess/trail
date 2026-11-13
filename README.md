@@ -47,7 +47,7 @@ cd engine && cargo build
 {"jsonrpc":"2.0","id":1,"method":"open","params":{"repo":"/path/to/repo","base":"main","head":"feature"}}
 ```
 
-`open` diffs `head` against its merge base with `base`, ignoring whitespace, and returns:
+`open` diffs `head` against its merge base with `base`, ignoring whitespace. For modified Go and Rust files it also asks difftastic, and drops hunks that only reformat code, so a function whose only change is formatting is not listed. Without `difft`, git's whitespace-ignoring diff decides. It returns:
 
 - `base_commit` and `head_commit`: the merge base and head that were compared.
 - `files`: path, status, language, whether it is a test.

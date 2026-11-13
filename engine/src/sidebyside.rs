@@ -51,13 +51,7 @@ pub fn compute(
         rows_from_hunks(old_lines.len() as u32, new_lines.len() as u32, &hunks);
 
     let structural = match (old_path, new_path) {
-        (Some(_), Some(_)) => {
-            let file_name = Path::new(name)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(name);
-            difftastic::diff(file_name, &old, &new)
-        }
+        (Some(_), Some(_)) => difftastic::diff(name, &old, &new),
         _ => None,
     };
     let whole = |lines: BTreeSet<u32>| -> Vec<LineChange> {

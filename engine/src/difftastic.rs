@@ -44,11 +44,15 @@ struct Change {
     end: usize,
 }
 
-/// Runs `difft` on two versions of a file. `name` picks the language. Returns
+/// Runs `difft` on two versions of the file at `path`, whose name picks the language. Returns
 /// `None` when difft is missing, fails, or gives no line alignment, so the
 /// caller can fall back to a line diff. The JSON format is unstable upstream;
 /// this module is the only place that reads it.
-pub fn diff(name: &str, old: &str, new: &str) -> Option<Outcome> {
+pub fn diff(path: &str, old: &str, new: &str) -> Option<Outcome> {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path);
     let dir = scratch_dir();
     let result = run(&dir, name, old, new);
     let _ = std::fs::remove_dir_all(&dir);
