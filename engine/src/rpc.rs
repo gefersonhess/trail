@@ -5,7 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{review, sidebyside};
+use crate::{peek, review, sidebyside};
 
 const PARSE_ERROR: i64 = -32700;
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -34,6 +34,16 @@ struct FileDiffParams {
     head_commit: String,
     old_path: Option<String>,
     new_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PeekParams {
+    repo: PathBuf,
+    commit: String,
+    language: String,
+    name: String,
+    qualifier: Option<String>,
+    from_path: String,
 }
 
 struct RpcError {
@@ -121,6 +131,25 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 message,
             })?;
             Ok(serde_json::to_value(diff).expect("side by side serializes"))
+        }
+        "peek" => {
+            let p: PeekParams = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            let peek = peek::find(
+                &p.repo,
+                &p.commit,
+                &p.language,
+                &p.name,
+                p.qualifier.as_deref(),
+                &p.from_path,
+            )
+            .map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
+            Ok(serde_json::to_value(peek).expect("peek serializes"))
         }
         _ => Err(RpcError {
             code: METHOD_NOT_FOUND,

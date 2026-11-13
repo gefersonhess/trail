@@ -38,3 +38,40 @@ pub fn commit(repo: &Path, rev: &str) -> Result<String, String> {
 pub fn show(repo: &Path, commit: &str, path: &str) -> Result<String, String> {
     run(repo, &["show", &format!("{commit}:{path}")])
 }
+
+/// Paths at `commit` matching `pathspec` that contain `word` as a whole word.
+pub fn files_containing(
+    repo: &Path,
+    commit: &str,
+    word: &str,
+    pathspec: &str,
+) -> Result<Vec<String>, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "grep",
+            "-l",
+            "-w",
+            "-F",
+            "-e",
+            word,
+            commit,
+            "--",
+            pathspec,
+        ])
+        .output()
+        .map_err(|e| format!("running git: {e}"))?;
+    match out.status.code() {
+        Some(0) => {}
+        Some(1) => return Ok(Vec::new()),
+        _ => return Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
+    let prefix = format!("{commit}:");
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.strip_prefix(&prefix).unwrap_or(l).to_string())
+        .collect())
+}

@@ -855,3 +855,164 @@ fn without_difftastic_formatting_changes_count_like_git_says() {
     );
     assert_eq!(result["files"].as_array().unwrap().len(), 2);
 }
+
+fn peek(
+    repo: &Repo,
+    commit: &Value,
+    language: &str,
+    name: &str,
+    qualifier: Option<&str>,
+    from: &str,
+) -> Value {
+    let responses = serve(&[json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "peek",
+        "params": {
+            "repo": repo.path(),
+            "commit": commit,
+            "language": language,
+            "name": name,
+            "qualifier": qualifier,
+            "from_path": from,
+        },
+    })]);
+    responses.into_iter().next().unwrap()
+}
+
+fn match_names(response: &Value) -> Vec<String> {
+    response["result"]["matches"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{response}"))
+        .iter()
+        .map(|m| {
+            format!(
+                "{}:{}",
+                m["path"].as_str().unwrap(),
+                m["name"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn peek_shows_a_function_as_it_is_at_the_requested_commit() {
+    let (repo, review) = branch_with(
+        &[
+            (
+                "auth/auth.go",
+                "package auth\n\nfunc VerifyHash(h string) bool {\n\treturn h != \"\"\n}\n",
+            ),
+            (
+                "api/api.go",
+                "package api\n\nfunc Handle() { auth.VerifyHash(\"x\") }\n",
+            ),
+        ],
+        &[(
+            "auth/auth.go",
+            "package auth\n\nfunc VerifyHash(h string) bool {\n\treturn hashOf(h) == h\n}\n\nfunc hashOf(h string) string { return h }\n",
+        )],
+        &[],
+    );
+
+    let head = peek(
+        &repo,
+        &review["head_commit"],
+        "go",
+        "VerifyHash",
+        Some("auth"),
+        "api/api.go",
+    );
+    let base = peek(
+        &repo,
+        &review["base_commit"],
+        "go",
+        "VerifyHash",
+        Some("auth"),
+        "api/api.go",
+    );
+    let new_only = peek(
+        &repo,
+        &review["base_commit"],
+        "go",
+        "hashOf",
+        None,
+        "auth/auth.go",
+    );
+
+    let first = &head["result"]["matches"][0];
+    assert_eq!(first["path"], "auth/auth.go");
+    assert_eq!(first["name"], "auth.VerifyHash");
+    assert_eq!(first["kind"], "function");
+    assert_eq!(
+        (first["start"].as_u64(), first["end"].as_u64()),
+        (Some(3), Some(5))
+    );
+    assert_eq!(
+        first["lines"],
+        json!([
+            "func VerifyHash(h string) bool {",
+            "\treturn hashOf(h) == h",
+            "}"
+        ])
+    );
+    assert_eq!(
+        base["result"]["matches"][0]["lines"][1],
+        "\treturn h != \"\""
+    );
+    assert_eq!(match_names(&new_only), Vec::<String>::new());
+}
+
+#[test]
+fn peek_ranks_the_qualified_type_then_the_same_file_first() {
+    let (repo, review) = branch_with(
+        &[],
+        &[
+            (
+                "src/a.rs",
+                "pub struct A;\n\nimpl A {\n    pub fn new() -> Self { A }\n}\n",
+            ),
+            (
+                "src/b.rs",
+                "pub struct B;\n\nimpl B {\n    pub fn new() -> Self { B }\n}\n",
+            ),
+            ("src/c/mod.rs", "pub fn new() {}\n"),
+        ],
+        &[],
+    );
+    let head = &review["head_commit"];
+
+    assert_eq!(
+        match_names(&peek(&repo, head, "rust", "new", Some("B"), "src/a.rs")),
+        [
+            "src/b.rs:b::B::new",
+            "src/a.rs:a::A::new",
+            "src/c/mod.rs:c::new"
+        ]
+    );
+    assert_eq!(
+        match_names(&peek(&repo, head, "rust", "new", None, "src/b.rs")),
+        [
+            "src/b.rs:b::B::new",
+            "src/a.rs:a::A::new",
+            "src/c/mod.rs:c::new"
+        ]
+    );
+    assert_eq!(
+        match_names(&peek(&repo, head, "rust", "new", None, "src/c/other.rs")),
+        [
+            "src/c/mod.rs:c::new",
+            "src/a.rs:a::A::new",
+            "src/b.rs:b::B::new"
+        ]
+    );
+}
+
+#[test]
+fn peek_rejects_names_that_are_not_identifiers() {
+    let (repo, review) = branch_with(&[], &[("a.go", "package a\n")], &[]);
+
+    let response = peek(&repo, &review["head_commit"], "go", "-e", None, "a.go");
+
+    assert_eq!(response["error"]["code"], 1, "{response}");
+}

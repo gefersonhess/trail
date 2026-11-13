@@ -1,6 +1,7 @@
 local engine = require("trail.engine")
 local diffview = require("trail.diffview")
 local help = require("trail.help")
+local peek = require("trail.peek")
 
 local M = {}
 
@@ -144,6 +145,47 @@ local function back_to_list()
   end
 end
 
+local function peek_at_cursor(file, params, side)
+  if not file.language then
+    vim.notify("trail: peek works in Go and Rust files", vim.log.levels.INFO)
+    return
+  end
+  local name, qualifier = peek.word_at_cursor()
+  if not name then
+    return
+  end
+  local review = state.review
+  local old = side == "old"
+  engine.request("peek", {
+    repo = state.repo,
+    commit = old and review.base_commit or review.head_commit,
+    language = file.language,
+    name = name,
+    qualifier = qualifier,
+    from_path = old and (params.old_path or params.new_path) or (params.new_path or params.old_path),
+  }, function(err, result)
+    if err then
+      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+      return
+    end
+    local match = result.matches[1]
+    if not match then
+      vim.notify("trail: no function named " .. name, vim.log.levels.INFO)
+      return
+    end
+    local changed = vim.iter(review.nodes):any(function(n)
+      local range = old and n.old or n.new
+      return n.file == match.path and range ~= nil and match.start >= range.start
+        and match.start < range.start + range.len
+    end)
+    peek.show(match, {
+      filetype = vim.filetype.match({ filename = match.path }) or file.language,
+      total = #result.matches,
+      changed = changed,
+    })
+  end)
+end
+
 local function open_item(item)
   local review = state.review
   local path = item.node and item.node.file or item.hunk.file
@@ -172,6 +214,9 @@ local function open_item(item)
       old_path = params.old_path,
       new_path = params.new_path,
       on_back = back_to_list,
+      on_peek = function(side)
+        peek_at_cursor(file, params, side)
+      end,
     })
     local target = item.node or item.hunk
     local on_new = target.new and (item.node or target.new.len > 0)

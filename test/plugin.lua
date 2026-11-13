@@ -128,6 +128,50 @@ check(old_login and gutter(uwin, old_login):match("^%s*5%s+%- $"), "removed line
 check(new_login and gutter(uwin, new_login):match("^%s+8 %+ $"), "added line has new number and +, got " .. gutter(uwin, new_login or 1))
 check(has_span(ubuf, old_login, "TrailDeleteText", 11, 12), "removed token u is highlighted")
 check(has_span(ubuf, new_login, "TrailAddText", 11, 15), "added token user is highlighted")
+local function peek_on(row, word)
+  vim.api.nvim_win_set_cursor(0, { row, vim.api.nvim_get_current_line():len() > 0 and 0 or 0 })
+  local col = vim.api.nvim_buf_get_lines(0, row - 1, row, false)[1]:find(word, 1, true)
+  vim.api.nvim_win_set_cursor(0, { row, col - 1 })
+  local from = vim.api.nvim_get_current_win()
+  vim.api.nvim_feedkeys("K", "x", false)
+  local float
+  vim.wait(10000, function()
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.api.nvim_win_get_config(w).relative ~= "" then
+        float = w
+        return true
+      end
+    end
+  end)
+  if not float then
+    return nil
+  end
+  local fbuf = vim.api.nvim_win_get_buf(float)
+  local title = table.concat(vim.tbl_map(function(c)
+    return c[1]
+  end, vim.api.nvim_win_get_config(float).title or {}))
+  local result = { lines = vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), filetype = vim.bo[fbuf].filetype, title = title }
+  vim.api.nvim_win_close(float, true)
+  vim.api.nvim_set_current_win(from)
+  return result
+end
+
+local hash_call = row_with(ubuf, "\treturn hashOf(h) == h")
+local peeked = hash_call and peek_on(hash_call, "hashOf")
+check(peeked, "K opens a peek window")
+check(peeked and peeked.lines[1] == "func hashOf(h string) string { return strings.ToLower(h) }", "peek shows the function at head: " .. vim.inspect(peeked and peeked.lines))
+check(peeked and peeked.filetype == "go", "peek is highlighted as go")
+check(peeked and peeked.title:match("auth/auth%.go:16") and peeked.title:match("changed in this review"), "peek title has the location and marks changed functions: " .. (peeked and peeked.title or ""))
+local to_lower = row_with(ubuf, "func hashOf(h string) string { return strings.ToLower(h) }")
+vim.api.nvim_win_set_cursor(0, { to_lower, ({ vim.api.nvim_get_current_line():find("Lower") })[1] or 0 })
+vim.api.nvim_win_set_cursor(0, { to_lower, vim.api.nvim_buf_get_lines(0, to_lower - 1, to_lower, false)[1]:find("Lower") - 1 })
+local word, qualifier = require("trail.peek").word_at_cursor()
+check(word == "ToLower" and qualifier == "strings", "peek reads the whole name and its qualifier: " .. tostring(word) .. " " .. tostring(qualifier))
+local gone_call = row_with(ubuf, "\tGone()")
+local peeked_old = gone_call and peek_on(gone_call, "Gone")
+check(peeked_old and peeked_old.lines[1] == "func Gone() {}", "K on a removed line peeks the base version: " .. vim.inspect(peeked_old and peeked_old.lines))
+check(peeked_old and peeked_old.title:match("auth/auth%.go:14"), "base peek title has the base location")
+
 check(vim.fn.foldclosed(row_with(ubuf, "func p6() {}") or 1) > 0, "unified folds long unchanged stretches")
 vim.api.nvim_win_set_cursor(uwin, { 1, 0 })
 vim.api.nvim_feedkeys("]h", "x", false)

@@ -1,0 +1,47 @@
+local M = {}
+
+---Shows a peek match in a hover-style floating window. Pressing the same key
+---again focuses it so it can be scrolled; moving the cursor closes it.
+---@param match { path: string, start: integer, lines: string[] }
+---@param info { filetype: string, total: integer, changed: boolean }
+function M.show(match, info)
+  local title = string.format(" %s:%d ", match.path, match.start)
+  if info.changed then
+    title = title .. "· changed in this review "
+  end
+  if info.total > 1 then
+    title = title .. string.format("· 1 of %d ", info.total)
+  end
+  local buf, win = vim.lsp.util.open_floating_preview(match.lines, info.filetype, {
+    border = "rounded",
+    title = title,
+    title_pos = "left",
+    focus_id = "trail_peek",
+    max_width = math.floor(vim.o.columns * 0.8),
+    max_height = math.floor(vim.o.lines * 0.5),
+  })
+  vim.bo[buf].filetype = info.filetype
+  return win
+end
+
+---The word under the cursor and the plain name written right before it with
+---`.` or `::`, like `auth` in `auth.VerifyHash`.
+function M.word_at_cursor()
+  local line = vim.api.nvim_get_current_line()
+  local col = vim.api.nvim_win_get_cursor(0)[2] + 1
+  if not line:sub(col, col):match("[%w_]") then
+    return nil
+  end
+  local first, last = col, col
+  while first > 1 and line:sub(first - 1, first - 1):match("[%w_]") do
+    first = first - 1
+  end
+  while line:sub(last + 1, last + 1):match("[%w_]") do
+    last = last + 1
+  end
+  local before = line:sub(1, first - 1)
+  local qualifier = before:match("([%w_]+)%.$") or before:match("([%w_]+)::$")
+  return line:sub(first, last), qualifier
+end
+
+return M

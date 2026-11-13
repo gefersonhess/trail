@@ -341,6 +341,15 @@ function M.show(diff, opts)
     M.show(diff, opts).focus(side, line)
   end
 
+  local function side_at_cursor()
+    local p = pane_of(vim.api.nvim_get_current_win())
+    if #panes == 2 then
+      return p == panes[1] and "old" or "new"
+    end
+    local e = p.view.gutter[vim.api.nvim_win_get_cursor(p.win)[1]]
+    return e and e.mark == "-" and "old" or "new"
+  end
+
   local function toggle_folds()
     chosen_folding = not fold_unchanged()
     for _, p in ipairs(panes) do
@@ -362,6 +371,9 @@ function M.show(diff, opts)
     map("t", toggle, "Toggle unified and side-by-side")
     map("o", toggle_folds, "Show or fold unchanged code")
     map("?", help.show, "Show keys")
+    map("K", function()
+      opts.on_peek(side_at_cursor())
+    end, "Peek the function under the cursor")
     map("-", opts.on_back, "Back to trail list")
     map("q", opts.on_back, "Back to trail list")
   end
