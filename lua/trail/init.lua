@@ -155,9 +155,14 @@ end
 ---Shows the diff of a node's or hunk's file in `win`, focused on it.
 local function show_target(target, is_node, win, keys, after)
   local review = state.review
+  -- Context nodes can live in files the change does not touch.
   local file = vim.iter(review.files):find(function(f)
     return f.path == target.file
-  end)
+  end) or {
+    path = target.file,
+    status = "modified",
+    language = target.file:match("%.go$") and "go" or (target.file:match("%.rs$") and "rust" or nil),
+  }
   local params = {
     repo = state.repo,
     base_commit = review.base_commit,
@@ -554,7 +559,12 @@ function M.open(arg)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].swapfile = false
-  vim.api.nvim_buf_set_name(buf, "trail://" .. arg)
+  local name = "trail://" .. vim.fs.basename(root) .. "/" .. arg
+  local earlier = vim.fn.bufnr(name)
+  if earlier ~= -1 then
+    vim.api.nvim_buf_delete(earlier, { force = true })
+  end
+  vim.api.nvim_buf_set_name(buf, name)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "trail: loading " .. arg .. " ..." })
   vim.bo[buf].modifiable = false
 

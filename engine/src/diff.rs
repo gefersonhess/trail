@@ -249,6 +249,6 @@ fn language(path: &str) -> Option<&'static str> {
     }
 }
 
-fn is_test(path: &str) -> bool {
+pub fn is_test(path: &str) -> bool {
     path.ends_with("_test.go") || path.split('/').any(|segment| segment == "tests")
 }

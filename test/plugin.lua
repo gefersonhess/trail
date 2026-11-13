@@ -630,6 +630,38 @@ check(require("trail.state").path():match("/trail/pr%-7%.json$"), "its review st
 vim.fn.delete(remote, "rf")
 vim.fn.delete(gh)
 
+-- A changed type pulls in the unchanged code that uses it.
+local types = vim.fn.tempname()
+vim.fn.mkdir(types .. "/store", "p")
+local function tsh(cmd)
+  local out = vim.system({ "sh", "-c", cmd }, { cwd = types, text = true }):wait()
+  assert(out.code == 0, cmd .. ": " .. out.stderr)
+end
+tsh("git init -q -b main && git config user.email t@t && git config user.name t")
+vim.fn.writefile(vim.split("package store\n\ntype Store struct {\n\tn int\n}", "\n"), types .. "/store/store.go")
+vim.fn.writefile(vim.split("package store\n\nfunc Run(s *Store) int {\n\treturn s.n\n}", "\n"), types .. "/store/run.go")
+tsh("git add -A && git commit -qm base && git checkout -qb feature")
+vim.fn.writefile(vim.split("package store\n\ntype Store struct {\n\tn    int\n\tname string\n}", "\n"), types .. "/store/store.go")
+tsh("git add -A && git commit -qm feature")
+vim.cmd.cd(types)
+vim.cmd("Trail main..feature")
+local tbuf = vim.api.nvim_get_current_buf()
+check(vim.wait(10000, function()
+  return vim.iter(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false)):any(function(l)
+    return l:match("^  1  store%.Run  2 steps")
+  end)
+end), "a path starts at the unchanged code using a changed type: " .. table.concat(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false), "\n"))
+check(vim.iter(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false)):any(function(l)
+  return l:match("^  · store%.Run ") 
+end) and vim.iter(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false)):any(function(l)
+  return l:match("└─ ~ store%.Store .*%(uses%)")
+end), "the preview marks context code and the type it uses")
+vim.api.nvim_feedkeys("1", "x", false)
+check(vim.wait(10000, function()
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/store/run%.go$") and vim.api.nvim_get_current_line() == "func Run(s *Store) int {"
+end), "a context step opens its unchanged file: " .. vim.api.nvim_buf_get_name(0))
+vim.fn.delete(types, "rf")
+
 vim.fn.delete(repo, "rf")
 if failures > 0 then
   io.stderr:write(failures .. " failures\n")

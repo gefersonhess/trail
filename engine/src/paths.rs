@@ -166,7 +166,10 @@ pub fn layout(files: &[File], hunks: &[Hunk], nodes: &[Node], edges: &[Edge]) ->
 
     let uncovered = code
         .iter()
-        .filter(|n| n.status != NodeStatus::Removed && !covered.contains(n.id.as_str()))
+        .filter(|n| {
+            !matches!(n.status, NodeStatus::Removed | NodeStatus::Context)
+                && !covered.contains(n.id.as_str())
+        })
         .map(|n| n.id.clone())
         .collect();
     let placed: HashSet<&str> = nodes

@@ -1,7 +1,7 @@
 local M = {}
 
-local signs = { added = "+", modified = "~", removed = "-" }
-local sign_hl = { added = "TrailAdd", modified = "TrailModified", removed = "TrailDelete" }
+local signs = { added = "+", modified = "~", removed = "-", context = "·" }
+local sign_hl = { added = "TrailAdd", modified = "TrailModified", removed = "TrailDelete", context = "Comment" }
 local edge_note = { added = "new call", removed = "call removed" }
 
 vim.api.nvim_set_hl(0, "TrailModified", { link = "Function", default = true })
@@ -84,7 +84,9 @@ function M.render(path, review, opts)
     if r.label.loc then
       line = line .. "  " .. r.label.loc
     end
-    if r.edge and edge_note[r.edge.status] then
+    if r.edge and r.edge.kind == "use" then
+      line = line .. "  (uses)"
+    elseif r.edge and edge_note[r.edge.status] then
       line = line .. "  (" .. edge_note[r.edge.status] .. ")"
     end
     if r.edge and r.edge.source == "name_match" and r.edge.status ~= "removed" then

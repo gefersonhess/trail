@@ -469,11 +469,17 @@ fn deleting_lines_inside_a_function_marks_it_modified() {
     assert_eq!(f["hunks"].as_array().unwrap().len(), 1);
 }
 
+/// Call edges only; `use` edges to types and constants are checked separately.
 fn edges(result: &Value) -> Vec<(String, String, String)> {
+    edges_of_kind(result, "call")
+}
+
+fn edges_of_kind(result: &Value, kind: &str) -> Vec<(String, String, String)> {
     let mut edges: Vec<_> = result["edges"]
         .as_array()
         .unwrap()
         .iter()
+        .filter(|e| e["kind"] == kind)
         .map(|e| {
             assert_eq!(e["source"], "name_match");
             (
@@ -1344,7 +1350,7 @@ fn method_repo() -> Repo {
         ],
         &[(
             "store/store.go",
-            "package store\n\ntype Store struct{ n int }\ntype Cache struct{ n int }\n\nfunc (s *Store) Save() { s.n++ }\nfunc (c *Cache) Save() { c.n-- }\n\nfunc Run(s *Store) {\n\ts.Save()\n}\n",
+            "package store\n\ntype Store struct{ n, m int }\ntype Cache struct{ n int }\n\nfunc (s *Store) Save() { s.n++ }\nfunc (c *Cache) Save() { c.n-- }\n\nfunc Run(s *Store) {\n\ts.Save()\n}\n",
         )],
         &[],
     );
@@ -1381,6 +1387,7 @@ fn gopls_call_hierarchy_replaces_name_matched_calls_on_the_head_side() {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|e| e["kind"] == "call")
         .map(|e| {
             (
                 e["to"].as_str().unwrap().to_string(),
@@ -1405,6 +1412,14 @@ fn gopls_call_hierarchy_replaces_name_matched_calls_on_the_head_side() {
         ],
         "{}",
         result["edges"]
+    );
+    assert_eq!(
+        edges_of_kind(&result, "use"),
+        [
+            edge("go:store.Run", "go:store.Store", "unchanged"),
+            edge("go:store.Store.Save", "go:store.Store", "unchanged"),
+        ],
+        "use edges stay after the language server confirms calls"
     );
 }
 
@@ -1516,5 +1531,98 @@ fn bare_rust_calls_reach_other_modules_only_through_use() {
             edge("rust:f::go4", "rust:b::show", "added"),
             edge("rust:g::go5", "rust:top", "added"),
         ]
+    );
+}
+
+#[test]
+fn changed_types_and_constants_pull_in_the_code_that_uses_them() {
+    let (repo, _) = branch_with(
+        &[
+            (
+                "store/store.go",
+                "package store\n\nconst Limit = 10\n\ntype Store struct {\n\tn int\n}\n\nfunc (s *Store) Save() {}\n\nfunc Other() {}\n",
+            ),
+            (
+                "store/run.go",
+                "package store\n\nfunc Run() int { return Limit }\n",
+            ),
+            ("other/other.go", "package other\n\nconst Limit = 1\n"),
+            (
+                "store/util.go",
+                "package store\n\nimport \"fmt\"\n\nvar _ = fmt.Sprint\n",
+            ),
+        ],
+        &[
+            (
+                "store/store.go",
+                "package store\n\nconst Limit = 20\n\ntype Store struct {\n\tn    int\n\tname string\n}\n\nfunc (s *Store) Save() {}\n\nfunc Other() {}\n",
+            ),
+            (
+                "store/util.go",
+                "package store\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nvar _ = fmt.Sprint\n",
+            ),
+            ("other/other.go", "package other\n\nconst Limit = 2\n"),
+        ],
+        &[],
+    );
+
+    let response = open(&repo, "main", "feature");
+    let result = &response["result"];
+
+    assert_eq!(
+        node_ids(result),
+        [
+            "go:other.Limit",
+            "go:store.Limit",
+            "go:store.Run",
+            "go:store.Store",
+            "go:store.Store.Save"
+        ]
+    );
+    assert_eq!(node(result, "go:store.Limit")["kind"], "const");
+    assert_eq!(node(result, "go:store.Store")["kind"], "type");
+    assert_eq!(node(result, "go:store.Store")["status"], "modified");
+    assert_eq!(node(result, "go:store.Run")["status"], "context");
+    assert_eq!(node(result, "go:store.Run")["file"], "store/run.go");
+    assert_eq!(node(result, "go:store.Run")["hunks"], json!([]));
+    assert_eq!(node(result, "go:store.Store.Save")["status"], "context");
+    assert_eq!(
+        edges_of_kind(result, "use"),
+        [
+            edge("go:store.Run", "go:store.Limit", "unchanged"),
+            edge("go:store.Store.Save", "go:store.Store", "unchanged"),
+        ]
+    );
+    let steps: Vec<&Value> = result["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| &p["steps"])
+        .collect();
+    assert!(
+        steps.contains(&&json!([["go:store.Run"], ["go:store.Limit"]])),
+        "{}",
+        result["paths"]
+    );
+    assert!(
+        steps.contains(&&json!([["go:store.Store.Save"], ["go:store.Store"]])),
+        "{}",
+        result["paths"]
+    );
+    assert_eq!(
+        ids(&result["uncovered"]),
+        ["go:other.Limit", "go:store.Limit", "go:store.Store"],
+        "context code is not reported as uncovered"
+    );
+    let util_hunk = result["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["file"] == "store/util.go")
+        .unwrap();
+    assert_eq!(
+        result["unassigned"],
+        json!([util_hunk["id"]]),
+        "an import-only change stays out of the nodes"
     );
 }

@@ -8,6 +8,9 @@ pub struct Symbol {
     /// Where the name itself starts: 0-based row and UTF-16 column, as LSP counts.
     pub name_at: (u32, usize),
     pub calls: Vec<Call>,
+    /// Names of types and values a function mentions, for linking it to
+    /// changed types and constants.
+    pub refs: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -32,6 +35,8 @@ pub enum Via {
 pub enum Kind {
     Function,
     Method,
+    Type,
+    Const,
 }
 
 /// Lines are 1-based and inclusive, matching git's hunk ranges.
@@ -77,6 +82,30 @@ fn go(root: Node, path: &str, src: &[u8], out: &mut Vec<Symbol>) {
     let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
     let package = if dir.is_empty() { package_name } else { dir };
     for node in root.named_children(&mut cursor) {
+        if matches!(
+            node.kind(),
+            "type_declaration" | "const_declaration" | "var_declaration"
+        ) {
+            let kind = if node.kind() == "type_declaration" {
+                Kind::Type
+            } else {
+                Kind::Const
+            };
+            let mut specs = node.walk();
+            for spec in node.named_children(&mut specs) {
+                let mut names = spec.walk();
+                for name in spec.children_by_field_name("name", &mut names) {
+                    push_decl(
+                        out,
+                        spec,
+                        name,
+                        format!("{package}.{}", text(name, src)),
+                        kind,
+                    );
+                }
+            }
+            continue;
+        }
         let Some(name) = node.child_by_field_name("name").map(|n| text(n, src)) else {
             continue;
         };
@@ -124,6 +153,20 @@ fn rust(node: Node, src: &[u8], path: &mut Vec<String>, in_impl: bool, out: &mut
                         Kind::Function
                     };
                     push(out, child, full.join("::"), kind, src);
+                }
+                continue;
+            }
+            "struct_item" | "enum_item" | "type_item" | "union_item" | "const_item"
+            | "static_item" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    let mut full = path.clone();
+                    full.push(text(name, src).to_string());
+                    let kind = if matches!(child.kind(), "const_item" | "static_item") {
+                        Kind::Const
+                    } else {
+                        Kind::Type
+                    };
+                    push_decl(out, child, name, full.join("::"), kind);
                 }
                 continue;
             }
@@ -177,7 +220,37 @@ fn push(out: &mut Vec<Symbol>, node: Node, name: String, kind: Kind, src: &[u8])
         end: node.end_position().row as u32 + 1,
         name_at: (at.row as u32, column),
         calls,
+        refs: refs(node, src),
     });
+}
+
+fn push_decl(out: &mut Vec<Symbol>, node: Node, name: Node, full: String, kind: Kind) {
+    let at = name.start_position();
+    out.push(Symbol {
+        name: full,
+        kind,
+        start: node.start_position().row as u32 + 1,
+        end: node.end_position().row as u32 + 1,
+        name_at: (at.row as u32, at.column),
+        calls: Vec::new(),
+        refs: Vec::new(),
+    });
+}
+
+fn refs(node: Node, src: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "type_identifier" | "identifier") {
+            let name = text(n, src);
+            if !out.iter().any(|o| o == name) {
+                out.push(name.to_string());
+            }
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    out
 }
 
 fn collect_calls(node: Node, src: &[u8], out: &mut Vec<Call>) {

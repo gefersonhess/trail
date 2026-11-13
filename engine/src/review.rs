@@ -45,6 +45,10 @@ pub struct Node {
     #[serde(skip)]
     new_name_at: Option<(u32, usize)>,
     #[serde(skip)]
+    old_refs: Vec<String>,
+    #[serde(skip)]
+    new_refs: Vec<String>,
+    #[serde(skip)]
     old_imports: Vec<Import>,
     #[serde(skip)]
     new_imports: Vec<Import>,
@@ -55,6 +59,8 @@ pub struct Edge {
     pub from: String,
     pub to: String,
     pub status: EdgeStatus,
+    /// `call`, or `use` for a function mentioning a type or constant.
+    pub kind: &'static str,
     source: &'static str,
 }
 
@@ -72,6 +78,8 @@ pub enum NodeStatus {
     Added,
     Modified,
     Removed,
+    /// Unchanged code shown because it uses a changed type or constant.
+    Context,
 }
 
 /// Reviews `head` against its merge base with `base`, like `git diff base...head`,
@@ -124,12 +132,14 @@ pub fn open(repo: &Path, base: &str, head: &str, lsp: bool) -> Result<Review, St
             &files_imports,
         ));
     }
+    nodes.extend(context_nodes(repo, &head_commit, &nodes)?);
     diff.hunks.retain(|h| !formatting_only.contains(&h.id));
     let hunks = &diff.hunks;
     diff.files.retain(|f| {
         f.status != Status::Modified || f.binary || hunks.iter().any(|h| h.file == f.path)
     });
     let mut edges = edges(&nodes);
+    edges.extend(use_edges(&nodes));
     if lsp {
         match lsp_edges(repo, &head_commit, &nodes, &edges) {
             Ok(confirmed) => edges = confirmed,
@@ -202,6 +212,8 @@ fn changed_nodes(
                 old_calls: old.map_or_else(Vec::new, |s| s.calls.clone()),
                 new_calls: new.map_or_else(Vec::new, |s| s.calls.clone()),
                 new_name_at: new.map(|s| s.name_at),
+                old_refs: old.map_or_else(Vec::new, |s| s.refs.clone()),
+                new_refs: new.map_or_else(Vec::new, |s| s.refs.clone()),
                 old_imports: imports.0.clone(),
                 new_imports: imports.1.clone(),
             }
@@ -282,6 +294,7 @@ fn edges(nodes: &[Node]) -> Vec<Edge> {
         from: from.to_string(),
         to: to.to_string(),
         status,
+        kind: "call",
         source: "name_match",
     };
     let mut edges: Vec<Edge> = new
@@ -443,7 +456,11 @@ fn lsp_edges(
 ) -> Result<Vec<Edge>, String> {
     let live: Vec<&Node> = nodes
         .iter()
-        .filter(|n| n.status != NodeStatus::Removed && n.new_name_at.is_some())
+        .filter(|n| {
+            n.status != NodeStatus::Removed
+                && n.new_name_at.is_some()
+                && matches!(n.kind, Kind::Function | Kind::Method)
+        })
         .collect();
     let mut languages: Vec<&str> = live.iter().map(|n| parts(&n.id).0).collect();
     languages.sort_unstable();
@@ -539,6 +556,7 @@ fn lsp_edges(
             },
             from: from.clone(),
             to: to.clone(),
+            kind: "call",
             source: "lsp",
         })
         .collect();
@@ -546,8 +564,9 @@ fn lsp_edges(
         edges
             .iter()
             .filter(|e| {
-                e.status == EdgeStatus::Removed
-                    && !head_pairs.iter().any(|(f, t)| *f == e.from && *t == e.to)
+                e.kind == "use"
+                    || (e.status == EdgeStatus::Removed
+                        && !head_pairs.iter().any(|(f, t)| *f == e.from && *t == e.to))
             })
             .map(Edge::copy),
     );
@@ -560,7 +579,151 @@ impl Edge {
             from: self.from.clone(),
             to: self.to.clone(),
             status: self.status,
+            kind: self.kind,
             source: self.source,
         }
     }
+}
+
+/// Links functions to the changed types and constants they mention, on each
+/// side, by name: the same file first, then the same directory, then anywhere.
+fn use_edges(nodes: &[Node]) -> Vec<Edge> {
+    let side = |present: &dyn Fn(&Node) -> bool, refs: &dyn Fn(&Node) -> &[String]| {
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        for user in nodes
+            .iter()
+            .filter(|n| present(n) && matches!(n.kind, Kind::Function | Kind::Method))
+        {
+            let (language, _, _) = parts(&user.id);
+            for name in refs(user) {
+                let named: Vec<&Node> = nodes
+                    .iter()
+                    .filter(|n| {
+                        present(n) && matches!(n.kind, Kind::Type | Kind::Const) && n.id != user.id
+                    })
+                    .filter(|n| {
+                        let (lang, _, short) = parts(&n.id);
+                        lang == language && short == name
+                    })
+                    .collect();
+                let dir = |f: &str| f.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+                let same_file: Vec<&Node> = named
+                    .iter()
+                    .copied()
+                    .filter(|n| n.file == user.file)
+                    .collect();
+                let same_dir: Vec<&Node> = named
+                    .iter()
+                    .copied()
+                    .filter(|n| dir(&n.file) == dir(&user.file))
+                    .collect();
+                let targets = if !same_file.is_empty() {
+                    same_file
+                } else if !same_dir.is_empty() {
+                    same_dir
+                } else {
+                    named
+                };
+                for t in targets {
+                    let pair = (user.id.as_str(), t.id.as_str());
+                    if !pairs.contains(&pair) {
+                        pairs.push(pair);
+                    }
+                }
+            }
+        }
+        pairs
+    };
+    let old = side(&|n| n.status != NodeStatus::Added, &|n| &n.old_refs);
+    let new = side(&|n| n.status != NodeStatus::Removed, &|n| &n.new_refs);
+    let edge = |(from, to): &(&str, &str), status| Edge {
+        from: from.to_string(),
+        to: to.to_string(),
+        status,
+        kind: "use",
+        source: "name_match",
+    };
+    let mut out: Vec<Edge> = new
+        .iter()
+        .map(|e| {
+            edge(
+                e,
+                if old.contains(e) {
+                    EdgeStatus::Unchanged
+                } else {
+                    EdgeStatus::Added
+                },
+            )
+        })
+        .collect();
+    out.extend(
+        old.iter()
+            .filter(|e| !new.contains(e))
+            .map(|e| edge(e, EdgeStatus::Removed)),
+    );
+    out
+}
+
+const MAX_CONTEXT_FILES: usize = 300;
+
+/// Unchanged functions at `head_commit` that mention a changed type or
+/// constant, found with `git grep` and tree-sitter, so a type change shows up
+/// in the path of the code that uses it.
+fn context_nodes(repo: &Path, head_commit: &str, nodes: &[Node]) -> Result<Vec<Node>, String> {
+    let mut out: Vec<Node> = Vec::new();
+    for (language, pattern) in [("go", "*.go"), ("rust", "*.rs")] {
+        let names: Vec<&str> = nodes
+            .iter()
+            .filter(|n| {
+                matches!(n.kind, Kind::Type | Kind::Const) && n.status != NodeStatus::Removed
+            })
+            .filter(|n| parts(&n.id).0 == language)
+            .map(|n| parts(&n.id).2)
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        let mut files: Vec<String> = Vec::new();
+        for name in &names {
+            for f in git::files_containing(repo, head_commit, name, pattern)? {
+                if !files.contains(&f) {
+                    files.push(f);
+                }
+            }
+        }
+        files.truncate(MAX_CONTEXT_FILES);
+        for path in files {
+            let source = git::show(repo, head_commit, &path)?;
+            for (name, symbol) in with_ids(&symbols::extract(language, &path, &source)) {
+                let id = format!("{language}:{name}");
+                let uses_changed = matches!(symbol.kind, Kind::Function | Kind::Method)
+                    && symbol.refs.iter().any(|r| names.contains(&r.as_str()));
+                if !uses_changed || nodes.iter().chain(out.iter()).any(|n| n.id == id) {
+                    continue;
+                }
+                let range = Range {
+                    start: symbol.start,
+                    len: symbol.end - symbol.start + 1,
+                };
+                out.push(Node {
+                    is_test: diff::is_test(&path) || name.split("::").any(|s| s == "tests"),
+                    id,
+                    kind: symbol.kind,
+                    status: NodeStatus::Context,
+                    file: path.clone(),
+                    old: None,
+                    new: Some(range),
+                    hunks: Vec::new(),
+                    old_calls: Vec::new(),
+                    new_calls: Vec::new(),
+                    new_name_at: Some(symbol.name_at),
+                    old_refs: symbol.refs.clone(),
+                    new_refs: symbol.refs.clone(),
+                    old_imports: Vec::new(),
+                    new_imports: Vec::new(),
+                });
+            }
+        }
+    }
+    Ok(out)
 }
