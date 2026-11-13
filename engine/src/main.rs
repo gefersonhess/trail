@@ -1,5 +1,8 @@
 mod diff;
+mod git;
+mod review;
 mod rpc;
+mod symbols;
 
 use std::process::ExitCode;
 

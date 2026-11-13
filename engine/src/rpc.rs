@@ -5,7 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::diff;
+use crate::review;
 
 const PARSE_ERROR: i64 = -32700;
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -82,16 +82,17 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 code: INVALID_PARAMS,
                 message: e.to_string(),
             })?;
-            let diff = diff::compute(&p.repo, &p.base, &p.head).map_err(|message| RpcError {
+            let review = review::open(&p.repo, &p.base, &p.head).map_err(|message| RpcError {
                 code: GIT_ERROR,
                 message,
             })?;
             log(&format!(
-                "open: {} files, {} hunks",
-                diff.files.len(),
-                diff.hunks.len()
+                "open: {} files, {} hunks, {} nodes",
+                review.files.len(),
+                review.hunks.len(),
+                review.nodes.len()
             ));
-            Ok(serde_json::to_value(diff).expect("diff serializes"))
+            Ok(serde_json::to_value(review).expect("review serializes"))
         }
         _ => Err(RpcError {
             code: METHOD_NOT_FOUND,

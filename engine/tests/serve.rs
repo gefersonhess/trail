@@ -112,6 +112,12 @@ fn hunks_of<'a>(result: &'a Value, path: &str) -> Vec<&'a Value> {
         .collect()
 }
 
+fn assert_no_changes(result: &Value) {
+    for key in ["files", "hunks", "nodes"] {
+        assert_eq!(result[key], json!([]), "{key} in {result}");
+    }
+}
+
 #[test]
 fn open_lists_changed_files_and_hunks_since_the_merge_base() {
     let repo = Repo::new();
@@ -220,7 +226,7 @@ fn whitespace_only_changes_are_ignored() {
 
     let response = open(&repo, "main", "feature");
 
-    assert_eq!(response["result"], json!({ "files": [], "hunks": [] }));
+    assert_no_changes(&response["result"]);
 }
 
 #[test]
@@ -257,7 +263,7 @@ fn errors_are_reported_per_request_and_the_server_keeps_going() {
         ]
     );
     assert_eq!(responses[4]["id"], 5);
-    assert_eq!(responses[4]["result"], json!({ "files": [], "hunks": [] }));
+    assert_no_changes(&responses[4]["result"]);
 }
 
 #[test]
@@ -275,4 +281,178 @@ fn malformed_json_gets_a_parse_error() {
 
     assert_eq!(response["id"], Value::Null);
     assert_eq!(response["error"]["code"], -32700);
+}
+
+fn node<'a>(result: &'a Value, id: &str) -> &'a Value {
+    result["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == id)
+        .unwrap_or_else(|| panic!("{id} not in {}", result["nodes"]))
+}
+
+fn node_ids(result: &Value) -> Vec<&str> {
+    let mut ids: Vec<&str> = result["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn go_nodes_are_the_changed_functions_and_methods() {
+    let repo = Repo::new();
+    repo.write(
+        "auth/hash.go",
+        "package auth\n\nimport \"fmt\"\n\nfunc VerifyHash(h string) bool {\n\treturn h != \"\"\n}\n\nfunc Unchanged() {}\n\nfunc Gone() {}\n\ntype Store struct{}\n\nfunc (s *Store) Load() {}\n",
+    );
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "auth/hash.go",
+        "package auth\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc VerifyHash(h string) bool {\n\treturn len(h) == 64\n}\n\nfunc Unchanged() {}\n\ntype Store struct{}\n\nfunc (s *Store) Load() {}\n\nfunc (s *Store) Save() { fmt.Println(strings.ToUpper(\"x\")) }\n",
+    );
+    repo.write(
+        "auth/hash_test.go",
+        "package auth\n\nfunc TestVerifyHash(t *testing.T) {}\n",
+    );
+    repo.commit("feature");
+
+    let response = open(&repo, "main", "feature");
+    let result = &response["result"];
+
+    assert_eq!(
+        node_ids(result),
+        [
+            "go:auth.Gone",
+            "go:auth.Store.Save",
+            "go:auth.TestVerifyHash",
+            "go:auth.VerifyHash"
+        ]
+    );
+    let verify = node(result, "go:auth.VerifyHash");
+    assert_eq!(verify["status"], "modified");
+    assert_eq!(verify["kind"], "function");
+    assert_eq!(verify["file"], "auth/hash.go");
+    assert_eq!(verify["old"], json!({ "start": 5, "len": 3 }));
+    assert_eq!(verify["new"], json!({ "start": 8, "len": 3 }));
+    let changed_line = hunks_of(result, "auth/hash.go")
+        .into_iter()
+        .find(|h| h["new"]["start"] == 9)
+        .unwrap();
+    assert_eq!(verify["hunks"], json!([changed_line["id"]]));
+    assert_eq!(node(result, "go:auth.Gone")["status"], "removed");
+    assert_eq!(node(result, "go:auth.Gone")["new"], Value::Null);
+    let save = node(result, "go:auth.Store.Save");
+    assert_eq!(save["status"], "added");
+    assert_eq!(save["kind"], "method");
+    assert_eq!(save["old"], Value::Null);
+    assert_eq!(node(result, "go:auth.TestVerifyHash")["is_test"], true);
+    assert_eq!(verify["is_test"], false);
+
+    let in_nodes: Vec<&Value> = result["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|n| n["hunks"].as_array().unwrap())
+        .collect();
+    let import_hunk = hunks_of(result, "auth/hash.go")
+        .into_iter()
+        .find(|h| h["new"]["start"] == 3)
+        .unwrap();
+    assert!(
+        !in_nodes.contains(&&import_hunk["id"]),
+        "import change is in no function"
+    );
+}
+
+#[test]
+fn rust_nodes_are_named_by_module_impl_and_inline_mod() {
+    let repo = Repo::new();
+    let base = "pub struct Hasher;\n\nimpl Hasher {\n    pub fn new() -> Self {\n        Hasher\n    }\n}\n\nimpl Default for Hasher {\n    fn default() -> Self {\n        Hasher::new()\n    }\n}\n\npub fn verify(h: &str) -> bool {\n    !h.is_empty()\n}\n\npub fn untouched() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn verifies() {}\n}\n";
+    repo.write("src/auth/hash.rs", base);
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "src/auth/hash.rs",
+        &base
+            .replace("        Hasher\n", "        let h = Hasher;\n        h\n")
+            .replace("Hasher::new()", "Self::new()")
+            .replace("!h.is_empty()", "h.len() == 64")
+            .replace(
+                "fn verifies() {}",
+                "fn verifies() {\n        assert!(super::verify(\"\"));\n    }",
+            ),
+    );
+    repo.write("src/lib.rs", "pub mod auth;\n\npub fn run() {}\n");
+    repo.commit("feature");
+
+    let response = open(&repo, "main", "feature");
+    let result = &response["result"];
+
+    assert_eq!(
+        node_ids(result),
+        [
+            "rust:auth::hash::Hasher::default",
+            "rust:auth::hash::Hasher::new",
+            "rust:auth::hash::tests::verifies",
+            "rust:auth::hash::verify",
+            "rust:run",
+        ]
+    );
+    assert_eq!(
+        node(result, "rust:auth::hash::Hasher::new")["kind"],
+        "method"
+    );
+    assert_eq!(node(result, "rust:auth::hash::verify")["kind"], "function");
+    assert_eq!(
+        node(result, "rust:auth::hash::verify")["status"],
+        "modified"
+    );
+    assert_eq!(
+        node(result, "rust:auth::hash::tests::verifies")["is_test"],
+        true
+    );
+    assert_eq!(node(result, "rust:auth::hash::verify")["is_test"], false);
+    assert_eq!(node(result, "rust:run")["status"], "added");
+}
+
+#[test]
+fn repeated_go_init_functions_get_distinct_ids() {
+    let repo = Repo::new();
+    repo.write(
+        "p.go",
+        "package p\n\nfunc init() {\n\ta()\n}\n\nfunc init() {\n\tb()\n}\n",
+    );
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "p.go",
+        "package p\n\nfunc init() {\n\ta()\n}\n\nfunc init() {\n\tc()\n}\n",
+    );
+    repo.commit("feature");
+
+    let response = open(&repo, "main", "feature");
+
+    assert_eq!(node_ids(&response["result"]), ["go:p.init#2"]);
+}
+
+#[test]
+fn deleting_lines_inside_a_function_marks_it_modified() {
+    let repo = Repo::new();
+    repo.write("p.go", "package p\n\nfunc F() {\n\ta()\n\tb()\n}\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("p.go", "package p\n\nfunc F() {\n\ta()\n}\n");
+    repo.commit("feature");
+
+    let response = open(&repo, "main", "feature");
+    let f = node(&response["result"], "go:p.F");
+
+    assert_eq!(f["status"], "modified");
+    assert_eq!(f["hunks"].as_array().unwrap().len(), 1);
 }

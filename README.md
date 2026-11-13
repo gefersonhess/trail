@@ -21,4 +21,9 @@ cd engine && cargo build
 {"jsonrpc":"2.0","id":1,"method":"open","params":{"repo":"/path/to/repo","base":"main","head":"feature"}}
 ```
 
-`open` diffs `head` against its merge base with `base`, ignoring whitespace, and returns `files` (path, status, language, is_test) and `hunks` (id, file, old and new line ranges). Hunk ids hash the file and changed lines, so they stay the same when other hunks shift.
+`open` diffs `head` against its merge base with `base`, ignoring whitespace, and returns:
+
+- `base_commit` and `head_commit`: the merge base and head that were compared.
+- `files`: path, status, language, whether it is a test.
+- `hunks`: id, file, old and new line ranges. Ids hash the file and changed lines, so they stay the same when other hunks shift.
+- `nodes`: the Go and Rust functions and methods a hunk touches, found with tree-sitter. Each has an id such as `go:auth.Store.Save` or `rust:auth::hash::verify`, a status (added, modified, removed), old and new ranges, and the ids of its hunks.

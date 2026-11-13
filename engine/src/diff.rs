@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
 
 use serde::Serialize;
+
+use crate::git;
 
 #[derive(Serialize)]
 pub struct Diff {
@@ -12,18 +13,18 @@ pub struct Diff {
 
 #[derive(Serialize)]
 pub struct File {
-    path: String,
+    pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    old_path: Option<String>,
-    status: Status,
-    language: Option<&'static str>,
-    is_test: bool,
-    binary: bool,
+    pub old_path: Option<String>,
+    pub status: Status,
+    pub language: Option<&'static str>,
+    pub is_test: bool,
+    pub binary: bool,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
-enum Status {
+pub enum Status {
     Added,
     Modified,
     Deleted,
@@ -32,32 +33,22 @@ enum Status {
 
 #[derive(Serialize)]
 pub struct Hunk {
-    id: String,
-    file: String,
-    old: Range,
-    new: Range,
+    pub id: String,
+    pub file: String,
+    pub old: Range,
+    pub new: Range,
 }
 
 #[derive(Serialize, Clone, Copy)]
-struct Range {
-    start: u32,
-    len: u32,
+pub struct Range {
+    pub start: u32,
+    pub len: u32,
 }
 
-/// Diffs `head` against its merge base with `base`, like `git diff base...head`,
-/// so changes that landed on `base` after the branch point are not shown.
-pub fn compute(repo: &Path, base: &str, head: &str) -> Result<Diff, String> {
-    for rev in [base, head] {
-        if rev.is_empty() || rev.starts_with('-') {
-            return Err(format!("invalid revision {rev:?}"));
-        }
-    }
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args([
-            "-c",
-            "core.quotePath=false",
+pub fn compute(repo: &Path, from: &str, to: &str) -> Result<Diff, String> {
+    let patch = git::run(
+        repo,
+        &[
             "diff",
             "--no-color",
             "--no-ext-diff",
@@ -66,16 +57,12 @@ pub fn compute(repo: &Path, base: &str, head: &str) -> Result<Diff, String> {
             "--find-renames",
             "--ignore-all-space",
             "--unified=0",
-            "--end-of-options",
-        ])
-        .arg(format!("{base}...{head}"))
-        .arg("--")
-        .output()
-        .map_err(|e| format!("running git: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    Ok(parse(&String::from_utf8_lossy(&out.stdout)))
+            from,
+            to,
+            "--",
+        ],
+    )?;
+    Ok(parse(&patch))
 }
 
 #[derive(Default)]
