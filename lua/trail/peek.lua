@@ -3,7 +3,7 @@ local M = {}
 ---Shows a peek match in a hover-style floating window. Pressing the same key
 ---again focuses it so it can be scrolled; moving the cursor closes it.
 ---@param match { path: string, start: integer, lines: string[] }
----@param info { filetype: string, total: integer, changed: boolean }
+---@param info { filetype: string, total: integer, changed: boolean, on_open: fun() }
 function M.show(match, info)
   local title = string.format(" %s:%d ", match.path, match.start)
   if info.changed then
@@ -21,6 +21,51 @@ function M.show(match, info)
     max_height = math.floor(vim.o.lines * 0.5),
   })
   vim.bo[buf].filetype = info.filetype
+  vim.keymap.set("n", "<CR>", function()
+    vim.api.nvim_win_close(win, true)
+    info.on_open()
+  end, { buffer = buf, desc = "Open as a buffer" })
+  return win
+end
+
+local function large_window(buf, title)
+  local width = math.floor(vim.o.columns * 0.9)
+  local height = math.floor(vim.o.lines * 0.85)
+  return vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2) - 1,
+    col = math.floor((vim.o.columns - width) / 2),
+    border = "rounded",
+    title = title,
+    title_pos = "left",
+  })
+end
+
+local function at_line(win, line)
+  vim.api.nvim_win_set_cursor(win, { math.min(line, vim.api.nvim_buf_line_count(0)), 0 })
+  vim.cmd("normal! zvzt")
+end
+
+---Opens a real file in a large floating window at `line`, as a normal buffer
+---so language servers and other plugins attach. `:q` closes it.
+function M.open_file(path, line, title)
+  local win = large_window(vim.api.nvim_create_buf(false, true), title)
+  vim.cmd.edit(vim.fn.fnameescape(path))
+  at_line(win, line)
+  return win
+end
+
+---Opens a match's own lines read-only in a large floating window.
+function M.open_lines(match, filetype, title)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, match.lines)
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = filetype
+  local win = large_window(buf, title)
+  vim.wo[win][0].number = true
   return win
 end
 

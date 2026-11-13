@@ -6,6 +6,7 @@ mod review;
 mod rpc;
 mod sidebyside;
 mod symbols;
+mod worktree;
 
 use std::process::ExitCode;
 

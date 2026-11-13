@@ -220,7 +220,7 @@ local function apply_folds(win, folds)
 end
 
 local function setup_window(win, title, folds, unified, bind)
-  local wo = vim.wo[win]
+  local wo = vim.wo[win][0]
   wo.wrap, wo.number, wo.relativenumber, wo.list = false, false, false, false
   wo.signcolumn, wo.foldcolumn = "no", "0"
   wo.statuscolumn = "%!v:lua.require'trail.diffview'.statuscolumn()"
@@ -374,6 +374,9 @@ function M.show(diff, opts)
     map("K", function()
       opts.on_peek(side_at_cursor())
     end, "Peek the function under the cursor")
+    map("gd", function()
+      opts.on_definition(side_at_cursor())
+    end, "Open the function under the cursor as a buffer")
     map("-", opts.on_back, "Back to trail list")
     map("q", opts.on_back, "Back to trail list")
   end

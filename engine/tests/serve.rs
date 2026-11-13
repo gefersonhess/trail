@@ -1016,3 +1016,88 @@ fn peek_rejects_names_that_are_not_identifiers() {
 
     assert_eq!(response["error"]["code"], 1, "{response}");
 }
+
+fn checkout(repo: &Repo, commit: &str, cache: &Path) -> Value {
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "checkout",
+            "params": { "repo": repo.path(), "commit": commit },
+        })],
+        &[("XDG_CACHE_HOME", cache.to_str().unwrap())],
+    );
+    responses.into_iter().next().unwrap()
+}
+
+fn rev(repo: &Repo, rev: &str) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["rev-parse", rev])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn checkout_uses_the_repository_when_it_is_already_at_the_commit() {
+    let (repo, _) = branch_with(&[("a.go", "package a\n")], &[("a.go", "package b\n")], &[]);
+    let cache = Repo::new();
+
+    let response = checkout(&repo, "feature", cache.path());
+
+    assert_eq!(response["result"]["worktree"], false, "{response}");
+    let path = PathBuf::from(response["result"]["path"].as_str().unwrap());
+    assert_eq!(
+        path.canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn checkout_keeps_one_reusable_worktree_for_other_commits() {
+    let (repo, _) = branch_with(&[("a.go", "package a\n")], &[("a.go", "package b\n")], &[]);
+    repo.git(&["checkout", "-q", "-b", "elsewhere", "main"]);
+    repo.write("other.go", "package a\n");
+    repo.commit("elsewhere");
+    let cache = Repo::new();
+
+    let first = checkout(&repo, "feature", cache.path());
+    let path = PathBuf::from(
+        first["result"]["path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{first}")),
+    );
+    assert_eq!(first["result"]["worktree"], true);
+    assert!(
+        path.starts_with(cache.path().join("trail").join("worktrees")),
+        "{}",
+        path.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(path.join("a.go")).unwrap(),
+        "package b\n"
+    );
+
+    std::fs::write(path.join("a.go"), "edited\n").unwrap();
+    let second = checkout(&repo, &rev(&repo, "main"), cache.path());
+    assert_eq!(second["result"]["path"], first["result"]["path"]);
+    assert_eq!(
+        std::fs::read_to_string(path.join("a.go")).unwrap(),
+        "package a\n"
+    );
+
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["worktree", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(out.stdout).unwrap().lines().count(), 2);
+    assert_eq!(
+        rev(&repo, "HEAD"),
+        rev(&repo, "elsewhere"),
+        "the user's checkout is untouched"
+    );
+}

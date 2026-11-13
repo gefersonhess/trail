@@ -2,6 +2,7 @@
 local root = vim.fn.getcwd()
 vim.opt.rtp:prepend(root)
 vim.cmd.runtime("plugin/trail.lua")
+vim.cmd("filetype on")
 
 local failures = 0
 local function check(cond, msg)
@@ -28,6 +29,9 @@ sh("git add -A && git commit -qm base && git checkout -qb feature")
 write("auth/auth.go", "package auth\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc Login(user string) bool {\n\treturn VerifyHash(user)\n}\n\nfunc VerifyHash(h string) bool {\n\treturn hashOf(h) == h\n}\n\nfunc hashOf(h string) string { return strings.ToLower(h) }\n\nfunc p1() {}\nfunc p2() {}\nfunc p3() {}\nfunc p4() {}\nfunc p5() {}\nfunc p6() {}\nfunc p7() {}\nfunc p8() {}\nfunc p9() {}\nfunc p10() {}\n\nfunc Tidy() {\n\tx()\n}\n\nfunc Squash() { y() }")
 write("auth/auth_test.go", "package auth\n\nfunc TestLogin(t *testing.T) {\n\tLogin(\"x\")\n}")
 sh("git add -A && git commit -qm feature")
+sh("git checkout -q main")
+local cache = repo .. "-cache"
+vim.env.XDG_CACHE_HOME = cache
 
 vim.cmd.cd(repo)
 vim.cmd("Trail main..feature")
@@ -109,6 +113,8 @@ end
 
 check(open_line(verify), "diff opened")
 check(#vim.api.nvim_tabpage_list_wins(0) == 1, "unified is the default layout")
+check(vim.go.statuscolumn == "" and vim.go.winbar == "" and not vim.go.scrollbind and vim.go.foldmethod == "manual" and vim.go.number == false,
+  "the diff's window options do not leak into the user's global settings")
 local uwin, ubuf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
 local urow = vim.api.nvim_win_get_cursor(uwin)[1]
 check(vim.api.nvim_get_current_line() == "func VerifyHash(h string) bool {", "unified: cursor at VerifyHash")
@@ -171,6 +177,70 @@ local gone_call = row_with(ubuf, "\tGone()")
 local peeked_old = gone_call and peek_on(gone_call, "Gone")
 check(peeked_old and peeked_old.lines[1] == "func Gone() {}", "K on a removed line peeks the base version: " .. vim.inspect(peeked_old and peeked_old.lines))
 check(peeked_old and peeked_old.title:match("auth/auth%.go:14"), "base peek title has the base location")
+
+local function float_win()
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_get_config(w).relative ~= "" then
+      return w
+    end
+  end
+end
+local function wait_for(pred)
+  vim.wait(10000, pred)
+  return pred()
+end
+local function title_of(w)
+  return table.concat(vim.tbl_map(function(c)
+    return c[1]
+  end, vim.api.nvim_win_get_config(w).title or {}))
+end
+local function cursor_on(row, word)
+  vim.api.nvim_win_set_cursor(uwin, { row, vim.api.nvim_buf_get_lines(ubuf, row - 1, row, false)[1]:find(word, 1, true) - 1 })
+end
+
+cursor_on(hash_call, "hashOf")
+vim.api.nvim_feedkeys("gd", "x", false)
+check(wait_for(function()
+  local w = float_win()
+  return w and vim.api.nvim_get_current_win() == w and vim.bo[vim.api.nvim_win_get_buf(w)].buftype == ""
+end), "gd opens the definition as a real buffer in a float")
+local worktree_file = vim.fs.normalize(cache .. "/trail/worktrees/" .. vim.fn.resolve(repo):gsub("[/\\:]", "-") .. "/auth/auth.go")
+check(vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == worktree_file, "head definitions open from the review worktree: " .. vim.api.nvim_buf_get_name(0) .. " vs " .. worktree_file)
+check(vim.api.nvim_win_get_cursor(0)[1] == 16 and vim.api.nvim_get_current_line():match("^func hashOf"), "the buffer opens at the function")
+check(vim.bo.filetype == "go", "the opened buffer is a go file")
+check(title_of(0):match("review worktree"), "the title says where the file comes from: " .. title_of(0))
+check(vim.wo.statuscolumn == vim.go.statuscolumn and not vim.wo.scrollbind and not vim.wo.cursorbind and vim.wo.winbar == vim.go.winbar,
+  "the definition window uses the user's settings, not the diff's gutter and scroll binding")
+vim.cmd("q")
+check(vim.api.nvim_get_current_win() == uwin, ":q returns to the diff")
+
+cursor_on(hash_call, "hashOf")
+vim.api.nvim_feedkeys("K", "x", false)
+check(wait_for(function()
+  return float_win() ~= nil
+end), "K opens the peek popup")
+vim.api.nvim_feedkeys("K", "x", false)
+check(wait_for(function()
+  return vim.api.nvim_get_current_win() == float_win()
+end), "K again moves into the popup")
+vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+check(wait_for(function()
+  return vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == worktree_file
+end), "<CR> in the popup opens the definition as a buffer")
+vim.cmd("q")
+
+cursor_on(gone_call, "Gone")
+vim.api.nvim_feedkeys("gd", "x", false)
+check(wait_for(function()
+  return float_win() and vim.api.nvim_get_current_win() == float_win()
+end), "gd on a removed line opens a float")
+check(vim.api.nvim_get_current_line() == "func Gone() {}" and not vim.bo.modifiable, "removed lines open the base version read-only")
+check(title_of(0):match("read%-only"), "the base title says it is read-only")
+check(vim.wo.statuscolumn == vim.go.statuscolumn and not vim.wo.scrollbind and not vim.wo.cursorbind, "the read-only window does not inherit the diff's gutter and scroll binding")
+vim.cmd("q")
+vim.fn.delete(cache, "rf")
+vim.system({ "git", "-C", repo, "worktree", "prune" }):wait()
+
 
 check(vim.fn.foldclosed(row_with(ubuf, "func p6() {}") or 1) > 0, "unified folds long unchanged stretches")
 vim.api.nvim_win_set_cursor(uwin, { 1, 0 })

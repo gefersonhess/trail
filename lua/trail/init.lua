@@ -145,7 +145,7 @@ local function back_to_list()
   end
 end
 
-local function peek_at_cursor(file, params, side)
+local function find_definition(file, params, side, on_found)
   if not file.language then
     vim.notify("trail: peek works in Go and Rust files", vim.log.levels.INFO)
     return
@@ -173,15 +173,41 @@ local function peek_at_cursor(file, params, side)
       vim.notify("trail: no function named " .. name, vim.log.levels.INFO)
       return
     end
-    local changed = vim.iter(review.nodes):any(function(n)
-      local range = old and n.old or n.new
+    on_found(match, #result.matches, vim.filetype.match({ filename = match.path }) or file.language)
+  end)
+end
+
+local function open_definition(match, side, filetype)
+  if side == "old" then
+    peek.open_lines(match, filetype, string.format(" base  %s:%d  ·  read-only, no LSP  ·  :q closes ", match.path, match.start))
+    return
+  end
+  engine.request("checkout", { repo = state.repo, commit = state.review.head_commit }, function(err, checkout)
+    if err then
+      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+      return
+    end
+    local where = checkout.worktree and "review worktree" or "your checkout"
+    peek.open_file(checkout.path .. "/" .. match.path, match.start,
+      string.format(" %s:%d  ·  %s  ·  :q closes ", match.path, match.start, where))
+  end)
+end
+
+local function peek_at_cursor(file, params, side)
+  find_definition(file, params, side, function(match, total, filetype)
+    local range_side = side == "old" and "old" or "new"
+    local changed = vim.iter(state.review.nodes):any(function(n)
+      local range = n[range_side]
       return n.file == match.path and range ~= nil and match.start >= range.start
         and match.start < range.start + range.len
     end)
     peek.show(match, {
-      filetype = vim.filetype.match({ filename = match.path }) or file.language,
-      total = #result.matches,
+      filetype = filetype,
+      total = total,
       changed = changed,
+      on_open = function()
+        open_definition(match, side, filetype)
+      end,
     })
   end)
 end
@@ -216,6 +242,11 @@ local function open_item(item)
       on_back = back_to_list,
       on_peek = function(side)
         peek_at_cursor(file, params, side)
+      end,
+      on_definition = function(side)
+        find_definition(file, params, side, function(match, _, filetype)
+          open_definition(match, side, filetype)
+        end)
       end,
     })
     local target = item.node or item.hunk
