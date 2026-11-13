@@ -58,6 +58,21 @@ check(line_of("^    ~ auth%.Login  auth/auth%.go:8  %(new call%)$") and not line
 check(not text:match("Tidy") and not text:match("Squash"), "reformatted functions are not listed")
 check(line_of("^Not in any function$") and line_of("^    auth/auth%.go:3%-6$"), "import hunk listed")
 
+local function help_lines()
+  vim.api.nvim_feedkeys("?", "x", false)
+  local win = vim.api.nvim_get_current_win()
+  local floating = vim.api.nvim_win_get_config(win).relative ~= ""
+  local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
+  vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "x", false)
+  return floating, table.concat(lines, "\n"), vim.api.nvim_get_current_win() ~= win
+end
+
+local floating, keys, closed = help_lines()
+check(floating, "? opens a floating window in the list")
+check(keys:match("<CR>%s+Open diff") and keys:match("R%s+Refresh") and keys:match("q%s+Quit trail") and keys:match("%?%s+Show keys"), "list keys are listed: " .. keys)
+check(closed and vim.api.nvim_get_current_buf() == buf, "<Esc> closes the keys window and returns to the list")
+check(text:match("%? keys"), "list header hints at ?")
+
 local function open_line(row)
   local tabs = #vim.api.nvim_list_tabpages()
   vim.api.nvim_win_set_cursor(0, { row, 0 })
@@ -100,6 +115,13 @@ check(vim.api.nvim_get_current_line() == "func VerifyHash(h string) bool {", "un
 check(gutter(uwin, urow):match("^%s*10%s+12%s+$"), "unified gutter shows old and new numbers, got " .. gutter(uwin, urow))
 check(vim.wo[uwin].winbar:match("difftastic"), "unified winbar names the diff engine")
 check(vim.bo[ubuf].filetype == "go", "unified go filetype")
+check(vim.wo[uwin].winbar:match("%? keys"), "diff winbar hints at ?")
+local dfloating, dkeys, dclosed = help_lines()
+check(dfloating and dclosed, "? opens and closes a keys window in the diff")
+for _, pattern in ipairs({ "%- q%s+Back to trail list", "%[h%s+Previous change", "%]h%s+Next change", "o%s+Show or fold unchanged code", "t%s+Toggle unified and side%-by%-side" }) do
+  check(dkeys:match(pattern), "diff keys list " .. pattern .. ": " .. dkeys)
+end
+check(vim.api.nvim_get_current_win() == uwin, "focus returns to the diff")
 local old_login, new_login = row_with(ubuf, "func Login(u string) bool {"), row_with(ubuf, "func Login(user string) bool {")
 check(old_login and new_login and old_login < new_login, "old lines come before new lines")
 check(old_login and gutter(uwin, old_login):match("^%s*5%s+%- $"), "removed line has old number and -, got " .. gutter(uwin, old_login or 1))

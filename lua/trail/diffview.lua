@@ -1,3 +1,5 @@
+local help = require("trail.help")
+
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("trail.diffview")
@@ -222,7 +224,7 @@ local function setup_window(win, title, folds, unified, bind)
   wo.wrap, wo.number, wo.relativenumber, wo.list = false, false, false, false
   wo.signcolumn, wo.foldcolumn = "no", "0"
   wo.statuscolumn = "%!v:lua.require'trail.diffview'.statuscolumn()"
-  wo.winbar = (title:gsub("%%", "%%%%"))
+  wo.winbar = title:gsub("%%", "%%%%") .. "%=%#Comment#? keys %*"
   wo.scrollbind, wo.cursorbind = bind, bind
   wo.foldmethod, wo.foldenable, wo.foldlevel = "manual", true, 0
   apply_folds(win, folds)
@@ -359,6 +361,7 @@ function M.show(diff, opts)
     end, "Previous change")
     map("t", toggle, "Toggle unified and side-by-side")
     map("o", toggle_folds, "Show or fold unchanged code")
+    map("?", help.show, "Show keys")
     map("-", opts.on_back, "Back to trail list")
     map("q", opts.on_back, "Back to trail list")
   end

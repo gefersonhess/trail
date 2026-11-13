@@ -1,5 +1,6 @@
 local engine = require("trail.engine")
 local diffview = require("trail.diffview")
+local help = require("trail.help")
 
 local M = {}
 
@@ -120,7 +121,7 @@ local function build_lines(review)
   end
   add(string.format("%s · %s · %s outside functions", count(#review.nodes, "function"),
     count(#review.edges, "call"), count(#loose, "hunk")), nil, { { "Comment", 0, -1 } })
-  add("Calls are matched by name and may be wrong.  <CR> diff  R refresh  q quit", nil, { { "Comment", 0, -1 } })
+  add("Calls are matched by name and may be wrong.  ? keys", nil, { { "Comment", 0, -1 } })
 
   section("Code", false)
   section("Tests", true)
@@ -232,6 +233,7 @@ function M.open(arg)
     end
   end, { buffer = buf, desc = "Open diff" })
   vim.keymap.set("n", "R", load, { buffer = buf, desc = "Refresh" })
+  vim.keymap.set("n", "?", help.show, { buffer = buf, desc = "Show keys" })
   vim.keymap.set("n", "q", function()
     if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
       vim.api.nvim_set_current_tabpage(state.diff_tab)
