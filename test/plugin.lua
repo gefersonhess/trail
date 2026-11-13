@@ -52,15 +52,15 @@ local function line_of(pattern)
   end
 end
 
-local code, login, verify, hash, gone = line_of("^Code$"), line_of("^  ~ auth%.Login"),
-  line_of("^    ~ auth%.VerifyHash"), line_of("^      %+ auth%.hashOf"), line_of("^    %- auth%.Gone")
-check(code and login and verify and hash and gone, "call tree shape")
-check(text:match("auth%.hashOf  auth/auth%.go:16  %(new call%)"), "added edge note")
-check(text:match("auth%.Gone  auth/auth%.go:14  %(call removed%)"), "removed edge note")
-check(line_of("^Tests$") and line_of("^  %+ auth%.TestLogin"), "tests section")
-check(line_of("^    ~ auth%.Login  auth/auth%.go:8  %(new call%)$") and not line_of("^      ~ auth%.VerifyHash"), "test callee shown as a leaf")
+check(line_of("^1 path · 5 functions · 1 test file · 1 hunk not in any path$"), "summary line")
+check(line_of("^  1  auth%.Login  4 steps$"), "path listed with its step count")
+check(line_of("^     auth/auth_test%.go  1 test · covers 3 functions$"), "test file listed with what it covers")
+check(line_of("^     auth/auth%.go:3%-6$"), "import hunk listed as not in any path")
+check(not text:match("no test change covers"), "every changed function is covered by the test")
+check(line_of("^── auth%.Login") and line_of("^  ~ auth%.Login  ") and line_of("^  ├─ ~ auth%.VerifyHash")
+  and line_of("^  │  └─ %+ auth%.hashOf .*%(new call%)") and line_of("^  └─ %- auth%.Gone .*%(call removed%)"),
+  "preview shows the path's call graph")
 check(not text:match("Tidy") and not text:match("Squash"), "reformatted functions are not listed")
-check(line_of("^Not in any function$") and line_of("^    auth/auth%.go:3%-6$"), "import hunk listed")
 
 local function help_lines()
   vim.api.nvim_feedkeys("?", "x", false)
@@ -73,19 +73,37 @@ end
 
 local floating, keys, closed = help_lines()
 check(floating, "? opens a floating window in the list")
-check(keys:match("<CR>%s+Open diff") and keys:match("R%s+Refresh") and keys:match("q%s+Quit trail") and keys:match("%?%s+Show keys"), "list keys are listed: " .. keys)
+check(keys:match("<CR>%s+Enter the path") and keys:match("R%s+Refresh") and keys:match("q%s+Quit trail") and keys:match("%?%s+Show keys"), "list keys are listed: " .. keys)
 check(closed and vim.api.nvim_get_current_buf() == buf, "<Esc> closes the keys window and returns to the list")
 check(text:match("%? keys"), "list header hints at ?")
 
-local function open_line(row)
-  local tabs = #vim.api.nvim_list_tabpages()
-  vim.api.nvim_win_set_cursor(0, { row, 0 })
-  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+local function panes()
+  return vim.tbl_filter(function(w)
+    return vim.w[w].trail_pane
+  end, vim.api.nvim_tabpage_list_wins(0))
+end
+local function wait_diff_line(text)
   return vim.wait(10000, function()
-    return vim.api.nvim_buf_get_name(0):match("^trail://") and vim.api.nvim_get_current_buf() ~= buf
-      and #vim.api.nvim_list_tabpages() >= math.min(tabs + 1, 3)
+    return vim.api.nvim_buf_get_name(0):match("^trail://diff/") and vim.api.nvim_get_current_line() == text
   end)
 end
+local function graph_buf()
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local b = vim.api.nvim_win_get_buf(w)
+    if vim.api.nvim_buf_get_name(b):match("trail://graph$") then
+      return b, w
+    end
+  end
+end
+local function current_step_line()
+  local b = graph_buf()
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+    if l:match("^▶") then
+      return l
+    end
+  end
+end
+
 local function row_with(b, text)
   for i, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
     if l == text then
@@ -111,8 +129,17 @@ local function has_span(b, row, hl, from, to)
   end)
 end
 
-check(open_line(verify), "diff opened")
-check(#vim.api.nvim_tabpage_list_wins(0) == 1, "unified is the default layout")
+vim.api.nvim_feedkeys("1", "x", false)
+check(wait_diff_line("func Login(user string) bool {"), "1 enters the first path at its first step")
+check(graph_buf(), "the path view shows the call graph")
+local gbuf, gwin = graph_buf()
+check(vim.api.nvim_buf_get_lines(gbuf, 0, 1, false)[1]:match("auth%.Login  ·  step 1 of 4"), "graph header shows the step")
+check(current_step_line():match("^▶ ~ auth%.Login"), "the current step is marked in the graph")
+
+vim.api.nvim_feedkeys("]s", "x", false)
+check(wait_diff_line("func VerifyHash(h string) bool {"), "]s moves to the next step")
+check(current_step_line():match("auth%.VerifyHash"), "the graph follows the step")
+check(#panes() == 1, "unified is the default layout")
 check(vim.go.statuscolumn == "" and vim.go.winbar == "" and not vim.go.scrollbind and vim.go.foldmethod == "manual" and vim.go.number == false,
   "the diff's window options do not leak into the user's global settings")
 local uwin, ubuf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
@@ -124,7 +151,7 @@ check(vim.bo[ubuf].filetype == "go", "unified go filetype")
 check(vim.wo[uwin].winbar:match("%? keys"), "diff winbar hints at ?")
 local dfloating, dkeys, dclosed = help_lines()
 check(dfloating and dclosed, "? opens and closes a keys window in the diff")
-for _, pattern in ipairs({ "%- q%s+Back to trail list", "%[h%s+Previous change", "%]h%s+Next change", "o%s+Show or fold unchanged code", "t%s+Toggle unified and side%-by%-side" }) do
+for _, pattern in ipairs({ "%- q%s+Back to the paths screen", "%]s%s+Next step", "%[s%s+Previous step", "gp%s+Switch path", "%[h%s+Previous change", "%]h%s+Next change", "o%s+Show or fold unchanged code", "t%s+Toggle unified and side%-by%-side" }) do
   check(dkeys:match(pattern), "diff keys list " .. pattern .. ": " .. dkeys)
 end
 check(vim.api.nvim_get_current_win() == uwin, "focus returns to the diff")
@@ -260,7 +287,7 @@ check(vim.fn.foldclosed(p6_row) > 0, "o folds unchanged code again")
 vim.api.nvim_win_set_cursor(uwin, { urow, 0 })
 
 vim.api.nvim_feedkeys("t", "x", false)
-local wins = vim.api.nvim_tabpage_list_wins(0)
+local wins = panes()
 check(#wins == 2, "t switches to side by side, got " .. #wins .. " windows")
 local lwin, rwin = wins[1], wins[2]
 local lbuf, rbuf = vim.api.nvim_win_get_buf(lwin), vim.api.nvim_win_get_buf(rwin)
@@ -310,27 +337,88 @@ local first_change = vim.api.nvim_win_get_cursor(rwin)[1]
 check(first_change > 1 and first_change <= strings_row, "]h jumps to the first change, got " .. first_change)
 
 vim.api.nvim_feedkeys("o", "x", false)
-check(vim.iter(vim.api.nvim_tabpage_list_wins(0)):all(function(w)
+check(vim.iter(panes()):all(function(w)
   return vim.api.nvim_win_call(w, function()
     return vim.fn.foldlevel(p6) == 0
   end)
 end), "o shows the whole file on both sides")
 vim.api.nvim_feedkeys("t", "x", false)
-check(#vim.api.nvim_tabpage_list_wins(0) == 1, "t switches back to unified")
+check(#panes() == 1, "t switches back to unified")
 check(vim.api.nvim_get_current_line() == "import (", "toggling keeps the cursor on the same line, got " .. vim.api.nvim_get_current_line())
 
 vim.api.nvim_feedkeys("-", "x", false)
-check(vim.api.nvim_get_current_buf() == buf, "- returns to the list")
+check(vim.api.nvim_get_current_buf() == buf, "- returns to the paths screen")
 
-check(open_line(gone), "diff for removed function opened")
+vim.api.nvim_feedkeys("1", "x", false)
+vim.wait(10000, function()
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/") ~= nil
+end)
+gbuf, gwin = graph_buf()
+vim.api.nvim_set_current_win(gwin)
+for i, l in ipairs(vim.api.nvim_buf_get_lines(gbuf, 0, -1, false)) do
+  if l:match("auth%.Gone") then
+    vim.api.nvim_win_set_cursor(gwin, { i, 0 })
+  end
+end
+vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+check(vim.wait(10000, function()
+  return current_step_line():match("auth%.Gone") and vim.api.nvim_get_current_win() == gwin
+end), "<CR> on a graph node shows that step and keeps focus in the graph")
+check(vim.wait(10000, function()
+  local w = panes()[1]
+  return w and vim.api.nvim_win_call(w, function()
+    return vim.api.nvim_get_current_line() == "func Gone() {}"
+  end)
+end), "the diff below follows the graph to the removed function")
+check(vim.api.nvim_get_current_win() == gwin, "focus stays in the graph after the diff updates")
+vim.api.nvim_set_current_win(panes()[1])
 check(vim.fn.foldlevel(row_with(0, "func p6() {}") or 1) == 0, "the whole-file choice is kept for the next file")
-check(#vim.api.nvim_tabpage_list_wins(0) == 1, "the last chosen layout is kept for the next file")
+check(#panes() == 1, "the last chosen layout is kept for the next file")
 check(vim.api.nvim_get_current_line() == "func Gone() {}", "cursor at Gone")
 check(gutter(0, vim.api.nvim_win_get_cursor(0)[1]):match("^%s*14%s+%- $"), "removed function line is marked -")
 local tidy_body = row_with(0, "\tx()")
 check(tidy_body and not gutter(0, tidy_body):match("[%+%-]"), "reformatted code shows as context, got " .. gutter(0, tidy_body or 1))
 check(row_with(0, "func Squash() { y() }") and not row_with(0, "\ty()"), "code squashed by reformatting shows only its new layout")
-check(#vim.api.nvim_list_tabpages() == 3, "diff tab is reused, got " .. #vim.api.nvim_list_tabpages())
+check(#vim.api.nvim_list_tabpages() == 3, "the path tab is reused, got " .. #vim.api.nvim_list_tabpages())
+
+vim.api.nvim_set_current_win(gwin)
+vim.api.nvim_feedkeys("p", "x", false)
+check(vim.wait(10000, function()
+  return current_step_line():match("auth%.hashOf")
+end), "p in the graph moves to the previous step")
+vim.api.nvim_feedkeys("n", "x", false)
+check(vim.wait(10000, function()
+  return current_step_line():match("auth%.Gone")
+end), "n in the graph moves to the next step")
+
+local select_items
+vim.ui.select = function(items, opts, on_choice)
+  select_items = vim.tbl_map(opts.format_item, items)
+  on_choice(items[2])
+end
+vim.api.nvim_feedkeys("gp", "x", false)
+check(select_items and select_items[1]:match("auth%.Login") and select_items[2]:match("auth/auth_test%.go")
+  and select_items[3]:match("Not in any path"), "gp offers every path: " .. vim.inspect(select_items))
+check(vim.wait(10000, function()
+  return vim.api.nvim_get_current_line() == "func TestLogin(t *testing.T) {"
+end), "choosing a path in gp opens it")
+
+vim.api.nvim_feedkeys("-", "x", false)
+vim.api.nvim_win_set_cursor(0, { line_of("^     auth/auth%.go:3%-6$"), 0 })
+vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+check(vim.wait(10000, function()
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/") and vim.api.nvim_get_current_line() == "import ("
+end), "<CR> on a loose hunk opens it")
+check(vim.api.nvim_buf_get_lines(graph_buf(), 0, 1, false)[1]:match("Not in any path"), "loose hunks open as their own path")
+
+vim.o.lines = 12
+vim.api.nvim_feedkeys("-1", "x", false)
+check(vim.wait(10000, function()
+  local _, w = graph_buf()
+  return w and current_step_line():match("auth%.Login")
+end), "back to the first path")
+local _, small_gwin = graph_buf()
+check(vim.api.nvim_win_get_height(small_gwin) <= 4, "the graph takes at most a third of the screen, got " .. vim.api.nvim_win_get_height(small_gwin))
 
 vim.fn.delete(repo, "rf")
 if failures > 0 then

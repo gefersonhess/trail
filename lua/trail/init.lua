@@ -2,15 +2,14 @@ local engine = require("trail.engine")
 local diffview = require("trail.diffview")
 local help = require("trail.help")
 local peek = require("trail.peek")
+local graph = require("trail.graph")
+local pathview = require("trail.pathview")
 
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("trail")
+local ns_preview = vim.api.nvim_create_namespace("trail.preview")
 local state = {}
-
-local signs = { added = "+", modified = "~", removed = "-" }
-local sign_hl = { added = "DiffAdd", modified = "DiffChange", removed = "DiffDelete" }
-local edge_note = { added = "new call", removed = "call removed" }
 
 local function parse_range(arg)
   local base, head = arg:match("^(.-)%.%.%.?(.*)$")
@@ -20,126 +19,64 @@ local function parse_range(arg)
   return base, head ~= "" and head or "HEAD"
 end
 
-local function short_name(node)
-  return (node.id:gsub("^%w+:", ""))
+local function count(n, word)
+  return n .. " " .. word .. (n == 1 and "" or "s")
 end
 
-local function build_lines(review)
-  local by_id, callees, called = {}, {}, {}
-  for _, n in ipairs(review.nodes) do
-    by_id[n.id] = n
-    callees[n.id] = {}
-  end
-  for _, e in ipairs(review.edges) do
-    local from, to = by_id[e.from], by_id[e.to]
-    if from and to then
-      table.insert(callees[e.from], { node = to, status = e.status })
-      if from.is_test == to.is_test then
-        called[e.to] = true
-      end
-    end
-  end
-
-  local lines, items, hls = {}, {}, {}
-  local function add(text, item, hl)
-    table.insert(lines, text)
-    items[#lines] = item
-    if hl then
-      for _, h in ipairs(hl) do
-        table.insert(hls, { #lines - 1, h[1], h[2], h[3] })
-      end
-    end
-  end
-
-  local expanded = {}
-  local function walk(node, depth, edge, in_tests)
-    local indent = string.rep("  ", depth + 1)
-    local sign = signs[node.status]
-    local range = node.new or node.old
-    local loc = string.format("%s:%d", node.file, range.start)
-    local note = edge and edge_note[edge.status] or nil
-    local leaf = expanded[node.id] or (in_tests and not node.is_test)
-    local text = string.format("%s%s %s  %s", indent, sign, short_name(node), loc)
-    local loc_col = #text - #loc
-    if note then
-      text = text .. "  (" .. note .. ")"
-    end
-    if expanded[node.id] and #callees[node.id] > 0 and not (in_tests and not node.is_test) then
-      text = text .. "  ↑ see above"
-    end
-    add(text, { node = node }, {
-      { sign_hl[node.status], #indent, #indent + 1 },
-      { "Comment", loc_col, #text },
-    })
-    if leaf then
-      return
-    end
-    expanded[node.id] = true
-    for _, c in ipairs(callees[node.id]) do
-      walk(c.node, depth + 1, c, in_tests)
-    end
-  end
-
-  local function section(title, want_tests)
-    local roots = {}
-    for _, n in ipairs(review.nodes) do
-      if n.is_test == want_tests and not called[n.id] then
-        table.insert(roots, n)
-      end
-    end
-    if #roots == 0 and not vim.iter(review.nodes):any(function(n)
-      return n.is_test == want_tests
-    end) then
-      return
-    end
-    add("")
-    add(title, nil, { { "Title", 0, #title } })
-    for _, n in ipairs(roots) do
-      walk(n, 0, nil, want_tests)
-    end
-    for _, n in ipairs(review.nodes) do
-      if n.is_test == want_tests and not expanded[n.id] then
-        walk(n, 0, nil, want_tests)
-      end
-    end
-  end
-
-  local in_node = {}
-  for _, n in ipairs(review.nodes) do
-    for _, h in ipairs(n.hunks) do
-      in_node[h] = true
-    end
-  end
-  local loose = vim.tbl_filter(function(h)
-    return not in_node[h.id]
-  end, review.hunks)
-
-  local header = string.format("trail  %s..%s  (%s → %s)", state.base, state.head,
-    review.base_commit:sub(1, 7), review.head_commit:sub(1, 7))
-  add(header, nil, { { "Title", 0, #header } })
-  local function count(n, word)
-    return n .. " " .. word .. (n == 1 and "" or "s")
-  end
-  add(string.format("%s · %s · %s outside functions", count(#review.nodes, "function"),
-    count(#review.edges, "call"), count(#loose, "hunk")), nil, { { "Comment", 0, -1 } })
-  add("Calls are matched by name and may be wrong.  ? keys", nil, { { "Comment", 0, -1 } })
-
-  section("Code", false)
-  section("Tests", true)
-
-  if #loose > 0 then
-    add("")
-    add("Not in any function", nil, { { "Title", 0, 19 } })
-    for _, h in ipairs(loose) do
-      local side = h.new.len > 0 and h.new or h.old
-      local text = string.format("    %s:%d-%d", h.file, side.start, side.start + math.max(side.len, 1) - 1)
-      add(text, { hunk = h }, { { "Comment", 0, #text } })
-    end
-  end
-  return lines, items, hls
+local function hunk_label(h)
+  local side = h.new.len > 0 and h.new or h.old
+  return string.format("%s:%d-%d", h.file, side.start, side.start + math.max(side.len, 1) - 1)
 end
 
-local function back_to_list()
+---Turns the engine's paths, tests and loose hunks into paths the path view can walk.
+local function build_paths(review)
+  local nodes, hunks = {}, {}
+  for _, n in ipairs(review.nodes) do
+    nodes[n.id] = n
+  end
+  for _, h in ipairs(review.hunks) do
+    hunks[h.id] = h
+  end
+  local code = {}
+  for _, p in ipairs(review.paths) do
+    local steps = {}
+    for _, step in ipairs(p.steps) do
+      table.insert(steps, { node = nodes[step[1]] })
+    end
+    table.insert(code, { id = p.id, title = p.title, kind = "code", entries = p.entries, steps = steps })
+  end
+  local tests = {}
+  for _, t in ipairs(review.tests) do
+    local steps, in_nodes = {}, {}
+    for _, id in ipairs(t.nodes) do
+      table.insert(steps, { node = nodes[id] })
+      for _, h in ipairs(nodes[id].hunks) do
+        in_nodes[h] = true
+      end
+    end
+    for _, id in ipairs(t.hunks) do
+      if not in_nodes[id] then
+        table.insert(steps, { hunk = hunks[id] })
+      end
+    end
+    table.insert(tests, { id = "tests:" .. t.file, title = t.file, kind = "tests", steps = steps, test = t })
+  end
+  local loose = { id = "loose", title = "Not in any path", kind = "loose", steps = {} }
+  for _, id in ipairs(review.unassigned) do
+    table.insert(loose.steps, { hunk = hunks[id] })
+  end
+  return code, tests, loose
+end
+
+local function all_paths()
+  local list = vim.list_extend(vim.list_extend({}, state.code), state.tests)
+  if #state.loose.steps > 0 then
+    table.insert(list, state.loose)
+  end
+  return list
+end
+
+local function home()
   if vim.api.nvim_tabpage_is_valid(state.list_tab) then
     vim.api.nvim_set_current_tabpage(state.list_tab)
   end
@@ -212,11 +149,11 @@ local function peek_at_cursor(file, params, side)
   end)
 end
 
-local function open_item(item)
+---Shows the diff of a node's or hunk's file in `win`, focused on it.
+local function show_target(target, is_node, win, keys, after)
   local review = state.review
-  local path = item.node and item.node.file or item.hunk.file
   local file = vim.iter(review.files):find(function(f)
-    return f.path == path
+    return f.path == target.file
   end)
   local params = {
     repo = state.repo,
@@ -230,16 +167,15 @@ local function open_item(item)
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
       return
     end
-    if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
-      vim.api.nvim_set_current_tabpage(state.diff_tab)
-      vim.cmd("silent! tabclose")
+    if not vim.api.nvim_win_is_valid(win) then
+      return
     end
-    vim.cmd("tabnew")
-    state.diff_tab = vim.api.nvim_get_current_tabpage()
     local view = diffview.show(diff, {
+      win = win,
+      keys = keys,
       old_path = params.old_path,
       new_path = params.new_path,
-      on_back = back_to_list,
+      on_back = home,
       on_peek = function(side)
         peek_at_cursor(file, params, side)
       end,
@@ -249,24 +185,164 @@ local function open_item(item)
         end)
       end,
     })
-    local target = item.node or item.hunk
-    local on_new = target.new and (item.node or target.new.len > 0)
+    local on_new = target.new and (is_node or target.new.len > 0)
     view.focus(on_new and "new" or "old", math.max((on_new and target.new or target.old).start, 1))
+    if after then
+      after()
+    end
   end)
+end
+
+local function path_context()
+  return {
+    review = function()
+      return state.review
+    end,
+    show_target = show_target,
+    home = home,
+    switch_path = function()
+      M.switch_path()
+    end,
+    done_steps = function()
+      return {}
+    end,
+    on_step = function() end,
+  }
+end
+
+local function enter(path, step)
+  if #path.steps == 0 then
+    return
+  end
+  pathview.open(path_context(), path, step)
+end
+
+function M.switch_path()
+  local list = all_paths()
+  vim.ui.select(list, {
+    prompt = "Path",
+    format_item = function(p)
+      return string.format("%s  (%s)", p.title, count(#p.steps, "step"))
+    end,
+  }, function(choice)
+    if choice then
+      enter(choice, 1)
+    end
+  end)
+end
+
+local function build_home(review)
+  local lines, items, hls = {}, {}, {}
+  local function add(text, item, hl)
+    table.insert(lines, text)
+    items[#lines] = item
+    for _, h in ipairs(hl or {}) do
+      table.insert(hls, { #lines - 1, h[2], h[3], h[1] })
+    end
+  end
+  local header = string.format("trail  %s..%s  (%s → %s)", state.base, state.head,
+    review.base_commit:sub(1, 7), review.head_commit:sub(1, 7))
+  add(header, nil, { { "Title", 0, #header } })
+  add(string.format("%s · %s · %s · %s not in any path", count(#state.code, "path"), count(#review.nodes, "function"),
+    count(#state.tests, "test file"), count(#state.loose.steps, "hunk")), nil, { { "Comment", 0, -1 } })
+  local uncertain = vim.iter(review.edges):any(function(e)
+    return e.source == "name_match"
+  end)
+  add((uncertain and "Calls matched by name may be wrong.  " or "") .. "<CR> or 1-9 enters a path  ·  ? keys", nil,
+    { { "Comment", 0, -1 } })
+
+  add("")
+  add("Paths", nil, { { "Title", 0, 5 } })
+  local title_width = 0
+  for _, p in ipairs(state.code) do
+    title_width = math.max(title_width, vim.fn.strdisplaywidth(p.title))
+  end
+  for i, p in ipairs(state.code) do
+    local number = i <= 9 and tostring(i) or " "
+    local text = string.format("  %s  %s%s  %s", number, p.title, string.rep(" ", title_width - vim.fn.strdisplaywidth(p.title)),
+      count(#p.steps, "step"))
+    add(text, { path = p }, { { "Number", 2, 3 }, { "Comment", 5 + #p.title + title_width - vim.fn.strdisplaywidth(p.title) + 2, -1 } })
+  end
+  if #state.code == 0 then
+    add("  (no changed functions)", nil, { { "Comment", 0, -1 } })
+  end
+
+  if #state.tests > 0 or #review.uncovered > 0 then
+    add("")
+    add("Tests", nil, { { "Title", 0, 5 } })
+    for _, t in ipairs(state.tests) do
+      local text = string.format("     %s  %s · covers %s", t.title, count(#t.test.nodes, "test"),
+        count(#t.test.covers, "function"))
+      add(text, { path = t }, { { "Comment", 5 + #t.title, -1 } })
+    end
+    if #review.uncovered > 0 then
+      local names = vim.tbl_map(function(id)
+        return (id:gsub("^%w+:", ""))
+      end, review.uncovered)
+      local text = "  !  no test change covers " .. table.concat(names, ", ")
+      add(text, nil, { { "WarningMsg", 2, 3 }, { "Comment", 5, -1 } })
+    end
+  end
+
+  if #state.loose.steps > 0 then
+    add("")
+    add("Not in any path", nil, { { "Title", 0, 15 } })
+    for i, step in ipairs(state.loose.steps) do
+      local text = "     " .. hunk_label(step.hunk)
+      add(text, { path = state.loose, step = i }, { { "Comment", 0, -1 } })
+    end
+  end
+  return lines, items, hls
+end
+
+local function render_preview()
+  local buf = state.list_buf
+  local row = vim.api.nvim_win_get_cursor(vim.fn.bufwinid(buf))[1]
+  local item = state.items[row] or {}
+  local path = item.path or state.code[1]
+  if path == state.preview_path and state.preview_start then
+    return
+  end
+  state.preview_path = path
+  local lines, hls = {}, {}
+  if path then
+    local graph_lines, graph_hls = graph.render(path, state.review, {})
+    local title = "── " .. path.title .. " "
+    lines = { "", title .. string.rep("─", math.max(0, 60 - vim.fn.strdisplaywidth(title))) }
+    vim.list_extend(lines, graph_lines)
+    table.insert(hls, { 1, 0, -1, "Comment" })
+    for _, h in ipairs(graph_hls) do
+      table.insert(hls, { h[1] + 2, h[2], h[3], h[4] })
+    end
+  end
+  local start = state.preview_start
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, start, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.api.nvim_buf_clear_namespace(buf, ns_preview, 0, -1)
+  for _, h in ipairs(hls) do
+    local line = lines[h[1] + 1]
+    vim.api.nvim_buf_set_extmark(buf, ns_preview, start + h[1], h[2], { end_col = h[3] < 0 and #line or h[3], hl_group = h[4] })
+  end
 end
 
 local function render()
   local buf = state.list_buf
-  local lines, items, hls = build_lines(state.review)
+  state.code, state.tests, state.loose = build_paths(state.review)
+  local lines, items, hls = build_home(state.review)
   state.items = items
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
   for _, h in ipairs(hls) do
-    local end_col = h[4] < 0 and #lines[h[1] + 1] or h[4]
-    vim.api.nvim_buf_set_extmark(buf, ns, h[1], h[3], { end_col = end_col, hl_group = h[2] })
+    local end_col = h[3] < 0 and #lines[h[1] + 1] or h[3]
+    vim.api.nvim_buf_set_extmark(buf, ns, h[1], h[2], { end_col = end_col, hl_group = h[4] })
   end
+  state.preview_start = #lines
+  state.preview_path = nil
+  render_preview()
+  pathview.refresh_graph()
 end
 
 local function load()
@@ -302,17 +378,37 @@ function M.open(arg)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "trail: loading " .. arg .. " ..." })
   vim.bo[buf].modifiable = false
 
-  vim.keymap.set("n", "<CR>", function()
+  local function map(lhs, fn, desc)
+    vim.keymap.set("n", lhs, fn, { buffer = buf, desc = desc, nowait = true })
+  end
+  map("<CR>", function()
     local item = state.items and state.items[vim.api.nvim_win_get_cursor(0)[1]]
-    if item then
-      open_item(item)
+    if item and item.path then
+      enter(item.path, item.step or 1)
     end
-  end, { buffer = buf, desc = "Open diff" })
-  vim.keymap.set("n", "R", load, { buffer = buf, desc = "Refresh" })
-  vim.keymap.set("n", "?", help.show, { buffer = buf, desc = "Show keys" })
-  vim.keymap.set("n", "q", function()
-    if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
-      vim.api.nvim_set_current_tabpage(state.diff_tab)
+  end, "Enter the path")
+  for n = 1, 9 do
+    vim.keymap.set("n", tostring(n), function()
+      if state.code and state.code[n] then
+        enter(state.code[n], 1)
+      end
+    end, { buffer = buf, nowait = true })
+  end
+  map("gp", M.switch_path, "Switch path")
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    buffer = buf,
+    callback = function()
+      if state.items and state.preview_start then
+        render_preview()
+      end
+    end,
+  })
+  map("R", load, "Refresh")
+  map("?", help.show, "Show keys")
+  map("q", function()
+    local path_tab = pathview.tab()
+    if path_tab and vim.api.nvim_tabpage_is_valid(path_tab) then
+      vim.api.nvim_set_current_tabpage(path_tab)
       vim.cmd("tabclose")
     end
     vim.api.nvim_set_current_tabpage(state.list_tab)
@@ -321,7 +417,7 @@ function M.open(arg)
     else
       vim.api.nvim_buf_delete(buf, { force = true })
     end
-  end, { buffer = buf, desc = "Quit trail" })
+  end, "Quit trail")
 
   load()
 end

@@ -251,9 +251,17 @@ function M.show(diff, opts)
   local old_ch, new_ch = by_line(diff.old_changes), by_line(diff.new_changes)
   local old_name = opts.old_path or "(added)"
   local new_name = opts.new_path or "(deleted)"
-  vim.cmd("silent only")
-  local first_win = vim.api.nvim_get_current_win()
-  local placeholder = vim.api.nvim_get_current_buf()
+  local first_win = opts.win or vim.api.nvim_get_current_win()
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(first_win))) do
+    if w ~= first_win and vim.w[w].trail_pane then
+      vim.api.nvim_win_close(w, true)
+    end
+  end
+  vim.api.nvim_set_current_win(first_win)
+  vim.w[first_win].trail_pane = true
+  local placeholder = vim.api.nvim_create_buf(false, true)
+  vim.bo[placeholder].bufhidden = "wipe"
+  vim.api.nvim_win_set_buf(first_win, placeholder)
 
   local panes
   if layout() == "unified" then
@@ -270,6 +278,7 @@ function M.show(diff, opts)
     vim.api.nvim_win_set_buf(first_win, left_buf)
     vim.cmd("rightbelow vsplit")
     local right_win = vim.api.nvim_get_current_win()
+    vim.w[right_win].trail_pane = true
     vim.api.nvim_win_set_buf(right_win, right_buf)
     local folds, starts = folds_and_starts(changed, #diff.rows)
     setup_window(first_win, "base  " .. old_name, folds, false, true)
@@ -338,7 +347,7 @@ function M.show(diff, opts)
   local function toggle()
     local side, line = position()
     chosen_layout = layout() == "unified" and "side_by_side" or "unified"
-    M.show(diff, opts).focus(side, line)
+    M.show(diff, vim.tbl_extend("force", opts, { win = panes[1].win })).focus(side, line)
   end
 
   local function side_at_cursor()
@@ -377,8 +386,11 @@ function M.show(diff, opts)
     map("gd", function()
       opts.on_definition(side_at_cursor())
     end, "Open the function under the cursor as a buffer")
-    map("-", opts.on_back, "Back to trail list")
-    map("q", opts.on_back, "Back to trail list")
+    map("-", opts.on_back, "Back to the paths screen")
+    map("q", opts.on_back, "Back to the paths screen")
+    for _, k in ipairs(opts.keys or {}) do
+      map(k[1], k[2], k[3])
+    end
   end
   return view
 end
