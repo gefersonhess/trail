@@ -165,12 +165,16 @@ local function show_target(target, is_node, win, keys, after)
     old_path = file.status ~= "added" and (file.old_path or file.path) or nil,
     new_path = file.status ~= "deleted" and file.path or nil,
   }
+  -- Only the newest request for a window may draw in it; answers for steps
+  -- the user has already moved past are dropped.
+  local request = (vim.w[win].trail_request or 0) + 1
+  vim.w[win].trail_request = request
   engine.request("file_diff", params, function(err, diff)
     if err then
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
       return
     end
-    if not vim.api.nvim_win_is_valid(win) then
+    if not vim.api.nvim_win_is_valid(win) or vim.w[win].trail_request ~= request then
       return
     end
     -- A diff arriving after the user moved to another tab renders there
