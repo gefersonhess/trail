@@ -97,7 +97,7 @@ check(vim.api.nvim_get_current_win() == rwin, "cursor on head side")
 local cur_row = vim.api.nvim_win_get_cursor(0)[1]
 check(vim.api.nvim_get_current_line() == "func VerifyHash(h string) bool {", "cursor at VerifyHash")
 check(vim.api.nvim_buf_get_lines(lbuf, cur_row - 1, cur_row, false)[1] == "func VerifyHash(h string) bool {", "base side aligned on the same row")
-check(gutter(rwin, cur_row):match("^%s*12 $"), "head gutter shows the real line number, got " .. gutter(rwin, cur_row))
+check(gutter(rwin, cur_row):match("^%s*12%s+$"), "head gutter shows the real line number, got " .. gutter(rwin, cur_row))
 check(vim.bo[rbuf].filetype == "go", "go filetype")
 check(vim.wo[rwin].winbar:match("difftastic"), "winbar names the diff engine: " .. vim.wo[rwin].winbar)
 
@@ -112,9 +112,15 @@ local login_row = row_with(rbuf, "func Login(user string) bool {")
 check(login_row and has_mark(rbuf, login_row, function(d, col)
   return d.hl_group == "TrailAddText" and col == 11 and d.end_col == 15
 end), "changed token user is highlighted")
-check(login_row and has_mark(rbuf, login_row, function(d)
-  return d.hl_group == "TrailAdd" and d.hl_eol and d.priority < 200
-end), "changed line has a background under the token highlights")
+check(login_row and gutter(rwin, login_row):match("^%s*8 %+ $"), "changed line has a + marker, got " .. gutter(rwin, login_row or 1))
+check(login_row and gutter(lwin, login_row):match("^%s*5 %- $"), "changed base line has a - marker, got " .. gutter(lwin, login_row or 1))
+check(login_row and not has_mark(rbuf, login_row, function(d)
+  return d.hl_eol or d.line_hl_group
+end), "changed line is not tinted")
+local marker_hl = vim.api.nvim_eval_statusline(vim.wo[rwin].statuscolumn, { winid = rwin, use_statuscol_lnum = login_row, highlights = true }).highlights
+check(vim.iter(marker_hl):any(function(h)
+  return h.group == "TrailAdd"
+end), "marker uses the TrailAdd color")
 check(login_row and vim.api.nvim_buf_get_lines(lbuf, login_row - 1, login_row, false)[1] == "func Login(u string) bool {", "Login lines aligned")
 
 local p6 = row_with(rbuf, "func p6() {}")

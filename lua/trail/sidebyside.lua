@@ -2,20 +2,20 @@ local M = {}
 
 local ns = vim.api.nvim_create_namespace("trail.sidebyside")
 local CONTEXT = 3
-local line_numbers = {}
+local gutters = {}
 
 local palettes = {
   dark = {
-    TrailAdd = { bg = "#1d3324" },
+    TrailAdd = { fg = "#3fb950", bold = true },
     TrailAddText = { bg = "#2e6b40" },
-    TrailDelete = { bg = "#3d2326" },
+    TrailDelete = { fg = "#f85149", bold = true },
     TrailDeleteText = { bg = "#7d2e36" },
     TrailFiller = { fg = "#3b3f48" },
   },
   light = {
-    TrailAdd = { bg = "#e6ffec" },
+    TrailAdd = { fg = "#1a7f37", bold = true },
     TrailAddText = { bg = "#abf2bc" },
-    TrailDelete = { bg = "#ffebe9" },
+    TrailDelete = { fg = "#cf222e", bold = true },
     TrailDeleteText = { bg = "#ffb3b0" },
     TrailFiller = { fg = "#d0d7de" },
   },
@@ -33,9 +33,13 @@ function M.statuscolumn()
   if vim.v.virtnum ~= 0 then
     return ""
   end
-  local map = line_numbers[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
-  local n = map and map[vim.v.lnum]
-  return n and string.format("%4d ", n) or "     "
+  local g = gutters[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
+  local n = g and g.nums[vim.v.lnum]
+  if not n then
+    return "       "
+  end
+  local marker = g.changed[vim.v.lnum] and string.format("%%#%s#%s%%*", g.hl, g.marker) or " "
+  return string.format("%4d %s ", n, marker)
 end
 
 local function by_line(changes)
@@ -55,11 +59,12 @@ local function make_buf(name, path, lines, nums, changes, hl)
   if path then
     vim.bo[buf].filetype = vim.filetype.match({ filename = path, buf = buf }) or ""
   end
-  line_numbers[buf] = nums
+  local gutter = { nums = nums, changed = {}, marker = hl.marker, hl = hl.sign }
+  gutters[buf] = gutter
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = buf,
     callback = function()
-      line_numbers[buf] = nil
+      gutters[buf] = nil
     end,
   })
   for row = 1, #lines do
@@ -70,13 +75,7 @@ local function make_buf(name, path, lines, nums, changes, hl)
         virt_text_pos = "overlay",
       })
     elseif changes[n] then
-      vim.api.nvim_buf_set_extmark(buf, ns, row - 1, 0, {
-        end_row = row,
-        end_col = 0,
-        hl_group = hl.line,
-        hl_eol = true,
-        priority = 100,
-      })
+      gutter.changed[row] = true
       for _, span in ipairs(changes[n]) do
         vim.api.nvim_buf_set_extmark(buf, ns, row - 1, span[1], {
           end_col = math.min(span[2], #lines[row]),
@@ -123,9 +122,9 @@ function M.show(diff, opts)
   end
 
   local left_buf = make_buf("trail://base/" .. (opts.old_path or "(added)"), opts.old_path, left, left_nums,
-    old_changes, { line = "TrailDelete", text = "TrailDeleteText" })
+    old_changes, { marker = "-", sign = "TrailDelete", text = "TrailDeleteText" })
   local right_buf = make_buf("trail://head/" .. (opts.new_path or "(deleted)"), opts.new_path, right, right_nums,
-    new_changes, { line = "TrailAdd", text = "TrailAddText" })
+    new_changes, { marker = "+", sign = "TrailAdd", text = "TrailAddText" })
 
   local placeholder = vim.api.nvim_get_current_buf()
   local left_win = vim.api.nvim_get_current_win()
