@@ -233,26 +233,46 @@ local function cursor_on(row, word)
   vim.api.nvim_win_set_cursor(uwin, { row, vim.api.nvim_buf_get_lines(ubuf, row - 1, row, false)[1]:find(word, 1, true) - 1 })
 end
 
+-- The editor gd starts is a separate Neovim; keep it away from any real config.
+local editor_home = vim.fn.tempname()
+vim.env.XDG_CONFIG_HOME, vim.env.XDG_DATA_HOME, vim.env.XDG_STATE_HOME = editor_home, editor_home, editor_home
+local function terminal_text(b)
+  return table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n")
+end
+local function editor_reports(b, expected)
+  vim.api.nvim_chan_send(vim.bo[b].channel, ":echo 'at:' .. expand('%:t') .. ':' .. line('.') .. ':' .. (stridx(expand('%:p'), '/trail/worktrees/') >= 0) .. ':' .. exists('$NVIM')\r")
+  return wait_for(function()
+    return terminal_text(b):find("at:" .. expected, 1, true) ~= nil
+  end)
+end
+local function quit_editor(b)
+  vim.api.nvim_chan_send(vim.bo[b].channel, "\27:qa!\r")
+  return wait_for(function()
+    return float_win() == nil and vim.api.nvim_get_current_win() == uwin
+  end)
+end
+
+-- Like a config that leaves terminal mode with <Esc>.
+vim.keymap.set("t", "<Esc>", "<C-\\><C-n>")
 cursor_on(hash_call, "hashOf")
 vim.api.nvim_feedkeys("gd", "x", false)
-local review_tab = vim.api.nvim_get_current_tabpage()
 check(wait_for(function()
-  return vim.api.nvim_get_current_tabpage() ~= review_tab and vim.bo.buftype == ""
-end), "gd opens the definition as a real buffer in its own tab")
-check(vim.api.nvim_win_get_config(0).relative == "", "the definition window is a normal window")
-local worktree_file = vim.fs.normalize(cache .. "/trail/worktrees/" .. vim.fn.resolve(repo):gsub("[/\\:]", "-") .. "/auth/auth.go")
-check(vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == worktree_file, "head definitions open from the review worktree: " .. vim.api.nvim_buf_get_name(0) .. " vs " .. worktree_file)
-check(vim.api.nvim_win_get_cursor(0)[1] == 16 and vim.api.nvim_get_current_line():match("^func hashOf"), "the buffer opens at the function")
-check(vim.bo.filetype == "go", "the opened buffer is a go file")
-local before = vim.api.nvim_win_get_buf(uwin)
-vim.fn.setqflist({ { filename = worktree_file, lnum = 1 } })
-vim.cmd("cfirst")
-check(vim.api.nvim_win_get_buf(uwin) == before, "a jump from the opened buffer leaves the review window alone")
-check(vim.api.nvim_get_current_tabpage() ~= review_tab, "the jump stays in the definition's tab")
-check(vim.wo.statuscolumn == vim.go.statuscolumn and not vim.wo.scrollbind and not vim.wo.cursorbind and vim.wo.winbar == vim.go.winbar,
-  "the definition window uses the user's settings, not the diff's gutter and scroll binding")
-vim.cmd("q")
-check(vim.api.nvim_get_current_win() == uwin, ":q returns to the diff")
+  local w = float_win()
+  return w and vim.bo[vim.api.nvim_win_get_buf(w)].buftype == "terminal"
+end), "gd opens a terminal in a float")
+local term_win = float_win()
+local term_buf = term_win and vim.api.nvim_win_get_buf(term_win)
+
+check(term_win and vim.api.nvim_get_current_win() == term_win, "focus goes to the editor")
+check(term_win and title_of(term_win):match("auth/auth%.go:16") and title_of(term_win):match("review worktree"), "the title says what is open and where it comes from")
+check(term_buf and wait_for(function()
+  return terminal_text(term_buf):match("func hashOf")
+end), "the editor shows the definition: " .. (term_buf and terminal_text(term_buf) or ""))
+check(term_buf and editor_reports(term_buf, "auth.go:16:1:0"), "the editor is a separate Neovim without $NVIM, at the head file from the review worktree: " .. (term_buf and terminal_text(term_buf) or ""))
+
+check(term_buf and quit_editor(term_buf), "quitting the editor closes the float and returns to the diff")
+check(term_buf and not vim.api.nvim_buf_is_valid(term_buf), "the terminal buffer is gone after the editor quits")
+vim.keymap.del("t", "<Esc>")
 
 cursor_on(hash_call, "hashOf")
 vim.api.nvim_feedkeys("K", "x", false)
@@ -265,9 +285,12 @@ check(wait_for(function()
 end), "K again moves into the popup")
 vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
 check(wait_for(function()
-  return vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == worktree_file
-end), "<CR> in the popup opens the definition as a buffer")
-vim.cmd("q")
+  local w = float_win()
+  return w and vim.bo[vim.api.nvim_win_get_buf(w)].buftype == "terminal"
+end), "<CR> in the popup opens the definition in the editor")
+term_buf = float_win() and vim.api.nvim_win_get_buf(float_win())
+check(term_buf and editor_reports(term_buf, "auth.go:16:1:0"), "the popup opens the same definition")
+check(term_buf and quit_editor(term_buf), "quitting returns to the diff")
 
 cursor_on(gone_call, "Gone")
 vim.api.nvim_feedkeys("gd", "x", false)
@@ -392,7 +415,7 @@ check(gutter(0, vim.api.nvim_win_get_cursor(0)[1]):match("^%s*14%s+%- $"), "remo
 local tidy_body = row_with(0, "\tx()")
 check(tidy_body and not gutter(0, tidy_body):match("[%+%-]"), "reformatted code shows as context, got " .. gutter(0, tidy_body or 1))
 check(row_with(0, "func Squash() { y() }") and not row_with(0, "\ty()"), "code squashed by reformatting shows only its new layout")
-check(#vim.api.nvim_list_tabpages() == 3, "the path tab is reused, got " .. #vim.api.nvim_list_tabpages())
+check(#vim.api.nvim_list_tabpages() == 2, "a path opens in the review tab, got " .. #vim.api.nvim_list_tabpages())
 
 vim.api.nvim_set_current_win(gwin)
 vim.api.nvim_feedkeys("p", "x", false)
@@ -584,6 +607,7 @@ local function send_text()
   return table.concat(vim.api.nvim_buf_get_lines(sbuf, 0, -1, false), "\n")
 end
 check(vim.api.nvim_buf_get_name(sbuf):match("trail://send$"), "S opens the send screen")
+check(#vim.api.nvim_list_tabpages() == 2, "the send screen opens in the review tab, got " .. #vim.api.nvim_list_tabpages())
 check(send_text():match("Review of main%.%.feature") and send_text():match("Verdict: none")
   and send_text():match("auth/auth%.go") and send_text():match("question%s+why rename u to user%?")
   and send_text():match("blocking%s+keep the audit"), "the send screen lists comments by file: " .. send_text())

@@ -79,9 +79,26 @@ local function all_paths()
   return list
 end
 
+---Leaves a single window in the review tab and returns it. The paths screen,
+---a path and the send screen take turns in it, so a review is one tab.
+local function review_window()
+  vim.api.nvim_set_current_tabpage(state.list_tab)
+  vim.cmd("silent! only!")
+  local win = vim.api.nvim_get_current_win()
+  vim.w[win].trail_pane = nil
+  -- A diff still loading for a step that was left must not draw over what comes next.
+  vim.w[win].trail_request = (vim.w[win].trail_request or 0) + 1
+  return win
+end
+
 local function home()
-  if vim.api.nvim_tabpage_is_valid(state.list_tab) then
-    vim.api.nvim_set_current_tabpage(state.list_tab)
+  if not vim.api.nvim_tabpage_is_valid(state.list_tab) or not vim.api.nvim_buf_is_valid(state.list_buf) then
+    return
+  end
+  local win = review_window()
+  if vim.api.nvim_win_get_buf(win) ~= state.list_buf then
+    vim.api.nvim_win_set_buf(win, state.list_buf)
+    M.refresh_home()
   end
 end
 
@@ -127,7 +144,9 @@ local function open_definition(match, side, filetype)
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
       return
     end
-    peek.open_file(checkout.path .. "/" .. match.path, match.start)
+    local where = checkout.worktree and "review worktree" or "your checkout"
+    peek.open_editor(checkout.path .. "/" .. match.path, match.start,
+      string.format(" %s:%d  ·  %s  ·  :q closes ", match.path, match.start, where))
   end)
 end
 
@@ -257,6 +276,7 @@ local function path_context()
     end,
     show_target = show_target,
     home = home,
+    window = review_window,
     switch_path = function()
       M.switch_path()
     end,
@@ -327,6 +347,7 @@ local function open_send()
       vim.notify("trail: that comment is not in any path step", vim.log.levels.INFO)
     end,
     home = home,
+    window = review_window,
   })
 end
 
@@ -555,7 +576,7 @@ function M.open(arg)
   local buf = vim.api.nvim_get_current_buf()
   state.list_buf = buf
   vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].swapfile = false
   local name = "trail://" .. vim.fs.basename(root) .. "/" .. arg
   local earlier = vim.fn.bufnr(name)
@@ -595,17 +616,11 @@ function M.open(arg)
   map("R", load, "Refresh")
   map("?", help.show, "Show keys")
   map("q", function()
-    local path_tab = pathview.tab()
-    if path_tab and vim.api.nvim_tabpage_is_valid(path_tab) then
-      vim.api.nvim_set_current_tabpage(path_tab)
-      vim.cmd("tabclose")
-    end
     vim.api.nvim_set_current_tabpage(state.list_tab)
     if #vim.api.nvim_list_tabpages() > 1 then
       vim.cmd("tabclose")
-    else
-      vim.api.nvim_buf_delete(buf, { force = true })
     end
+    vim.api.nvim_buf_delete(buf, { force = true })
   end, "Quit trail")
 
   load()

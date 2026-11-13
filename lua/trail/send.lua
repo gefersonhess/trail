@@ -59,13 +59,13 @@ end
 
 ---Opens the send screen: comments grouped by file, a verdict, and a warning
 ---for hunks not seen yet.
----@param ctx { title: string, unseen: fun(): string[], jump: fun(comment: table), home: fun() }
+---@param ctx { title: string, unseen: fun(): string[], jump: fun(comment: table), home: fun(), window: fun(): integer }
 function M.open(ctx)
   if screen and vim.api.nvim_buf_is_valid(screen.buf) and vim.fn.bufwinid(screen.buf) ~= -1 then
     vim.api.nvim_set_current_win(vim.fn.bufwinid(screen.buf))
   else
-    vim.cmd("tabnew")
-    local buf = vim.api.nvim_get_current_buf()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(ctx.window(), buf)
     vim.bo[buf].buftype = "nofile"
     vim.bo[buf].bufhidden = "wipe"
     vim.bo[buf].swapfile = false
