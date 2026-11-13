@@ -5,6 +5,8 @@ local peek = require("trail.peek")
 local graph = require("trail.graph")
 local pathview = require("trail.pathview")
 local store = require("trail.state")
+local comments = require("trail.comments")
+local send = require("trail.send")
 
 local M = {}
 
@@ -175,9 +177,35 @@ local function show_target(target, is_node, win, keys, after)
     -- without pulling them back or counting its hunks as seen.
     local previous = vim.api.nvim_get_current_win()
     local quiet = vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage()
+    local current
+    local function annotate()
+      if current then
+        current.annotate(comments.notes(current, params.old_path, params.new_path))
+      end
+    end
+    local function changed()
+      annotate()
+      M.refresh_home()
+    end
+    local all_keys = vim.list_extend({}, keys or {})
+    for _, kind in ipairs(comments.kinds) do
+      table.insert(all_keys, { "c" .. kind:sub(1, 1), function()
+        comments.add(kind, current, params.old_path, params.new_path, changed)
+      end, "Add a " .. kind .. " comment on this line" })
+    end
+    table.insert(all_keys, { "ce", function()
+      comments.edit(current, params.old_path, params.new_path, changed)
+    end, "Edit the comment on this line" })
+    table.insert(all_keys, { "cd", function()
+      comments.delete(current, params.old_path, params.new_path, changed)
+    end, "Delete the comment on this line" })
     local view = diffview.show(diff, {
       win = win,
-      keys = keys,
+      keys = all_keys,
+      on_redraw = function(again)
+        current = again
+        annotate()
+      end,
       hunks = vim.tbl_filter(function(h)
         return h.file == target.file
       end, review.hunks),
@@ -202,6 +230,8 @@ local function show_target(target, is_node, win, keys, after)
         end)
       end,
     })
+    current = view
+    annotate()
     local on_new = target.new and (is_node or target.new.len > 0)
     view.focus(on_new and "new" or "old", math.max((on_new and target.new or target.old).start, 1))
     if quiet then
@@ -260,6 +290,39 @@ local function enter(path, step)
   pathview.open(path_context(), path, step or store.position(path.id) or 1)
 end
 
+local function open_send()
+  send.open({
+    title = state.base .. ".." .. state.head,
+    unseen = function()
+      local labels = {}
+      for _, h in ipairs(state.review.hunks) do
+        if not store.seen(h.id) then
+          table.insert(labels, hunk_label(h))
+        end
+      end
+      return labels
+    end,
+    jump = function(c)
+      for _, path in ipairs(all_paths()) do
+        for i, step in ipairs(path.steps) do
+          local n = step.node
+          local range = n and (c.side == "old" and n.old or n.new)
+          local h = step.hunk
+          local hrange = h and (c.side == "old" and h.old or h.new)
+          local function within(r, file)
+            return r and file == c.file and c.line >= r.start and c.line < r.start + math.max(r.len, 1)
+          end
+          if within(range, n and n.file) or within(hrange, h and h.file) then
+            return enter(path, i)
+          end
+        end
+      end
+      vim.notify("trail: that comment is not in any path step", vim.log.levels.INFO)
+    end,
+    home = home,
+  })
+end
+
 function M.switch_path()
   local list = all_paths()
   vim.ui.select(list, {
@@ -286,12 +349,13 @@ local function build_home(review)
   local header = string.format("trail  %s..%s  (%s → %s)", state.base, state.head,
     review.base_commit:sub(1, 7), review.head_commit:sub(1, 7))
   add(header, nil, { { "Title", 0, #header } })
-  add(string.format("%s · %s · %s · %s not in any path", count(#state.code, "path"), count(#review.nodes, "function"),
-    count(#state.tests, "test file"), count(#state.loose.steps, "hunk")), nil, { { "Comment", 0, -1 } })
+  add(string.format("%s · %s · %s · %s not in any path · %s", count(#state.code, "path"), count(#review.nodes, "function"),
+    count(#state.tests, "test file"), count(#state.loose.steps, "hunk"), count(#store.comments(), "comment")), nil,
+    { { "Comment", 0, -1 } })
   local uncertain = vim.iter(review.edges):any(function(e)
     return e.source == "name_match"
   end)
-  add((uncertain and "Calls matched by name may be wrong.  " or "") .. "<CR> or 1-9 enters a path  ·  ? keys", nil,
+  add((uncertain and "Calls matched by name may be wrong.  " or "") .. "<CR> or 1-9 enters a path  ·  S send  ·  ? keys", nil,
     { { "Comment", 0, -1 } })
 
   add("")
@@ -456,6 +520,7 @@ function M.open(arg)
     end, { buffer = buf, nowait = true })
   end
   map("gp", M.switch_path, "Switch path")
+  map("S", open_send, "Send screen: comments, verdict, copy")
   vim.api.nvim_create_autocmd("CursorMoved", {
     buffer = buf,
     callback = function()

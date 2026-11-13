@@ -3,6 +3,7 @@ local help = require("trail.help")
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("trail.diffview")
+local ns_notes = vim.api.nvim_create_namespace("trail.diffview.notes")
 local CONTEXT = 3
 local gutters = {}
 local chosen_layout
@@ -374,6 +375,53 @@ function M.show(diff, opts)
     report_seen()
   end
 
+  ---The file line under the cursor: which side, its number and its text.
+  function view.line_at_cursor()
+    local p = pane_of(vim.api.nvim_get_current_win())
+    local e = p.view.gutter[vim.api.nvim_win_get_cursor(p.win)[1]]
+    if not e then
+      return nil
+    end
+    local side
+    if #panes == 2 then
+      side = p == panes[1] and "old" or "new"
+    else
+      side = (e.mark == "-" or not e.new) and "old" or "new"
+    end
+    local line = e[side]
+    local lines = side == "old" and diff.old_lines or diff.new_lines
+    return { side = side, line = line, text = lines[line] }
+  end
+
+  ---Draws notes as virtual lines under their file lines, replacing earlier ones.
+  ---@param notes { side: "old"|"new", line: integer, lines: table[] }[]
+  function view.annotate(notes)
+    for _, p in ipairs(panes) do
+      if vim.api.nvim_buf_is_valid(p.buf) then
+        vim.api.nvim_buf_clear_namespace(p.buf, ns_notes, 0, -1)
+      end
+    end
+    for _, note in ipairs(notes) do
+      local p = panes[1]
+      if #panes == 2 and note.side == "new" then
+        p = panes[2]
+      end
+      local row
+      for r, e in pairs(p.view.gutter) do
+        if e[note.side] == note.line and (not row or r < row) then
+          row = r
+        end
+      end
+      if row and vim.api.nvim_buf_is_valid(p.buf) then
+        vim.api.nvim_buf_set_extmark(p.buf, ns_notes, row - 1, 0, { virt_lines = note.lines })
+      end
+    end
+  end
+
+  function view.lines(side)
+    return side == "old" and diff.old_lines or diff.new_lines
+  end
+
   local function jump(dir)
     local p = pane_of(vim.api.nvim_get_current_win())
     local cur = vim.api.nvim_win_get_cursor(p.win)[1]
@@ -394,7 +442,11 @@ function M.show(diff, opts)
   local function toggle()
     local side, line = position()
     chosen_layout = layout() == "unified" and "side_by_side" or "unified"
-    M.show(diff, vim.tbl_extend("force", opts, { win = panes[1].win })).focus(side, line)
+    local again = M.show(diff, vim.tbl_extend("force", opts, { win = panes[1].win }))
+    again.focus(side, line)
+    if opts.on_redraw then
+      opts.on_redraw(again)
+    end
   end
 
   local function side_at_cursor()

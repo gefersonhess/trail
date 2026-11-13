@@ -52,7 +52,7 @@ local function line_of(pattern)
   end
 end
 
-check(line_of("^1 path · 5 functions · 1 test file · 1 hunk not in any path$"), "summary line")
+check(line_of("^1 path · 5 functions · 1 test file · 1 hunk not in any path · 0 comments$"), "summary line")
 check(line_of("^  1  auth%.Login  4 steps  · 0/4$"), "path listed with its step count and progress")
 check(line_of("^     auth/auth_test%.go  1 test · covers 3 functions  · 0/1$"), "test file listed with what it covers")
 check(line_of("^     auth/auth%.go:3%-6$"), "import hunk listed as not in any path")
@@ -478,6 +478,123 @@ vim.api.nvim_feedkeys("-", "x", false)
 local jumped = home_line("^  1  auth%.Login  4 steps  · (%d)/4$")
 local jumped_done = jumped and tonumber(jumped:match("· (%d)/4$"))
 check(jumped_done and jumped_done < 4, "hunks jumped over above the screen do not count as seen: " .. tostring(jumped))
+
+-- Comments and the send screen.
+vim.o.lines = 24
+local inputs = {}
+vim.ui.input = function(opts, on_confirm)
+  table.insert(inputs, opts)
+  on_confirm(table.remove(inputs.answers or {}, 1))
+end
+local function answer(...)
+  inputs.answers = { ... }
+end
+vim.api.nvim_feedkeys("1", "x", false)
+vim.wait(10000, function()
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/") ~= nil
+end)
+vim.api.nvim_feedkeys("[s[s[s", "x", false)
+check(wait_diff_line("func Login(user string) bool {"), "back at the Login step")
+local function notes_on(b, text)
+  local row = row_with(b, text)
+  if not row then
+    return nil
+  end
+  local found = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, -1, { row - 1, 0 }, { row - 1, -1 }, { details = true })) do
+    for _, vl in ipairs(m[4].virt_lines or {}) do
+      table.insert(found, table.concat(vim.tbl_map(function(c)
+        return c[1]
+      end, vl)))
+    end
+  end
+  return found
+end
+answer("why the rename?")
+vim.api.nvim_feedkeys("cq", "x", false)
+check(inputs[1] and inputs[1].prompt == "question: ", "cq asks for a question")
+local saved_comments = vim.json.decode(table.concat(vim.fn.readfile(state_file), "\n")).comments
+check(#saved_comments == 1 and saved_comments[1].kind == "question" and saved_comments[1].side == "new"
+  and saved_comments[1].line == 8 and saved_comments[1].text == "func Login(user string) bool {"
+  and saved_comments[1].file == "auth/auth.go" and saved_comments[1].body == "why the rename?",
+  "the comment is saved with its kind, side, line and line text: " .. vim.inspect(saved_comments))
+local cbuf = vim.api.nvim_get_current_buf()
+local notes = notes_on(cbuf, "func Login(user string) bool {")
+check(notes and notes[1] and notes[1]:match("question") and notes[1]:match("why the rename%?"), "the comment shows under its line: " .. vim.inspect(notes))
+
+vim.api.nvim_win_set_cursor(0, { row_with(cbuf, "\tGone()"), 0 })
+answer("keep the audit")
+vim.api.nvim_feedkeys("cb", "x", false)
+check(vim.iter(notes_on(cbuf, "\tGone()") or {}):any(function(n)
+  return n:match("blocking") and n:match("keep the audit")
+end), "a comment on a removed line shows there")
+
+vim.api.nvim_feedkeys("t", "x", false)
+local sbs = panes()
+check(#sbs == 2 and vim.iter(notes_on(vim.api.nvim_win_get_buf(sbs[2]), "func Login(user string) bool {") or {}):any(function(n)
+  return n:match("why the rename")
+end) and vim.iter(notes_on(vim.api.nvim_win_get_buf(sbs[1]), "\tGone()") or {}):any(function(n)
+  return n:match("keep the audit")
+end), "comments follow their side in the side-by-side layout")
+vim.api.nvim_feedkeys("t", "x", false)
+cbuf = vim.api.nvim_get_current_buf()
+
+vim.api.nvim_win_set_cursor(0, { row_with(cbuf, "func Login(user string) bool {"), 0 })
+answer("why rename u to user?")
+vim.api.nvim_feedkeys("ce", "x", false)
+check(vim.iter(notes_on(cbuf, "func Login(user string) bool {") or {}):any(function(n)
+  return n:match("why rename u to user%?")
+end), "ce edits the comment on the line")
+
+local list = vim.json.decode(table.concat(vim.fn.readfile(state_file), "\n"))
+list.comments[1].line = 2
+vim.fn.writefile({ vim.json.encode(list) }, state_file)
+vim.api.nvim_feedkeys("-", "x", false)
+vim.api.nvim_feedkeys("R", "x", false)
+vim.wait(10000, function()
+  return home_line("2 comments$") ~= nil
+end)
+check(home_line("· 2 comments$"), "the paths screen counts comments")
+vim.api.nvim_feedkeys("1", "x", false)
+vim.wait(10000, function()
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/") ~= nil and vim.api.nvim_get_current_buf() ~= cbuf
+    and vim.api.nvim_get_current_line() == "func Login(user string) bool {"
+end)
+check(vim.iter(notes_on(vim.api.nvim_get_current_buf(), "func Login(user string) bool {") or {}):any(function(n)
+  return n:match("why rename u to user")
+end), "a comment whose line moved finds its line again by its text")
+
+vim.api.nvim_feedkeys("-", "x", false)
+vim.api.nvim_feedkeys("S", "x", false)
+local sbuf = vim.api.nvim_get_current_buf()
+local function send_text()
+  return table.concat(vim.api.nvim_buf_get_lines(sbuf, 0, -1, false), "\n")
+end
+check(vim.api.nvim_buf_get_name(sbuf):match("trail://send$"), "S opens the send screen")
+check(send_text():match("Review of main%.%.feature") and send_text():match("Verdict: none")
+  and send_text():match("auth/auth%.go") and send_text():match("question%s+why rename u to user%?")
+  and send_text():match("blocking%s+keep the audit"), "the send screen lists comments by file: " .. send_text())
+vim.api.nvim_feedkeys("v", "x", false)
+check(send_text():match("Verdict: approve"), "v sets the verdict")
+vim.api.nvim_feedkeys("v", "x", false)
+check(send_text():match("Verdict: request changes"), "v cycles the verdict")
+check(vim.json.decode(table.concat(vim.fn.readfile(state_file), "\n")).verdict == "request changes", "the verdict is saved")
+vim.api.nvim_feedkeys("y", "x", false)
+local md = vim.fn.getreg('"')
+check(md:match("^## Review of main%.%.feature") and md:match("%*%*Verdict:%*%* request changes")
+  and md:match("### auth/auth%.go") and md:match("%- %*%*question%*%* %(line 8%): why rename u to user%?")
+  and md:match("%- %*%*blocking%*%* %(removed line 6%): keep the audit") and md:match("> `Gone%(%)`"),
+  "y copies the review as markdown: " .. md)
+for i, l in ipairs(vim.api.nvim_buf_get_lines(sbuf, 0, -1, false)) do
+  if l:match("question") then
+    vim.api.nvim_win_set_cursor(0, { i, 0 })
+  end
+end
+vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+check(vim.wait(10000, function()
+  local b = graph_buf()
+  return b and current_step_line() and current_step_line():match("auth%.Login")
+end), "<CR> on a comment opens its step")
 
 vim.fn.delete(repo, "rf")
 if failures > 0 then
