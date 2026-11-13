@@ -48,67 +48,37 @@ local function at_line(win, line)
   vim.cmd("normal! zvzt")
 end
 
-local definitions_tab
-local back_tab
-local left_tab
-
-local function definitions_open()
-  return definitions_tab ~= nil and vim.api.nvim_tabpage_is_valid(definitions_tab)
-end
-
----Opens a real file at `line` in the definitions tab, as a normal buffer so
----language servers and other plugins attach, and jumps from it (gr, quickfix)
----stay in that tab instead of replacing the review. Every definition reuses
----the same tab, and `<C-o>` goes back through them. Closing the tab returns
----to `review_tab`.
-function M.open_file(path, line, review_tab)
-  back_tab = review_tab
-  if definitions_open() then
-    vim.api.nvim_set_current_tabpage(definitions_tab)
-    vim.cmd("normal! m'")
-    local ok, err = pcall(vim.cmd.edit, vim.fn.fnameescape(path))
-    if not ok then
-      vim.notify("trail: " .. err, vim.log.levels.ERROR)
-      return
-    end
+---Opens `path` at `line` in a separate Neovim inside a large floating
+---terminal. It runs with the user's own config and knows nothing about the
+---review, so LSP, pickers and their jumps behave as in any session and stay
+---inside it. Quitting that Neovim closes the window.
+function M.open_editor(path, line, title)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  local win = large_window(buf, title)
+  -- Without $NVIM, plugins that hand files back to a parent Neovim keep them in
+  -- this one. -n skips swap files, since the review's Neovim may have the file open.
+  local cmd = { "env", "-u", "NVIM", vim.v.progpath, "-n", "+" .. line, path }
+  local opts = {
+    on_exit = function()
+      -- A startinsert still pending would otherwise land in the review window.
+      vim.cmd.stopinsert()
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_close(win, true)
+      end
+    end,
+  }
+  if vim.fn.has("nvim-0.11") == 1 then
+    opts.term = true
+    vim.fn.jobstart(cmd, opts)
   else
-    vim.cmd.tabedit(vim.fn.fnameescape(path))
-    definitions_tab = vim.api.nvim_get_current_tabpage()
-    local group = vim.api.nvim_create_augroup("trail.definitions", { clear = true })
-    vim.api.nvim_create_autocmd("TabLeave", {
-      group = group,
-      callback = function()
-        left_tab = vim.api.nvim_get_current_tabpage()
-      end,
-    })
-    vim.api.nvim_create_autocmd("TabClosed", {
-      group = group,
-      callback = function()
-        if definitions_open() then
-          return
-        end
-        local was_current = left_tab == definitions_tab
-        definitions_tab = nil
-        vim.schedule(function()
-          if was_current and back_tab and vim.api.nvim_tabpage_is_valid(back_tab) then
-            vim.api.nvim_set_current_tabpage(back_tab)
-          end
-        end)
-        return true
-      end,
-    })
+    vim.fn.termopen(cmd, opts)
   end
-  local win = vim.api.nvim_get_current_win()
-  at_line(win, line)
+  pcall(vim.api.nvim_buf_set_name, buf, "trail://editor/" .. vim.fn.fnamemodify(path, ":t"))
+  -- A global <Esc> mapping that leaves terminal mode would keep <Esc> from the editor inside.
+  vim.keymap.set("t", "<Esc>", "<Esc>", { buffer = buf })
+  vim.cmd.startinsert()
   return win
-end
-
-function M.close_definitions()
-  if definitions_open() then
-    local tab = definitions_tab
-    definitions_tab = nil
-    vim.cmd.tabclose(vim.api.nvim_tabpage_get_number(tab))
-  end
 end
 
 ---Opens a match's own lines read-only in a large floating window.

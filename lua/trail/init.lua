@@ -144,7 +144,9 @@ local function open_definition(match, side, filetype)
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
       return
     end
-    peek.open_file(checkout.path .. "/" .. match.path, match.start, state.list_tab)
+    local where = checkout.worktree and "review worktree" or "your checkout"
+    peek.open_editor(checkout.path .. "/" .. match.path, match.start,
+      string.format(" %s:%d  ·  %s  ·  :q closes ", match.path, match.start, where))
   end)
 end
 
@@ -614,7 +616,6 @@ function M.open(arg)
   map("R", load, "Refresh")
   map("?", help.show, "Show keys")
   map("q", function()
-    peek.close_definitions()
     vim.api.nvim_set_current_tabpage(state.list_tab)
     if #vim.api.nvim_list_tabpages() > 1 then
       vim.cmd("tabclose")
