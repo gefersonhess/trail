@@ -596,6 +596,32 @@ check(vim.wait(10000, function()
   return b and current_step_line() and current_step_line():match("auth%.Login")
 end), "<CR> on a comment opens its step")
 
+-- GitHub pull requests: a fake gh points at a local "remote" with refs/pull/7/head.
+local remote = repo .. "-remote"
+vim.system({ "git", "clone", "-q", "--bare", repo, remote }):wait()
+vim.system({ "git", "-C", remote, "update-ref", "refs/pull/7/head", "feature" }):wait()
+vim.system({ "git", "-C", remote, "branch", "-D", "feature" }):wait()
+local head_sha = vim.trim(vim.system({ "git", "-C", repo, "rev-parse", "feature" }, { text = true }):wait().stdout)
+local gh = repo .. "-gh"
+vim.fn.writefile({
+  "#!/bin/sh",
+  string.format([[echo '{"baseRefName":"main","headRefOid":"%s","title":"Add hashing","url":"file://%s/pull/7"}']], head_sha, remote),
+}, gh)
+vim.fn.setfperm(gh, "rwxr-xr-x")
+vim.env.TRAIL_GH = gh
+require("trail.engine").stop()
+vim.cmd("Trail #7")
+local prbuf = vim.api.nvim_get_current_buf()
+check(vim.wait(10000, function()
+  return vim.api.nvim_buf_get_lines(prbuf, 0, 1, false)[1]:match("^trail  #7 Add hashing  %(") ~= nil
+end), "a pull request opens with its title: " .. vim.inspect(vim.api.nvim_buf_get_lines(prbuf, 0, 1, false)))
+check(vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
+  return l:match("^  1  auth%.Login  4 steps")
+end), "the pull request is reviewed like a branch")
+check(require("trail.state").path():match("/trail/pr%-7%.json$"), "its review state is kept per pull request number")
+vim.fn.delete(remote, "rf")
+vim.fn.delete(gh)
+
 vim.fn.delete(repo, "rf")
 if failures > 0 then
   io.stderr:write(failures .. " failures\n")

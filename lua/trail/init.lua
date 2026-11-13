@@ -292,7 +292,7 @@ end
 
 local function open_send()
   send.open({
-    title = state.base .. ".." .. state.head,
+    title = state.title,
     unseen = function()
       local labels = {}
       for _, h in ipairs(state.review.hunks) do
@@ -346,7 +346,7 @@ local function build_home(review)
       table.insert(hls, { #lines - 1, h[2], h[3], h[1] })
     end
   end
-  local header = string.format("trail  %s..%s  (%s → %s)", state.base, state.head,
+  local header = string.format("trail  %s  (%s → %s)", state.title,
     review.base_commit:sub(1, 7), review.head_commit:sub(1, 7))
   add(header, nil, { { "Title", 0, #header } })
   add(string.format("%s · %s · %s · %s not in any path · %s", count(#state.code, "path"), count(#review.nodes, "function"),
@@ -469,8 +469,8 @@ function M.refresh_home()
   end
 end
 
-local function load()
-  store.load(state.repo, state.base, state.head)
+local function review_range()
+  store.load(state.repo, state.key)
   engine.request("open", { repo = state.repo, base = state.base, head = state.head }, function(err, result)
     if err then
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
@@ -483,6 +483,21 @@ local function load()
   end)
 end
 
+local function load()
+  if not state.pr then
+    return review_range()
+  end
+  engine.request("pull_request", { repo = state.repo, number = state.pr }, function(err, pr)
+    if err then
+      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+      return
+    end
+    state.base, state.head = pr.base, pr.head
+    state.title = string.format("#%d %s", pr.number, pr.title)
+    review_range()
+  end)
+end
+
 function M.open(arg)
   if not arg or arg == "" then
     vim.notify("usage: :Trail base..head", vim.log.levels.ERROR)
@@ -490,7 +505,16 @@ function M.open(arg)
   end
   local root = vim.fs.root(0, ".git") or vim.fn.getcwd()
   state = { repo = root }
-  state.base, state.head = parse_range(arg)
+  local pr = arg:match("^#(%d+)$")
+  if pr then
+    state.pr = tonumber(pr)
+    state.key = "pr-" .. pr
+    state.title = arg
+  else
+    state.base, state.head = parse_range(arg)
+    state.key = state.base .. ".." .. state.head
+    state.title = state.key
+  end
 
   vim.cmd("tabnew")
   state.list_tab = vim.api.nvim_get_current_tabpage()

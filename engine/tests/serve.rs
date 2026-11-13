@@ -1247,3 +1247,75 @@ fn paths_share_callees_between_entry_points_and_survive_cycles() {
     assert_eq!(tests[0]["file"], "src/lib.rs");
     assert_eq!(ids(&tests[0]["nodes"]), ["rust:tests::runs"]);
 }
+
+/// A fake `gh` that answers `pr view` for pull request 7 of the bare
+/// repository at `remote`, whose head is `head`.
+fn fake_gh(dir: &Path, remote: &Path, head: &str) -> PathBuf {
+    let script = dir.join("gh");
+    let json = format!(
+        r#"{{"baseRefName":"main","headRefOid":"{head}","title":"Add hashing","url":"file://{}/pull/7"}}"#,
+        remote.display()
+    );
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\n[ \"$1 $2 $3\" = \"pr view 7\" ] || {{ echo \"no pull request $3\" >&2; exit 1; }}\necho '{json}'\n"),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&script)
+        .status()
+        .unwrap();
+    script
+}
+
+#[test]
+fn pull_requests_are_fetched_and_reviewed_like_branches() {
+    let upstream = Repo::new();
+    upstream.write("a.go", "package a\n\nfunc A() int { return 1 }\n");
+    upstream.commit("base");
+    upstream.git(&["checkout", "-q", "-b", "feature"]);
+    upstream.write("a.go", "package a\n\nfunc A() int { return 2 }\n");
+    upstream.commit("feature");
+    let head = rev(&upstream, "feature");
+    upstream.git(&["update-ref", "refs/pull/7/head", &head]);
+    upstream.git(&["checkout", "-q", "main"]);
+    upstream.git(&["branch", "-D", "feature"]);
+
+    let local = Repo::new();
+    local.git(&["fetch", "-q", upstream.path().to_str().unwrap(), "main"]);
+    local.git(&["reset", "-q", "--hard", "FETCH_HEAD"]);
+    let tools = Repo::new();
+    let gh = fake_gh(tools.path(), upstream.path(), &head);
+    let env = [("TRAIL_GH", gh.to_str().unwrap())];
+
+    let responses = serve_with_env(
+        &[
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "pull_request", "params": { "repo": local.path(), "number": 7 } }),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "pull_request", "params": { "repo": local.path(), "number": 8 } }),
+        ],
+        &env,
+    );
+
+    let pr = &responses[0]["result"];
+    assert_eq!(pr["number"], 7, "{}", responses[0]);
+    assert_eq!(pr["title"], "Add hashing");
+    assert_eq!(pr["head"], head.as_str());
+    assert_eq!(pr["base"], rev(&local, "main").as_str());
+    assert_eq!(rev(&local, "refs/trail/pull/7/head"), head);
+    let review = open(
+        &local,
+        pr["base"].as_str().unwrap(),
+        pr["head"].as_str().unwrap(),
+    );
+    assert_eq!(node_ids(&review["result"]), ["go:a.A"]);
+    assert_eq!(responses[1]["error"]["code"], 1);
+    assert!(
+        responses[1]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no pull request 8"),
+        "{}",
+        responses[1]
+    );
+}

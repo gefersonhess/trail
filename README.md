@@ -26,7 +26,10 @@ In a Go or Rust repo:
 
 ```
 :Trail main..my-branch
+:Trail #123
 ```
+
+`#123` reviews a GitHub pull request: `gh` finds its base branch and head, both are fetched from the pull request's repository into `refs/trail/pull/123/`, and the review runs locally like any branch. Its review state is kept per pull request number, so progress and comments survive new pushes.
 
 A tab opens on the paths screen. Each path is a group of changed functions connected by calls, starting at the ones nothing else in the change calls, with its steps in call order. Below the paths come the test files with the changed functions they reach (and a warning for changed functions no test change covers), then the hunks that are in no path. A preview of the selected path's call graph sits at the bottom. `<CR>` or `1`–`9` enters a path, `gp` switches to another path from anywhere, `R` reloads, `q` quits. In the list and in diffs, `?` shows the keys that work there.
 
@@ -68,3 +71,5 @@ cd engine && cargo build
 `peek` takes `repo`, `commit`, `language` (`go` or `rust`), `name`, an optional `qualifier` and `from_path`, and returns the functions and methods with that name at that commit, best match first, each with its path, qualified name, kind, line range and lines.
 
 `checkout` takes `repo` and `commit` and returns `path`, a directory with that commit checked out, and `worktree`, which is false when that is the repository itself.
+
+`pull_request` takes `repo` and `number`, runs `gh pr view` (or `TRAIL_GH`), fetches the pull request's head and base branch, and returns `number`, `title`, `url`, `base` and `head` commits.

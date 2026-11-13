@@ -21,9 +21,10 @@ local function git_dir(repo)
   return vim.fs.normalize(dir)
 end
 
-function M.load(repo, base, head)
+---@param key string names the review, such as "main..feature" or "pr-123"
+function M.load(repo, key)
   local dir = git_dir(repo)
-  local key = (base .. ".." .. head):gsub("[^%w%.%-_]", "_")
+  key = key:gsub("[^%w%.%-_]", "_")
   file = dir and (dir .. "/trail/" .. key .. ".json") or nil
   data = empty()
   if file and vim.fn.filereadable(file) == 1 then

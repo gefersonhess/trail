@@ -3,6 +3,7 @@ mod difftastic;
 mod git;
 mod paths;
 mod peek;
+mod pull_request;
 mod review;
 mod rpc;
 mod sidebyside;
