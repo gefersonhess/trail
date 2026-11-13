@@ -30,7 +30,9 @@ In a Go or Rust repo:
 
 A tab lists the changed functions as a call tree (callers with their callees indented below), then tests, then hunks that are not inside any function. `+`, `~` and `-` mark added, modified and removed functions. `R` reloads, `q` quits.
 
-`<CR>` opens a side-by-side diff at the function or hunk under the cursor. Lines are aligned the way difftastic aligns them, with filler where one side has no matching line. Changed lines get a `-` (base side) or `+` (head side) next to the line number, and only the tokens that actually changed are highlighted, so formatting changes don't show up. Long unchanged stretches are folded, the gutter shows real line numbers, and both sides scroll together. `]h` and `[h` move between changes, `-` goes back to the list. Colors come from highlight groups you can override: `TrailAdd` and `TrailDelete` for the markers, `TrailAddText` and `TrailDeleteText` for changed tokens, `TrailFiller` for filler rows.
+`<CR>` opens a diff at the function or hunk under the cursor. By default it is unified: one column with old and new line numbers in the gutter, and each changed block shown as its old lines (`-`) followed by its new lines (`+`). `t` switches to side by side, where lines are aligned the way difftastic aligns them with filler where one side has no matching line, and back again. The cursor stays on the same line of code, and the layout you switch to is kept for the next file. Set `vim.g.trail_layout = "side_by_side"` to start with side by side.
+
+In both layouts only the tokens that actually changed are highlighted, so formatting changes don't show up, and reformatted code appears once as plain context. Long unchanged stretches are folded. `]h` and `[h` move between changes, `-` goes back to the list. Colors come from highlight groups you can override: `TrailAdd` and `TrailDelete` for the markers, `TrailAddText` and `TrailDeleteText` for changed tokens, `TrailFiller` for filler rows.
 
 This is an early preview to check the engine's output. Paths, the graph view, comments and progress come next. Run its test with `nvim --headless -u NONE -l test/plugin.lua`.
 

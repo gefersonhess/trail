@@ -1,5 +1,5 @@
 local engine = require("trail.engine")
-local sidebyside = require("trail.sidebyside")
+local diffview = require("trail.diffview")
 
 local M = {}
 
@@ -167,7 +167,7 @@ local function open_item(item)
     end
     vim.cmd("tabnew")
     state.diff_tab = vim.api.nvim_get_current_tabpage()
-    local view = sidebyside.show(diff, {
+    local view = diffview.show(diff, {
       old_path = params.old_path,
       new_path = params.new_path,
       on_back = back_to_list,
