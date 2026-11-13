@@ -4,6 +4,7 @@ local help = require("trail.help")
 local peek = require("trail.peek")
 local graph = require("trail.graph")
 local pathview = require("trail.pathview")
+local store = require("trail.state")
 
 local M = {}
 
@@ -170,9 +171,25 @@ local function show_target(target, is_node, win, keys, after)
     if not vim.api.nvim_win_is_valid(win) then
       return
     end
+    -- A diff arriving after the user moved to another tab renders there
+    -- without pulling them back or counting its hunks as seen.
+    local previous = vim.api.nvim_get_current_win()
+    local quiet = vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage()
     local view = diffview.show(diff, {
       win = win,
       keys = keys,
+      hunks = vim.tbl_filter(function(h)
+        return h.file == target.file
+      end, review.hunks),
+      on_seen = function(ids)
+        if quiet then
+          return
+        end
+        if store.mark_seen(ids) then
+          pathview.refresh_graph()
+          M.refresh_home()
+        end
+      end,
       old_path = params.old_path,
       new_path = params.new_path,
       on_back = home,
@@ -187,7 +204,10 @@ local function show_target(target, is_node, win, keys, after)
     })
     local on_new = target.new and (is_node or target.new.len > 0)
     view.focus(on_new and "new" or "old", math.max((on_new and target.new or target.old).start, 1))
-    if after then
+    if quiet then
+      vim.api.nvim_set_current_win(previous)
+      quiet = false
+    elseif after then
       after()
     end
   end)
@@ -203,18 +223,41 @@ local function path_context()
     switch_path = function()
       M.switch_path()
     end,
-    done_steps = function()
-      return {}
+    done_steps = function(path)
+      return M.done_steps(path)
     end,
-    on_step = function() end,
+    on_step = function(path, step)
+      store.set_position(path.id, step)
+    end,
   }
+end
+
+local function step_hunks(step)
+  return step.node and step.node.hunks or { step.hunk.id }
+end
+
+---Steps whose hunks have all been seen.
+function M.done_steps(path)
+  local done = {}
+  for i, step in ipairs(path.steps) do
+    done[i] = vim.iter(step_hunks(step)):all(store.seen)
+  end
+  return done
+end
+
+local function progress(path)
+  local n = 0
+  for _, d in pairs(M.done_steps(path)) do
+    n = n + (d and 1 or 0)
+  end
+  return n
 end
 
 local function enter(path, step)
   if #path.steps == 0 then
     return
   end
-  pathview.open(path_context(), path, step)
+  pathview.open(path_context(), path, step or store.position(path.id) or 1)
 end
 
 function M.switch_path()
@@ -226,7 +269,7 @@ function M.switch_path()
     end,
   }, function(choice)
     if choice then
-      enter(choice, 1)
+      enter(choice)
     end
   end)
 end
@@ -259,9 +302,14 @@ local function build_home(review)
   end
   for i, p in ipairs(state.code) do
     local number = i <= 9 and tostring(i) or " "
-    local text = string.format("  %s  %s%s  %s", number, p.title, string.rep(" ", title_width - vim.fn.strdisplaywidth(p.title)),
-      count(#p.steps, "step"))
-    add(text, { path = p }, { { "Number", 2, 3 }, { "Comment", 5 + #p.title + title_width - vim.fn.strdisplaywidth(p.title) + 2, -1 } })
+    local done = progress(p)
+    local text = string.format("  %s  %s%s  %s  %s %d/%d", number, p.title,
+      string.rep(" ", title_width - vim.fn.strdisplaywidth(p.title)), count(#p.steps, "step"),
+      done == #p.steps and "✓" or "·", done, #p.steps)
+    add(text, { path = p }, {
+      { "Number", 2, 3 },
+      { done == #p.steps and "TrailAdd" or "Comment", 5 + #p.title + title_width - vim.fn.strdisplaywidth(p.title) + 2, -1 },
+    })
   end
   if #state.code == 0 then
     add("  (no changed functions)", nil, { { "Comment", 0, -1 } })
@@ -271,8 +319,8 @@ local function build_home(review)
     add("")
     add("Tests", nil, { { "Title", 0, 5 } })
     for _, t in ipairs(state.tests) do
-      local text = string.format("     %s  %s · covers %s", t.title, count(#t.test.nodes, "test"),
-        count(#t.test.covers, "function"))
+      local text = string.format("     %s  %s · covers %s  · %d/%d", t.title, count(#t.test.nodes, "test"),
+        count(#t.test.covers, "function"), progress(t), #t.steps)
       add(text, { path = t }, { { "Comment", 5 + #t.title, -1 } })
     end
     if #review.uncovered > 0 then
@@ -288,7 +336,7 @@ local function build_home(review)
     add("")
     add("Not in any path", nil, { { "Title", 0, 15 } })
     for i, step in ipairs(state.loose.steps) do
-      local text = "     " .. hunk_label(step.hunk)
+      local text = (store.seen(step.hunk.id) and "  ✓  " or "     ") .. hunk_label(step.hunk)
       add(text, { path = state.loose, step = i }, { { "Comment", 0, -1 } })
     end
   end
@@ -297,7 +345,8 @@ end
 
 local function render_preview()
   local buf = state.list_buf
-  local row = vim.api.nvim_win_get_cursor(vim.fn.bufwinid(buf))[1]
+  local win = vim.fn.bufwinid(buf)
+  local row = win ~= -1 and vim.api.nvim_win_get_cursor(win)[1] or 0
   local item = state.items[row] or {}
   local path = item.path or state.code[1]
   if path == state.preview_path and state.preview_start then
@@ -345,7 +394,19 @@ local function render()
   pathview.refresh_graph()
 end
 
+function M.refresh_home()
+  if state.list_buf and vim.api.nvim_buf_is_valid(state.list_buf) and state.review then
+    local view = vim.fn.bufwinid(state.list_buf)
+    local cursor = view ~= -1 and vim.api.nvim_win_get_cursor(view)
+    render()
+    if cursor then
+      pcall(vim.api.nvim_win_set_cursor, view, cursor)
+    end
+  end
+end
+
 local function load()
+  store.load(state.repo, state.base, state.head)
   engine.request("open", { repo = state.repo, base = state.base, head = state.head }, function(err, result)
     if err then
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
@@ -384,13 +445,13 @@ function M.open(arg)
   map("<CR>", function()
     local item = state.items and state.items[vim.api.nvim_win_get_cursor(0)[1]]
     if item and item.path then
-      enter(item.path, item.step or 1)
+      enter(item.path, item.step)
     end
   end, "Enter the path")
   for n = 1, 9 do
     vim.keymap.set("n", tostring(n), function()
       if state.code and state.code[n] then
-        enter(state.code[n], 1)
+        enter(state.code[n])
       end
     end, { buffer = buf, nowait = true })
   end

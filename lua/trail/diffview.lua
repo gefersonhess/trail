@@ -316,6 +316,52 @@ function M.show(diff, opts)
     return "new", 1
   end
 
+  local hunk_ends = {}
+  for _, p in ipairs(panes) do
+    for _, h in ipairs(opts.hunks or {}) do
+      local last
+      for row, e in pairs(p.view.gutter) do
+        local in_old = e.old and h.old.len > 0 and e.old >= h.old.start and e.old < h.old.start + h.old.len
+        local in_new = e.new and h.new.len > 0 and e.new >= h.new.start and e.new < h.new.start + h.new.len
+        if (in_old or in_new) and (not last or row > last) then
+          last = row
+        end
+      end
+      if last then
+        table.insert(hunk_ends, { pane = p, id = h.id, row = last })
+      end
+    end
+  end
+
+  ---Reports hunks whose last line is on screen, so the caller can count them as seen.
+  local function report_seen()
+    if not opts.on_seen then
+      return
+    end
+    local seen = {}
+    for _, he in ipairs(hunk_ends) do
+      local win = he.pane.win
+      if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == he.pane.buf
+        and vim.api.nvim_win_get_tabpage(win) == vim.api.nvim_get_current_tabpage() then
+        local top, bottom = vim.fn.line("w0", win), vim.fn.line("w$", win)
+        if he.row >= top and he.row <= bottom then
+          table.insert(seen, he.id)
+        end
+      end
+    end
+    if #seen > 0 then
+      opts.on_seen(seen)
+    end
+  end
+  for _, p in ipairs(panes) do
+    vim.api.nvim_create_autocmd({ "CursorMoved", "WinScrolled" }, {
+      buffer = p.buf,
+      callback = function()
+        report_seen()
+      end,
+    })
+  end
+
   local view = {}
   function view.focus(side, line)
     local p = panes[1]
@@ -325,6 +371,7 @@ function M.show(diff, opts)
     vim.api.nvim_set_current_win(p.win)
     vim.api.nvim_win_set_cursor(p.win, { row_for(p.view, side, line), 0 })
     vim.cmd("normal! zvzz")
+    report_seen()
   end
 
   local function jump(dir)

@@ -53,8 +53,8 @@ local function line_of(pattern)
 end
 
 check(line_of("^1 path · 5 functions · 1 test file · 1 hunk not in any path$"), "summary line")
-check(line_of("^  1  auth%.Login  4 steps$"), "path listed with its step count")
-check(line_of("^     auth/auth_test%.go  1 test · covers 3 functions$"), "test file listed with what it covers")
+check(line_of("^  1  auth%.Login  4 steps  · 0/4$"), "path listed with its step count and progress")
+check(line_of("^     auth/auth_test%.go  1 test · covers 3 functions  · 0/1$"), "test file listed with what it covers")
 check(line_of("^     auth/auth%.go:3%-6$"), "import hunk listed as not in any path")
 check(not text:match("no test change covers"), "every changed function is covered by the test")
 check(line_of("^── auth%.Login") and line_of("^  ~ auth%.Login  ") and line_of("^  ├─ ~ auth%.VerifyHash")
@@ -415,10 +415,69 @@ vim.o.lines = 12
 vim.api.nvim_feedkeys("-1", "x", false)
 check(vim.wait(10000, function()
   local _, w = graph_buf()
-  return w and current_step_line():match("auth%.Login")
-end), "back to the first path")
+  return w and current_step_line() and current_step_line():match("auth%.Gone")
+end), "re-entering a path resumes at the step it was left at")
 local _, small_gwin = graph_buf()
 check(vim.api.nvim_win_get_height(small_gwin) <= 4, "the graph takes at most a third of the screen, got " .. vim.api.nvim_win_get_height(small_gwin))
+
+local state_file = require("trail.state").path()
+check(state_file and state_file:match("/%.git/trail/main%.%.feature%.json$") and vim.fn.filereadable(state_file) == 1,
+  "review state is saved under .git/trail: " .. tostring(state_file))
+local saved = vim.json.decode(table.concat(vim.fn.readfile(state_file), "\n"))
+check(saved.positions["path:go:auth.Login"] == 4, "the step each path was left at is saved: " .. vim.inspect(saved.positions))
+check(vim.tbl_count(saved.seen) > 0, "seen hunks are saved")
+
+vim.api.nvim_feedkeys("-", "x", false)
+local function home_line(pattern)
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+    if l:match(pattern) then
+      return l
+    end
+  end
+end
+check(home_line("^  1  auth%.Login  4 steps  ✓ 4/4$"), "a path whose steps were all seen is marked done: " .. tostring(home_line("auth%.Login  4")))
+vim.fn.delete(state_file)
+vim.api.nvim_feedkeys("R", "x", false)
+
+check(vim.wait(10000, function()
+  return home_line("^  1  auth%.Login  4 steps  · 0/4$") ~= nil
+end), "progress starts over without saved state")
+vim.api.nvim_feedkeys("1", "x", false)
+check(wait_diff_line("func Login(user string) bool {"), "a path without a saved step starts at step 1")
+vim.api.nvim_feedkeys("-", "x", false)
+local partial = home_line("^  1  auth%.Login  4 steps  · (%d)/4$")
+local done = partial and tonumber(partial:match("· (%d)/4$"))
+check(done and done >= 1 and done < 4, "only steps whose hunks were on screen count as done: " .. tostring(partial))
+vim.api.nvim_feedkeys("1", "x", false)
+vim.wait(10000, function()
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/") ~= nil
+end)
+vim.api.nvim_feedkeys("]s", "x", false)
+vim.wait(10000, function()
+  return current_step_line():match("auth%.VerifyHash")
+end)
+local login_row
+for _, l in ipairs(vim.api.nvim_buf_get_lines((graph_buf()), 0, -1, false)) do
+  if l:match("auth%.Login  ") then
+    login_row = l
+  end
+end
+check(login_row and login_row:match("^✓"), "a done step is marked in the graph: " .. tostring(login_row))
+
+vim.api.nvim_feedkeys("-", "x", false)
+vim.fn.writefile({ vim.json.encode({ version = 1, seen = vim.empty_dict(), positions = { ["path:go:auth.Login"] = 4 }, comments = {} }) }, state_file)
+vim.api.nvim_feedkeys("R", "x", false)
+vim.wait(10000, function()
+  return home_line("^  1  auth%.Login  4 steps  · 0/4$") ~= nil
+end)
+vim.api.nvim_feedkeys("1", "x", false)
+check(vim.wait(10000, function()
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/") and vim.api.nvim_get_current_line() == "func Gone() {}"
+end), "the saved step is resumed from the state file")
+vim.api.nvim_feedkeys("-", "x", false)
+local jumped = home_line("^  1  auth%.Login  4 steps  · (%d)/4$")
+local jumped_done = jumped and tonumber(jumped:match("· (%d)/4$"))
+check(jumped_done and jumped_done < 4, "hunks jumped over above the screen do not count as seen: " .. tostring(jumped))
 
 vim.fn.delete(repo, "rf")
 if failures > 0 then
