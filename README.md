@@ -8,6 +8,30 @@ Status: design. See [docs/design.md](docs/design.md).
 
 Languages: Go and Rust first.
 
+## Trying it in Neovim
+
+Requires Neovim 0.10 or later and a Rust toolchain. With lazy.nvim:
+
+```lua
+{
+  "gefersonhess/trail",
+  build = "cd engine && cargo build --release",
+  cmd = "Trail",
+}
+```
+
+Or point `dir` at a local checkout and build the engine yourself. The plugin uses `engine/target/release/trail` (or `debug`), then `trail` on your `PATH`. Set `vim.g.trail_engine` to use another binary.
+
+In a Go or Rust repo:
+
+```
+:Trail main..my-branch
+```
+
+A tab lists the changed functions as a call tree (callers with their callees indented below), then tests, then hunks that are not inside any function. `<CR>` opens a side-by-side diff of the function or hunk under the cursor, `-` goes back to the list, `R` reloads, `q` quits. `+`, `~` and `-` mark added, modified and removed functions.
+
+This is an early preview to check the engine's output. Paths, the graph view, comments and progress come next. Run its test with `nvim --headless -u NONE -l test/plugin.lua`.
+
 ## Engine
 
 ```sh
