@@ -76,6 +76,35 @@ Two levels, like a file explorer.
 - Removed-call edges come from tree-sitter name matching on the old side, which has no LSP.
 - The screens appear before the LSP is ready, with name-matched edges shown as uncertain until the LSP confirms them.
 
+## Architecture
+
+trail has two parts:
+
+- The engine, a Rust binary, does all the analysis: reading the diff, finding changed functions with tree-sitter, building call edges, forming paths, and checking that every hunk is covered.
+- The Neovim plugin draws the screens and keeps the review state. It asks the engine for results.
+
+The engine runs as a long-lived process (`trail serve`) that the plugin talks to over JSON-RPC on stdio. The engine owns the language servers (gopls, rust-analyzer) for the review worktree. The same language server builds the call edges and answers `gd` during the review, so there is one instance per worktree, and a future TUI or web view can reuse the engine unchanged.
+
+### Engine output
+
+Derived data, recomputable from git and the code at any time:
+
+- `files`: path, status, language, whether it is a test.
+- `hunks`: id, file, old and new line ranges, `moved_from`.
+- `nodes`: id (language plus qualified name, e.g. `go:auth.VerifyHash`), kind, status (added, modified, removed, context), old and new ranges, hunk ids, whether it is a test.
+- `edges`: from, to, status (added, removed, unchanged), source (`lsp` or `name_match`, the latter shown as uncertain).
+- `paths`: id, title, origin (`graph` or `ai`), steps. A step is a list of nodes, so related changes can be shown together.
+- `tests`: test file and the nodes it covers.
+- `unassigned`: hunks in no path and not in tests.
+
+### Review state
+
+The user's own data, stored separately under `.git/trail/<review>.json` and never recomputed: seen hunks, position per path, comments, reviewer session id.
+
+### Stable ids
+
+Hunk ids are hashes of the file and the changed content, not line numbers. When the author pushes new commits, hunks they did not touch keep their ids and stay reviewed, and changed ones show up as unreviewed. Comments store the line text so they can find their line again after it moves.
+
 ## First version
 
 In:
@@ -98,7 +127,5 @@ Later:
 
 ## Open questions
 
-- Engine output format: changed symbols, hunks, edges, paths, progress.
 - How paths are formed without AI, in detail.
-- Keeping comments and progress attached when new commits are pushed during a review.
 - Diff backend: difftastic, or tree matching of our own.
