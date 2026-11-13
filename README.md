@@ -27,3 +27,4 @@ cd engine && cargo build
 - `files`: path, status, language, whether it is a test.
 - `hunks`: id, file, old and new line ranges. Ids hash the file and changed lines, so they stay the same when other hunks shift.
 - `nodes`: the Go and Rust functions and methods a hunk touches, found with tree-sitter. Each has an id such as `go:auth.Store.Save` or `rust:auth::hash::verify`, a status (added, modified, removed), old and new ranges, and the ids of its hunks.
+- `edges`: calls between changed nodes, as `from`, `to` and a status: `added` (call only in the new code), `removed` (only in the old code) or `unchanged`. They are matched by name with tree-sitter, so their `source` is `name_match` and they should be shown as uncertain. A call matches by how it is written: `a::f()` only a function under `a`, `x.f()` only methods (or, in Go, a function in package `x`), and a bare `f()` only functions, in the same package for Go. Production code never links to test-only functions.

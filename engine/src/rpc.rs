@@ -87,10 +87,11 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 message,
             })?;
             log(&format!(
-                "open: {} files, {} hunks, {} nodes",
+                "open: {} files, {} hunks, {} nodes, {} edges",
                 review.files.len(),
                 review.hunks.len(),
-                review.nodes.len()
+                review.nodes.len(),
+                review.edges.len()
             ));
             Ok(serde_json::to_value(review).expect("review serializes"))
         }

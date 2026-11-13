@@ -456,3 +456,120 @@ fn deleting_lines_inside_a_function_marks_it_modified() {
     assert_eq!(f["status"], "modified");
     assert_eq!(f["hunks"].as_array().unwrap().len(), 1);
 }
+
+fn edges(result: &Value) -> Vec<(String, String, String)> {
+    let mut edges: Vec<_> = result["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            assert_eq!(e["source"], "name_match");
+            (
+                e["from"].as_str().unwrap().to_string(),
+                e["to"].as_str().unwrap().to_string(),
+                e["status"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    edges.sort();
+    edges
+}
+
+fn edge(from: &str, to: &str, status: &str) -> (String, String, String) {
+    (from.to_string(), to.to_string(), status.to_string())
+}
+
+#[test]
+fn go_edges_compare_calls_before_and_after() {
+    let repo = Repo::new();
+    repo.write(
+        "auth.go",
+        "package auth\n\nfunc Login(u string) bool {\n\tGone()\n\treturn VerifyHash(u)\n}\n\nfunc VerifyHash(h string) bool {\n\treturn h != \"\"\n}\n\nfunc Gone() {}\n",
+    );
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "auth.go",
+        "package auth\n\nfunc Login(u string) bool {\n\treturn VerifyHash(u)\n}\n\nfunc VerifyHash(h string) bool {\n\treturn hashOf(h) == h && VerifyHash(\"\")\n}\n\nfunc hashOf(h string) string { return h }\n",
+    );
+    repo.commit("feature");
+
+    let response = open(&repo, "main", "feature");
+
+    assert_eq!(
+        edges(&response["result"]),
+        [
+            edge("go:auth.Login", "go:auth.Gone", "removed"),
+            edge("go:auth.Login", "go:auth.VerifyHash", "unchanged"),
+            edge("go:auth.VerifyHash", "go:auth.hashOf", "added"),
+        ]
+    );
+}
+
+#[test]
+fn rust_edges_use_the_qualifier_to_pick_between_same_named_functions() {
+    let repo = Repo::new();
+    repo.write("README.md", "x\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "src/lib.rs",
+        "pub struct A;\npub struct B;\n\nimpl A {\n    pub fn new() -> Self { A }\n    pub fn make() -> Self { Self::new() }\n}\n\nimpl B {\n    pub fn new() -> Self { B }\n    pub fn check(&self) -> bool { true }\n    pub fn run(&self) -> bool { self.check() }\n}\n\npub fn build() -> B { B::new() }\n",
+    );
+    repo.commit("feature");
+
+    let response = open(&repo, "main", "feature");
+
+    assert_eq!(
+        edges(&response["result"]),
+        [
+            edge("rust:A::make", "rust:A::new", "added"),
+            edge("rust:B::run", "rust:B::check", "added"),
+            edge("rust:build", "rust:B::new", "added"),
+        ]
+    );
+}
+
+#[test]
+fn rust_calls_match_only_what_their_syntax_allows() {
+    let repo = Repo::new();
+    repo.write("README.md", "x\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "src/lib.rs",
+        "pub struct Fnv;\n\nimpl Fnv {\n    pub fn new() -> Self { Fnv }\n}\n\npub fn push() {}\n\npub fn parse() {\n    let mut v = Vec::new();\n    v.push(1);\n    helper();\n}\n\n#[cfg(test)]\nmod tests {\n    pub fn helper() {}\n}\n",
+    );
+    repo.commit("feature");
+
+    let response = open(&repo, "main", "feature");
+
+    assert_eq!(edges(&response["result"]), []);
+}
+
+#[test]
+fn go_selector_calls_reach_package_functions_and_methods() {
+    let repo = Repo::new();
+    repo.write("README.md", "x\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "auth/auth.go",
+        "package auth\n\nfunc Verify() bool { return true }\n\nfunc Contains() {}\n\ntype Store struct{}\n\nfunc (s *Store) Save() {}\n",
+    );
+    repo.write(
+        "api/api.go",
+        "package api\n\nfunc Handle(s *auth.Store) {\n\tauth.Verify()\n\ts.Save()\n\tstrings.Contains(\"a\", \"b\")\n\tContains()\n}\n",
+    );
+    repo.commit("feature");
+
+    let response = open(&repo, "main", "feature");
+
+    assert_eq!(
+        edges(&response["result"]),
+        [
+            edge("go:api.Handle", "go:auth.Store.Save", "added"),
+            edge("go:api.Handle", "go:auth.Verify", "added"),
+        ]
+    );
+}

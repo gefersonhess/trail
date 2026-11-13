@@ -5,6 +5,24 @@ pub struct Symbol {
     pub kind: Kind,
     pub start: u32,
     pub end: u32,
+    pub calls: Vec<Call>,
+}
+
+#[derive(Clone)]
+pub struct Call {
+    pub name: String,
+    pub via: Via,
+}
+
+/// How the callee was written, which decides what it can match.
+#[derive(Clone)]
+pub enum Via {
+    /// `f()`
+    Plain,
+    /// `a::f()`, with the last path segment.
+    Path(String),
+    /// `x.f()`, with `x` when it is a plain name. In Go `x` may also be a package.
+    Receiver(Option<String>),
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize)]
@@ -56,7 +74,9 @@ fn go(root: Node, src: &[u8], out: &mut Vec<Symbol>) {
             continue;
         };
         match node.kind() {
-            "function_declaration" => push(out, node, format!("{package}.{name}"), Kind::Function),
+            "function_declaration" => {
+                push(out, node, format!("{package}.{name}"), Kind::Function, src)
+            }
             "method_declaration" => {
                 let receiver = node
                     .child_by_field_name("receiver")
@@ -68,6 +88,7 @@ fn go(root: Node, src: &[u8], out: &mut Vec<Symbol>) {
                     node,
                     format!("{package}.{receiver}.{name}"),
                     Kind::Method,
+                    src,
                 );
             }
             _ => {}
@@ -88,7 +109,7 @@ fn rust(node: Node, src: &[u8], path: &mut Vec<String>, in_impl: bool, out: &mut
                     } else {
                         Kind::Function
                     };
-                    push(out, child, full.join("::"), kind);
+                    push(out, child, full.join("::"), kind, src);
                 }
                 continue;
             }
@@ -127,13 +148,65 @@ fn rust_module(path: &str) -> Vec<String> {
     segments
 }
 
-fn push(out: &mut Vec<Symbol>, node: Node, name: String, kind: Kind) {
+fn push(out: &mut Vec<Symbol>, node: Node, name: String, kind: Kind, src: &[u8]) {
+    let mut calls = Vec::new();
+    collect_calls(node, src, &mut calls);
     out.push(Symbol {
         name,
         kind,
         start: node.start_position().row as u32 + 1,
         end: node.end_position().row as u32 + 1,
+        calls,
     });
+}
+
+fn collect_calls(node: Node, src: &[u8], out: &mut Vec<Call>) {
+    if node.kind() == "call_expression"
+        && let Some(call) = node
+            .child_by_field_name("function")
+            .and_then(|f| callee(f, src))
+    {
+        out.push(call);
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_calls(child, src, out);
+    }
+}
+
+fn callee(function: Node, src: &[u8]) -> Option<Call> {
+    let simple = |n: Node| {
+        matches!(n.kind(), "identifier" | "type_identifier" | "self")
+            .then(|| text(n, src).to_string())
+    };
+    let (name, via) = match function.kind() {
+        "identifier" => (function, Via::Plain),
+        "selector_expression" => (
+            function.child_by_field_name("field")?,
+            Via::Receiver(function.child_by_field_name("operand").and_then(simple)),
+        ),
+        "field_expression" => (
+            function.child_by_field_name("field")?,
+            Via::Receiver(function.child_by_field_name("value").and_then(simple)),
+        ),
+        "scoped_identifier" => {
+            let path = function.child_by_field_name("path")?;
+            let last = match path.kind() {
+                "scoped_identifier" => path.child_by_field_name("name")?,
+                _ => base_type(path),
+            };
+            (
+                function.child_by_field_name("name")?,
+                Via::Path(text(last, src).to_string()),
+            )
+        }
+        "generic_function" => return callee(function.child_by_field_name("function")?, src),
+        _ => return None,
+    };
+    Some(Call {
+        name: text(name, src).to_string(),
+        via,
+    })
 }
 
 fn text<'a>(node: Node, src: &'a [u8]) -> &'a str {

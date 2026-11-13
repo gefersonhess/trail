@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::diff::{self, File, Hunk, Range, Status};
 use crate::git;
-use crate::symbols::{self, Kind, Symbol};
+use crate::symbols::{self, Call, Kind, Symbol, Via};
 
 #[derive(Serialize)]
 pub struct Review {
@@ -14,6 +14,7 @@ pub struct Review {
     pub files: Vec<File>,
     pub hunks: Vec<Hunk>,
     pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
 }
 
 #[derive(Serialize)]
@@ -26,9 +27,29 @@ pub struct Node {
     new: Option<Range>,
     hunks: Vec<String>,
     is_test: bool,
+    #[serde(skip)]
+    old_calls: Vec<Call>,
+    #[serde(skip)]
+    new_calls: Vec<Call>,
 }
 
-#[derive(Serialize, Clone, Copy)]
+#[derive(Serialize)]
+pub struct Edge {
+    from: String,
+    to: String,
+    status: EdgeStatus,
+    source: &'static str,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum EdgeStatus {
+    Added,
+    Removed,
+    Unchanged,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
 enum NodeStatus {
     Added,
@@ -71,6 +92,7 @@ pub fn open(repo: &Path, base: &str, head: &str) -> Result<Review, String> {
         head_commit,
         files: diff.files,
         hunks: diff.hunks,
+        edges: edges(&nodes),
         nodes,
     })
 }
@@ -94,7 +116,7 @@ fn changed_nodes(
         |name: &str, kind, status, old: Option<&Symbol>, new: Option<&Symbol>, hunks: &[&Hunk]| {
             let id = format!("{language}:{name}");
             Node {
-                is_test: file.is_test || id.contains("::tests::"),
+                is_test: file.is_test || name.split("::").any(|s| s == "tests"),
                 id,
                 kind,
                 status,
@@ -102,6 +124,8 @@ fn changed_nodes(
                 old: old.map(span),
                 new: new.map(span),
                 hunks: hunks.iter().map(|h| h.id.clone()).collect(),
+                old_calls: old.map_or_else(Vec::new, |s| s.calls.clone()),
+                new_calls: new.map_or_else(Vec::new, |s| s.calls.clone()),
             }
         };
 
@@ -161,4 +185,120 @@ fn with_ids(symbols: &[Symbol]) -> impl Iterator<Item = (String, &Symbol)> {
 
 fn overlaps(range: Range, symbol: &Symbol) -> bool {
     range.len > 0 && range.start <= symbol.end && range.start + range.len > symbol.start
+}
+
+/// Matches each changed node's calls, on each side, to changed nodes by name.
+/// Calls only on the new side are added edges, only on the old side removed.
+fn edges(nodes: &[Node]) -> Vec<Edge> {
+    let old = side_edges(nodes, |n| n.status != NodeStatus::Added, |n| &n.old_calls);
+    let new = side_edges(nodes, |n| n.status != NodeStatus::Removed, |n| &n.new_calls);
+    let edge = |(from, to): &(&str, &str), status| Edge {
+        from: from.to_string(),
+        to: to.to_string(),
+        status,
+        source: "name_match",
+    };
+    let mut edges: Vec<Edge> = new
+        .iter()
+        .map(|e| {
+            edge(
+                e,
+                if old.contains(e) {
+                    EdgeStatus::Unchanged
+                } else {
+                    EdgeStatus::Added
+                },
+            )
+        })
+        .collect();
+    edges.extend(
+        old.iter()
+            .filter(|e| !new.contains(e))
+            .map(|e| edge(e, EdgeStatus::Removed)),
+    );
+    edges
+}
+
+fn side_edges(
+    nodes: &[Node],
+    present: impl Fn(&Node) -> bool + Copy,
+    calls: impl Fn(&Node) -> &[Call],
+) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    for caller in nodes.iter().filter(|n| present(n)) {
+        for call in calls(caller) {
+            for target in targets(nodes, present, caller, call) {
+                let edge = (caller.id.as_str(), target.id.as_str());
+                if !out.contains(&edge) {
+                    out.push(edge);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn targets<'a, 'b>(
+    nodes: &'a [Node],
+    present: impl Fn(&Node) -> bool,
+    caller: &'b Node,
+    call: &'b Call,
+) -> Vec<&'a Node> {
+    let (language, caller_parent, _) = parts(&caller.id);
+    let named: Vec<&Node> = nodes
+        .iter()
+        .filter(|n| present(n) && n.id != caller.id && (caller.is_test || !n.is_test))
+        .filter(|n| {
+            let (lang, _, name) = parts(&n.id);
+            lang == language && name == call.name
+        })
+        .collect();
+    let with_parent = |parent: &str, kind: Option<Kind>| -> Vec<&'a Node> {
+        named
+            .iter()
+            .copied()
+            .filter(|n| parts(&n.id).1 == parent && kind.is_none_or(|k| n.kind == k))
+            .collect()
+    };
+    let of_kind =
+        |kind| -> Vec<&'a Node> { named.iter().copied().filter(|n| n.kind == kind).collect() };
+    let first_nonempty = |a: Vec<&'a Node>, b: Vec<&'a Node>| if a.is_empty() { b } else { a };
+    let resolve = |q: &'b str| -> &'b str {
+        if q == "Self" || q == "self" {
+            caller_parent
+        } else {
+            q
+        }
+    };
+
+    match &call.via {
+        Via::Plain if language == "go" => with_parent(caller_parent, Some(Kind::Function)),
+        Via::Plain => first_nonempty(
+            with_parent(caller_parent, Some(Kind::Function)),
+            of_kind(Kind::Function),
+        ),
+        Via::Path(q) => with_parent(resolve(q), None),
+        Via::Receiver(Some(q)) => {
+            let q = resolve(q);
+            let package_function = if language == "go" {
+                with_parent(q, Some(Kind::Function))
+            } else {
+                Vec::new()
+            };
+            first_nonempty(
+                package_function,
+                first_nonempty(with_parent(q, Some(Kind::Method)), of_kind(Kind::Method)),
+            )
+        }
+        Via::Receiver(None) => of_kind(Kind::Method),
+    }
+}
+
+/// Splits `go:auth.Store.Save#2` into language, parent (`Store`) and name (`Save`).
+fn parts(id: &str) -> (&str, &str, &str) {
+    let (language, path) = id.split_once(':').unwrap_or(("", id));
+    let path = path.split_once('#').map_or(path, |(p, _)| p);
+    let mut segments = path.rsplit(if language == "rust" { "::" } else { "." });
+    let name = segments.next().unwrap_or("");
+    (language, segments.next().unwrap_or(""), name)
 }
