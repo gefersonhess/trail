@@ -1,6 +1,7 @@
 mod diff;
 mod difftastic;
 mod git;
+mod paths;
 mod peek;
 mod review;
 mod rpc;

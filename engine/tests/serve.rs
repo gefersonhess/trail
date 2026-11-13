@@ -1101,3 +1101,149 @@ fn checkout_keeps_one_reusable_worktree_for_other_commits() {
         "the user's checkout is untouched"
     );
 }
+
+fn ids(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .unwrap_or_else(|| panic!("not an array: {value}"))
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn paths_follow_calls_from_entry_points_with_tests_and_loose_hunks_apart() {
+    let (repo, _) = branch_with(
+        &[
+            (
+                "auth/auth.go",
+                "package auth\n\nimport \"fmt\"\n\nfunc Login(u string) bool {\n\tAudit(u)\n\treturn VerifyHash(u)\n}\n\nfunc VerifyHash(h string) bool {\n\treturn h != \"\"\n}\n\nfunc Audit(u string) { fmt.Println(u) }\n",
+            ),
+            (
+                "api/api.go",
+                "package api\n\nfunc Handle() int { return 1 }\n",
+            ),
+            (
+                "api/api_test.go",
+                "package api\n\nfunc TestHandle(t *testing.T) {}\n",
+            ),
+        ],
+        &[
+            (
+                "auth/auth.go",
+                "package auth\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc Login(u string) bool {\n\treturn VerifyHash(u)\n}\n\nfunc VerifyHash(h string) bool {\n\treturn hashOf(h) == h\n}\n\nfunc hashOf(h string) string { return strings.ToLower(fmt.Sprint(h)) }\n",
+            ),
+            (
+                "api/api.go",
+                "package api\n\nfunc Handle() int { return 2 }\n",
+            ),
+            (
+                "auth/auth_test.go",
+                "package auth\n\nimport \"testing\"\n\nfunc TestLogin(t *testing.T) { Login(\"x\") }\n",
+            ),
+            (
+                "api/api_test.go",
+                "package api\n\nimport \"testing\"\n\nfunc TestHandle(t *testing.T) {}\n",
+            ),
+        ],
+        &[],
+    );
+
+    let response = open(&repo, "main", "feature");
+    let result = &response["result"];
+
+    let paths = result["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 2, "{}", result["paths"]);
+    assert_eq!(paths[0]["id"], "path:go:auth.Login");
+    assert_eq!(paths[0]["title"], "auth.Login");
+    assert_eq!(paths[0]["origin"], "graph");
+    assert_eq!(
+        paths[0]["steps"],
+        json!([
+            ["go:auth.Login"],
+            ["go:auth.VerifyHash"],
+            ["go:auth.hashOf"],
+            ["go:auth.Audit"]
+        ])
+    );
+    assert_eq!(paths[1]["steps"], json!([["go:api.Handle"]]));
+
+    let all_tests = result["tests"].as_array().unwrap();
+    assert_eq!(all_tests.len(), 2, "{}", result["tests"]);
+    let api_tests = all_tests
+        .iter()
+        .find(|t| t["file"] == "api/api_test.go")
+        .unwrap();
+    assert_eq!(
+        api_tests["nodes"],
+        json!([]),
+        "only the import changed in this test file"
+    );
+    assert_eq!(api_tests["hunks"].as_array().unwrap().len(), 1);
+    let tests: Vec<&Value> = all_tests
+        .iter()
+        .filter(|t| t["file"] == "auth/auth_test.go")
+        .collect();
+    assert_eq!(tests[0]["file"], "auth/auth_test.go");
+    assert_eq!(ids(&tests[0]["nodes"]), ["go:auth.TestLogin"]);
+    assert_eq!(
+        ids(&tests[0]["covers"]),
+        ["go:auth.Login", "go:auth.VerifyHash", "go:auth.hashOf"]
+    );
+    assert_eq!(tests[0]["hunks"].as_array().unwrap().len(), 1);
+    assert_eq!(ids(&result["uncovered"]), ["go:api.Handle"]);
+
+    let import_hunk = result["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["file"] == "auth/auth.go" && h["new"]["start"] == 3)
+        .unwrap();
+    assert_eq!(result["unassigned"], json!([import_hunk["id"]]));
+}
+
+#[test]
+fn paths_share_callees_between_entry_points_and_survive_cycles() {
+    let (repo, _) = branch_with(
+        &[],
+        &[
+            (
+                "p.go",
+                "package p\n\nfunc A() { C() }\n\nfunc B() { C() }\n\nfunc C() {}\n\nfunc X() { Y() }\n\nfunc Y() { X() }\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub fn run() { helper() }\n\nfn helper() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn runs() { super::run() }\n}\n",
+            ),
+        ],
+        &[],
+    );
+
+    let response = open(&repo, "main", "feature");
+    let result = &response["result"];
+    let paths = result["paths"].as_array().unwrap();
+    let by_id = |id: &str| {
+        paths
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap_or_else(|| panic!("{id} in {}", result["paths"]))
+    };
+
+    let shared = by_id("path:go:p.A");
+    assert_eq!(ids(&shared["entries"]), ["go:p.A", "go:p.B"]);
+    assert_eq!(shared["title"], "p.A, p.B");
+    assert_eq!(shared["steps"], json!([["go:p.A"], ["go:p.C"], ["go:p.B"]]));
+    assert_eq!(
+        by_id("path:go:p.X")["steps"],
+        json!([["go:p.X"], ["go:p.Y"]])
+    );
+    assert_eq!(
+        by_id("path:rust:run")["steps"],
+        json!([["rust:run"], ["rust:helper"]])
+    );
+
+    let tests = result["tests"].as_array().unwrap();
+    assert_eq!(tests.len(), 1, "{}", result["tests"]);
+    assert_eq!(tests[0]["file"], "src/lib.rs");
+    assert_eq!(ids(&tests[0]["nodes"]), ["rust:tests::runs"]);
+}

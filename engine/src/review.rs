@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::diff::{self, File, Hunk, Range, Status};
 use crate::difftastic::{self, Outcome};
 use crate::git;
+use crate::paths;
 use crate::symbols::{self, Call, Kind, Symbol, Via};
 
 #[derive(Serialize)]
@@ -16,18 +17,22 @@ pub struct Review {
     pub hunks: Vec<Hunk>,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    pub paths: Vec<paths::Path>,
+    pub tests: Vec<paths::TestFile>,
+    pub uncovered: Vec<String>,
+    pub unassigned: Vec<String>,
 }
 
 #[derive(Serialize)]
 pub struct Node {
-    id: String,
+    pub id: String,
     kind: Kind,
-    status: NodeStatus,
-    file: String,
+    pub status: NodeStatus,
+    pub file: String,
     old: Option<Range>,
     new: Option<Range>,
-    hunks: Vec<String>,
-    is_test: bool,
+    pub hunks: Vec<String>,
+    pub is_test: bool,
     #[serde(skip)]
     old_calls: Vec<Call>,
     #[serde(skip)]
@@ -36,15 +41,15 @@ pub struct Node {
 
 #[derive(Serialize)]
 pub struct Edge {
-    from: String,
-    to: String,
-    status: EdgeStatus,
+    pub from: String,
+    pub to: String,
+    pub status: EdgeStatus,
     source: &'static str,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
-enum EdgeStatus {
+pub enum EdgeStatus {
     Added,
     Removed,
     Unchanged,
@@ -52,7 +57,7 @@ enum EdgeStatus {
 
 #[derive(Serialize, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
-enum NodeStatus {
+pub enum NodeStatus {
     Added,
     Modified,
     Removed,
@@ -98,13 +103,19 @@ pub fn open(repo: &Path, base: &str, head: &str) -> Result<Review, String> {
     diff.files.retain(|f| {
         f.status != Status::Modified || f.binary || hunks.iter().any(|h| h.file == f.path)
     });
+    let edges = edges(&nodes);
+    let layout = paths::layout(&diff.files, &diff.hunks, &nodes, &edges);
     Ok(Review {
         base_commit,
         head_commit,
         files: diff.files,
         hunks: diff.hunks,
-        edges: edges(&nodes),
+        edges,
         nodes,
+        paths: layout.paths,
+        tests: layout.tests,
+        uncovered: layout.uncovered,
+        unassigned: layout.unassigned,
     })
 }
 
