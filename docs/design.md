@@ -26,10 +26,10 @@ Two levels, like a file explorer.
 ### Inside a path
 
 - The path's call graph (DAG) on top, current step highlighted, at most a third of the screen and scrollable beyond that.
-- A scrollable side-by-side diff below, with unchanged stretches folded.
-- `n`/`p` move between steps, `]h` between hunks, `-` goes back to the paths screen.
+- A scrollable diff below, unified by default and side by side with `t`, with unchanged stretches folded.
+- `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen.
 - `<CR>` on a node in the graph jumps the diff to it.
-- `gd` uses the LSP on the new side.
+- `K` shows a function's code in a popup. `gd` opens it in a separate Neovim in a floating terminal, with the user's own config and LSP.
 
 ### Navigation and progress
 
@@ -83,7 +83,7 @@ trail has two parts:
 - The engine, a Rust binary, does all the analysis: reading the diff, finding changed functions with tree-sitter, building call edges, forming paths, and checking that every hunk is covered.
 - The Neovim plugin draws the screens and keeps the review state. It asks the engine for results.
 
-The engine runs as a long-lived process (`trail serve`) that the plugin talks to over JSON-RPC on stdio. The engine owns the language servers (gopls, rust-analyzer) for the review worktree. The same language server builds the call edges and answers `gd` during the review, so there is one instance per worktree, and a future TUI or web view can reuse the engine unchanged.
+The engine runs as a long-lived process (`trail serve`) that the plugin talks to over JSON-RPC on stdio. The engine owns the language servers (gopls, rust-analyzer) for the review worktree. There is one language server per worktree, and a future TUI or web view can reuse the engine unchanged.
 
 ### Engine output
 
@@ -114,7 +114,7 @@ In:
 - Call edges from the LSP call hierarchy.
 - Paths built from the graph without AI: one path per connected group of changed functions, starting at its entry point. Tests separated.
 - Paths screen and path view.
-- The difftastic diff: the engine runs `difft` (JSON output) on both versions of a file, and the plugin draws its line alignment and changed tokens in its own side-by-side buffers, so comments and navigation work on them. Without `difft`, a line diff with whitespace ignored. Moved code is not marked yet.
+- The difftastic diff: the engine runs `difft` (JSON output) on both versions of a file, and the plugin draws its line alignment and changed tokens in its own buffers, so comments and navigation work on them. Without `difft`, a line diff with whitespace ignored. Moved code is not marked yet.
 - Comments and per-node progress, saved under `.git/`.
 - Copy comments as markdown.
 
