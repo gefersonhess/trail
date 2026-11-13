@@ -125,6 +125,6 @@ Later:
 - Collapsed view for big changes.
 - Structural diff with moved-code detection.
 
-## Open questions
+## Paths without AI
 
-- How paths are formed without AI, in detail.
+One path per group of changed functions connected by calls or uses, removed calls included, ignoring tests. A path starts at its entry points (changed functions nothing else in the group calls) and its steps follow calls depth-first, so a caller is read before what it calls. Larger paths come first. Changed types and constants are nodes too, and unchanged functions that use them join as context nodes, so a type change appears in the path of the code using it. Test files are grouped separately with the changed functions they reach; hunks outside any function and test file are listed as not in any path.
