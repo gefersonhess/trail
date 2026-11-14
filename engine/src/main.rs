@@ -1,6 +1,7 @@
 mod diff;
 mod difftastic;
 mod git;
+mod impact;
 mod lsp;
 mod paths;
 mod peek;
