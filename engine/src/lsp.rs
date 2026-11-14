@@ -175,10 +175,21 @@ impl Client {
         }
     }
 
+    /// Asks the server to exit, then closes its input so one that ignores the
+    /// request still sees end of input, and kills it if it lingers.
     fn shutdown(mut self) {
         let _ = self.request("shutdown", Value::Null, Duration::from_secs(5));
         let _ = self.notify("exit", Value::Null);
-        let _ = self.child.wait();
+        let Client {
+            mut child, stdin, ..
+        } = self;
+        drop(stdin);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
