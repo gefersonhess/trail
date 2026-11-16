@@ -52,6 +52,9 @@ pub struct Row {
     pub via: Option<String>,
     /// Already shown earlier, so its callees are not repeated here.
     pub join: bool,
+    /// Callers through an interface declared outside the repository, left out
+    /// of the trees.
+    pub outside_callers: usize,
 }
 
 #[derive(Serialize)]
@@ -78,6 +81,9 @@ pub struct ImpactEdge {
     pub to: String,
     /// The interface or trait method the call goes through, when it is not direct.
     pub via: Option<String>,
+    /// Through an interface declared outside the repository: the walk does not
+    /// go further up from the caller, and the trees leave it out.
+    pub outside: bool,
     pub source: &'static str,
 }
 
@@ -99,6 +105,9 @@ struct Sources {
     commit: String,
     language: &'static str,
     symbols: HashMap<String, Vec<Symbol>>,
+    /// Names of interface or trait methods called with no implementation in
+    /// the repository, which tree-sitter does not list as functions.
+    abstract_methods: HashMap<Key, String>,
 }
 
 impl Sources {
@@ -135,15 +144,23 @@ impl Sources {
     /// The full name, the package, and the name without the package.
     fn names(&mut self, key: &Key) -> (String, String, String) {
         let separator = if self.language == "rust" { "::" } else { "." };
-        if let Some(function) = self.function(key) {
-            // Methods keep their type: `Store.Save`, `Store::save`.
-            let keep = if function.kind == Kind::Method { 2 } else { 1 };
-            let parts: Vec<&str> = function.name.split(separator).collect();
+        let split = |name: &str, keep: usize| {
+            let parts: Vec<&str> = name.split(separator).collect();
             let at = parts.len().saturating_sub(keep);
-            return (
-                function.name.clone(),
+            (
+                name.to_string(),
                 parts[..at].join(separator),
                 parts[at..].join(separator),
+            )
+        };
+        if let Some(name) = self.abstract_methods.get(key) {
+            return split(name, 2);
+        }
+        if let Some(function) = self.function(key) {
+            // Methods keep their type: `Store.Save`, `Store::save`.
+            return split(
+                &function.name,
+                if function.kind == Kind::Method { 2 } else { 1 },
             );
         }
         match self.enclosing(key) {
@@ -391,6 +408,7 @@ impl Calls for Server<'_> {
                 });
             }
             if !implemented {
+                sources.abstract_methods.insert(callee.clone(), via);
                 self.items.insert(callee.clone(), to.clone());
                 out.push(Link {
                     key: callee,
@@ -490,7 +508,7 @@ struct Reach {
     /// Reached without an interface from outside the repository on the way,
     /// so a changed function among them shares the path.
     joins: HashSet<Key>,
-    edges: Vec<(Key, Key, Option<String>)>,
+    edges: Vec<(Key, Key, Option<String>, bool)>,
     truncated: bool,
 }
 
@@ -541,6 +559,8 @@ impl Walker<'_> {
     /// Breadth first from `root`, callers when `up`, else callees.
     fn walk(&mut self, root: &Key, up: bool, reach: &mut Reach) -> Result<(), String> {
         let mut seen: HashSet<Key> = HashSet::from([root.clone()]);
+        // Callers through an outside interface, not walked further unless reached directly too.
+        let mut stopped: HashSet<Key> = HashSet::new();
         reach.joins.insert(root.clone());
         let mut queue = VecDeque::from([root.clone()]);
         while let Some(key) = queue.pop_front() {
@@ -574,17 +594,23 @@ impl Walker<'_> {
                         continue;
                     }
                     seen.insert(next.clone());
-                    queue.push_back(next.clone());
+                    if outside {
+                        stopped.insert(next.clone());
+                    } else {
+                        queue.push_back(next.clone());
+                    }
                     if up {
                         reach.up.push(next.clone());
                     } else {
                         reach.down.push(next.clone());
                     }
+                } else if !outside && stopped.remove(&next) {
+                    queue.push_back(next.clone());
                 }
                 let edge = if up {
-                    (next, key.clone(), via)
+                    (next, key.clone(), via, outside)
                 } else {
-                    (key.clone(), next, via)
+                    (key.clone(), next, via, outside)
                 };
                 reach.edges.push(edge);
             }
@@ -631,6 +657,7 @@ fn walk_language(
             commit: head_commit.to_string(),
             language,
             symbols: HashMap::new(),
+            abstract_methods: HashMap::new(),
         };
         let mut walker = Walker {
             calls,
@@ -817,12 +844,18 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
             let reach = &reaches[i].1;
             truncated |= reach.truncated;
             keys.extend(reach.up.iter().chain(&reach.down).cloned());
-            edges.extend(reach.edges.iter().map(|(from, to, via)| ImpactEdge {
-                from: id_of(from),
-                to: id_of(to),
-                via: via.clone(),
-                source,
-            }));
+            edges.extend(
+                reach
+                    .edges
+                    .iter()
+                    .map(|(from, to, via, outside)| ImpactEdge {
+                        from: id_of(from),
+                        to: id_of(to),
+                        via: via.clone(),
+                        outside: *outside,
+                        source,
+                    }),
+            );
         }
         keys.sort();
         keys.dedup();
@@ -873,13 +906,24 @@ fn layout(
     let is_changed = |id: &str| own.contains(id);
     let mut callees: HashMap<&str, Vec<(&str, Option<&str>)>> = HashMap::new();
     let mut called: HashSet<&str> = HashSet::new();
+    let mut outside_callers: HashMap<&str, usize> = HashMap::new();
     for e in edges.iter().filter(|e| !is_test(&e.from)) {
+        if e.outside {
+            *outside_callers.entry(&e.to).or_default() += 1;
+            continue;
+        }
         callees
             .entry(&e.from)
             .or_default()
             .push((&e.to, e.via.as_deref()));
         called.insert(&e.to);
     }
+    // In the trees only through an outside interface: shown as a count on what they call.
+    let only_outside: HashSet<&str> = edges
+        .iter()
+        .filter(|e| e.outside && !callees.contains_key(e.from.as_str()))
+        .map(|e| e.from.as_str())
+        .collect();
     let changes_below = |start: &str| {
         let mut seen = HashSet::from([start]);
         let mut queue = vec![start];
@@ -909,7 +953,7 @@ fn layout(
     let mut starts: Vec<&str> = nodes
         .iter()
         .map(|n| n.id.as_str())
-        .filter(|id| !is_test(id) && !called.contains(id))
+        .filter(|id| !is_test(id) && !called.contains(id) && !only_outside.contains(id))
         .collect();
     starts.sort_by(order);
     // Changed functions only reachable through a cycle get a tree of their own.
@@ -946,6 +990,7 @@ fn layout(
                 depth,
                 via: via.map(str::to_string),
                 join,
+                outside_callers: outside_callers.get(id).copied().unwrap_or(0),
             });
         }
         trees.push(Tree { rows, changes });
