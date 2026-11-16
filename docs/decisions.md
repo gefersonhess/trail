@@ -18,6 +18,7 @@ What was decided while building trail, and why. `design.md` describes how trail 
   - **AI-proposed paths come later,** on top of this graph rather than instead of it.
 - **Tests stay out of the trees:** a test calling into a path shows as a count on the row it calls (`◇ 3 tests`), not as a tree. The paths screen lists the changes no test reaches, even indirectly, and the changed test files with what they cover.
 - **Changed types and constants are steps too.** Their impact goes through the functions using them, so a changed type sits in its path below those functions, and its path is walked up from them.
+- **Changed test files are grouped by package on the paths screen:** Go test files sit under a header for their folder, since a package is the unit a Go reviewer thinks in; other languages (Rust) list one row per file. A flat list got long on big changes (#15).
 - **Every hunk lands somewhere:** in a step of a path, in a changed test file, or under "Not in any path" (imports, package-level variables nothing uses, removed functions whose hunk no step covers).
 - **Comments:** kinds are blocking, question and nit. For now the review is copied as markdown and pasted into an agent conversation. Sending to an agent or posting to GitHub comes later.
 - **AI reviewer (later):** a fresh agent session per review, never the one that wrote the code, reused for every question in that review. It must support Claude Code and pi.

@@ -553,10 +553,29 @@ local function build_home(review)
   if #state.tests > 0 then
     add("")
     add("Test changes", nil, { { "Title", 0, 12 } })
+    -- Go tests group by package (their folder); other languages list each file.
+    local groups, order = {}, {}
     for _, t in ipairs(state.tests) do
-      local text = string.format("     %s  %s · covers %s  · %d/%d", t.title, count(#t.test.nodes, "test"),
-        count(#t.test.covers, "function"), progress(t), #t.steps)
-      add(text, { path = t }, { { "Comment", 5 + #t.title, -1 } })
+      local dir = t.title:match("%.go$") and (vim.fs.dirname(t.title) .. "/") or ""
+      if not groups[dir] then
+        groups[dir] = {}
+        table.insert(order, dir)
+      end
+      table.insert(groups[dir], t)
+    end
+    for _, dir in ipairs(order) do
+      local indent = dir == "" and "     " or "       "
+      if dir ~= "" then
+        local header = "   " .. dir
+        add(header .. "  " .. count(#groups[dir], "test file"), nil,
+          { { "Directory", 3, #header }, { "Comment", #header, -1 } })
+      end
+      for _, t in ipairs(groups[dir]) do
+        local name = dir == "" and t.title or t.title:sub(#dir + 1)
+        local text = string.format("%s%s  %s · covers %s  · %d/%d", indent, name, count(#t.test.nodes, "test"),
+          count(#t.test.covers, "function"), progress(t), #t.steps)
+        add(text, { path = t }, { { "Comment", #indent + #name, -1 } })
+      end
     end
   end
 
