@@ -359,6 +359,8 @@ local function peek_node(node)
   end)
 end
 
+local toggle_reviewed
+
 local function path_context()
   return {
     show_target = show_target,
@@ -373,6 +375,9 @@ local function path_context()
     end,
     on_step = function(path, step)
       store.set_position(path.id, step)
+    end,
+    toggle_reviewed = function(path)
+      toggle_reviewed(path)
     end,
   }
 end
@@ -396,6 +401,40 @@ local function progress(path)
     n = n + (d and 1 or 0)
   end
   return n
+end
+
+---Marks every hunk of a path as seen, or clears them when they all are
+---already. Progress is per function, so other paths sharing them follow.
+toggle_reviewed = function(path)
+  local ids = {}
+  for _, step in ipairs(path.steps) do
+    vim.list_extend(ids, step_hunks(step))
+  end
+  if #ids == 0 then
+    return
+  end
+  local reviewed = vim.iter(ids):all(store.seen)
+  if reviewed then
+    store.unmark_seen(ids)
+  else
+    store.mark_seen(ids)
+  end
+  pathview.refresh_graph()
+  M.refresh_home()
+  vim.notify(string.format("trail: %s %s", reviewed and "unmarked" or "marked as reviewed:", path.title), vim.log.levels.INFO)
+end
+
+---The path a row of the paths screen stands for; a file under "Not in any
+---path" stands for that file's hunks only.
+local function row_path(item)
+  if item.path ~= state.loose or not item.step then
+    return item.path
+  end
+  local file = state.loose.steps[item.step].hunk.file
+  local steps = vim.tbl_filter(function(step)
+    return step.hunk.file == file
+  end, state.loose.steps)
+  return { title = file, steps = steps }
 end
 
 local function enter(path, step)
@@ -476,7 +515,7 @@ local function build_home(review)
   else
     add(string.format("%s · %s", count(#review.files, "file"), count(#store.comments(), "comment")), nil, { { "Comment", 0, -1 } })
   end
-  add("<CR> or 1-9 enters a path  ·  S send  ·  ? keys", nil, { { "Comment", 0, -1 } })
+  add("<CR> or 1-9 enters a path  ·  mr marks it reviewed  ·  S send  ·  ? keys", nil, { { "Comment", 0, -1 } })
   if review.ignored and #review.ignored > 0 then
     add(count(#review.ignored, "file") .. " hidden by vim.g.trail_ignore", nil, { { "Comment", 0, -1 } })
   end
@@ -789,6 +828,12 @@ function M.open(arg)
       end
     end, { buffer = buf, nowait = true })
   end
+  map("mr", function()
+    local item = state.items and state.items[vim.api.nvim_win_get_cursor(0)[1]]
+    if item and item.path then
+      toggle_reviewed(row_path(item))
+    end
+  end, "Mark the path as reviewed, or unmark it")
   map("gp", M.switch_path, "Switch path")
   map("S", open_send, "Send screen: comments, verdict, copy")
   vim.api.nvim_create_autocmd("CursorMoved", {

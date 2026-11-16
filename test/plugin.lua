@@ -67,6 +67,18 @@ check(line_of("^   auth/  1 test file$") and line_of("^       auth_test%.go  1 t
   "Go test files are grouped under their package, each listed with what it covers")
 check(line_of("^     auth/auth%.go  1 hunk$"), "the import hunk is listed as not in any path, by file")
 check(not text:match("No test reaches"), "every change is reached by the test")
+local function home_row(pattern)
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+    if l:match(pattern) then
+      return i
+    end
+  end
+end
+vim.api.nvim_win_set_cursor(0, { line_of("^  1  Login "), 0 })
+vim.api.nvim_feedkeys("mr", "x", false)
+check(home_row("^  1  Login .*✓ 3/3   auth$"), "mr marks the path as reviewed")
+vim.api.nvim_feedkeys("mr", "x", false)
+check(home_row("^  1  Login .*· 0/3   auth$"), "mr on a reviewed path unmarks it")
 check(line_of("^── Login ") and line_of("^  ● Login   step 1 · entry · ◇ 1 test   auth$") and line_of("^  └─ ● VerifyHash   step 2$")
   and line_of("^     └─ ✚ hashOf   step 3$"), "the preview draws the path from its entry point down")
 check(not text:match("Gone"), "a removed function is not a step: its hunk is part of VerifyHash's")

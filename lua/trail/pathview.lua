@@ -141,7 +141,7 @@ function M.refresh_graph()
 end
 
 ---Opens `path` at `step` in the review window: the path's tree on top, the diff below.
----@param ctx table callbacks from the plugin: show_target, peek_node, home, window, switch_path, done_steps, on_step
+---@param ctx table callbacks from the plugin: show_target, peek_node, home, window, switch_path, done_steps, on_step, toggle_reviewed
 function M.open(ctx, path, step)
   if valid() then
     vim.api.nvim_set_current_tabpage(view.tab)
@@ -207,6 +207,9 @@ function M.open(ctx, path, step)
     map("gp", function()
       view.ctx.switch_path()
     end, "Switch path")
+    map("mr", function()
+      view.ctx.toggle_reviewed(view.path)
+    end, "Mark the path as reviewed, or unmark it")
     map("?", help.show, "Show keys")
   end
   view.ctx = ctx
@@ -219,6 +222,9 @@ function M.open(ctx, path, step)
       M.step(-1)
     end, "Previous step" },
     { "gp", ctx.switch_path, "Switch path" },
+    { "mr", function()
+      ctx.toggle_reviewed(view.path)
+    end, "Mark the path as reviewed, or unmark it" },
   }
   show_step(step or 1, false)
 end
