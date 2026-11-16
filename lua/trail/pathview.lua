@@ -91,14 +91,15 @@ local function render_tree(keep_cursor)
   end
 end
 
-local function show_step(i, focus_tree)
+local function show_step(i, focus_tree, hunk)
   local path = view.path
   i = math.max(1, math.min(i, #path.steps))
   view.step = i
   view.ctx.on_step(path, i)
   render_tree()
   local target = path.steps[i]
-  view.ctx.show_target(target.node or target.hunk, target.node ~= nil, view.diff_win, view.keys, function()
+  local shown = hunk and vim.tbl_extend("force", hunk, { at_start = true }) or target.node or target.hunk
+  view.ctx.show_target(shown, hunk == nil and target.node ~= nil, view.diff_win, view.keys, function()
     if focus_tree and vim.api.nvim_win_is_valid(view.tree_win) then
       vim.api.nvim_set_current_win(view.tree_win)
     end
@@ -125,6 +126,31 @@ function M.step(delta)
     return
   end
   show_step(target, vim.api.nvim_get_current_win() == view.tree_win)
+end
+
+---Moves to the next change of the path (dir 1) or the previous one (dir -1):
+---the hunks of its steps only, continuing into the next step when this one
+---has none left.
+function M.change(dir)
+  if not valid() then
+    return
+  end
+  local ctx, steps = view.ctx, view.path.steps
+  local hunks = ctx.hunks_of(steps[view.step])
+  local found = ctx.next_hunk(hunks, dir)
+  if found == false then
+    return show_step(view.step, false, dir > 0 and hunks[1] or hunks[#hunks])
+  end
+  if found then
+    return ctx.focus_hunk(found)
+  end
+  local target = view.step + dir
+  if target < 1 or target > #steps then
+    vim.notify(dir > 0 and "trail: last change of this path" or "trail: first change of this path", vim.log.levels.INFO)
+    return
+  end
+  local next_hunks = ctx.hunks_of(steps[target])
+  show_step(target, false, dir > 0 and next_hunks[1] or next_hunks[#next_hunks])
 end
 
 ---The path and step being shown, if the path view is open.
@@ -210,6 +236,12 @@ function M.open(ctx, path, step)
     map("mr", function()
       view.ctx.toggle_reviewed(view.path)
     end, "Mark the path as reviewed, or unmark it")
+    map("]c", function()
+      M.change(1)
+    end, "Next change in this path")
+    map("[c", function()
+      M.change(-1)
+    end, "Previous change in this path")
     map("?", help.show, "Show keys")
   end
   view.ctx = ctx
@@ -225,6 +257,12 @@ function M.open(ctx, path, step)
     { "mr", function()
       ctx.toggle_reviewed(view.path)
     end, "Mark the path as reviewed, or unmark it" },
+    { "]c", function()
+      M.change(1)
+    end, "Next change in this path" },
+    { "[c", function()
+      M.change(-1)
+    end, "Previous change in this path" },
   }
   show_step(step or 1, false)
 end
