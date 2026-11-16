@@ -20,6 +20,7 @@ const DEFAULT_IGNORE: &[&str] = &[
     "*.pb.gw.go",
     "*_gen.go",
     "zz_generated.*.go",
+    "dbgen/",
     "Cargo.lock",
     "/target/",
 ];
