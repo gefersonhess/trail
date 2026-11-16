@@ -30,6 +30,9 @@ local function set_highlights()
   for name, spec in pairs(palettes[vim.o.background] or palettes.dark) do
     vim.api.nvim_set_hl(0, name, vim.tbl_extend("force", spec, { default = true }))
   end
+  local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+  local fallback = vim.o.background == "light" and 0x24292f or 0xc9d1d9
+  vim.api.nvim_set_hl(0, "TrailContext", { fg = normal.fg or fallback, default = true })
 end
 set_highlights()
 vim.api.nvim_create_autocmd("ColorScheme", { callback = set_highlights })
@@ -94,6 +97,13 @@ local function make_buf(name, path, view, unified)
       virt_text = { { string.rep("╱", 400), "TrailFiller" } },
       virt_text_pos = "overlay",
     })
+  end
+  -- Every line gets the text colour, above syntax, tree-sitter and LSP semantic
+  -- highlights whatever the user's config turns on, and below the changed tokens.
+  for row, line in ipairs(view.lines) do
+    if #line > 0 then
+      vim.api.nvim_buf_set_extmark(buf, ns, row - 1, 0, { end_col = #line, hl_group = "TrailContext", priority = 150 })
+    end
   end
   for _, s in ipairs(view.spans) do
     vim.api.nvim_buf_set_extmark(buf, ns, s.row - 1, s.from, {
