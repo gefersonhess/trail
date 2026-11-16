@@ -59,7 +59,8 @@ check(line_of("^trail  main%.%.feature  %("), "header names the review")
 check(line_of("^1 path · 3 changed functions · 1 test file · 1 hunk not in any path · 0 comments$"), "summary line")
 check(line_of("^  1  Login   3 changes   1 entry point · 3 functions   · 0/3   auth$"),
   "a path is listed by its first change, with its changes, reach, progress and packages")
-check(line_of("^     auth/auth_test%.go  1 test · covers 3 functions  · 0/1$"), "a changed test file is listed with what it covers")
+check(line_of("^   auth/  1 test file$") and line_of("^       auth_test%.go  1 test · covers 3 functions  · 0/1$"),
+  "Go test files are grouped under their package, each listed with what it covers")
 check(line_of("^     auth/auth%.go  1 hunk$"), "the import hunk is listed as not in any path, by file")
 check(not text:match("No test reaches"), "every change is reached by the test")
 check(line_of("^── Login ") and line_of("^  ● Login   step 1 · entry · ◇ 1 test   auth$") and line_of("^  └─ ● VerifyHash   step 2$")
