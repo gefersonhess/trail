@@ -1,6 +1,11 @@
 local M = {}
 
-local proc, pending, next_id, partial = nil, {}, 1, ""
+---The running engine: its process and the ids of the requests sent to it.
+local proc
+local pending, next_id = {}, 1
+
+---Where the engine's own messages go: progress, timings, errors.
+M.log_path = vim.fn.stdpath("log") .. "/trail.log"
 
 local function plugin_root()
   local source = debug.getinfo(1, "S").source:sub(2)
@@ -38,8 +43,18 @@ local function start()
   if vim.fn.executable(cmd) == 0 then
     error("trail engine not found: build it with `cargo build --release` in engine/, or set vim.g.trail_engine")
   end
-  proc = vim.system({ cmd, "serve" }, {
+  local log_path = M.log_path
+  local mine = { ids = {} }
+  local partial = ""
+  mine.handle = vim.system({ cmd, "serve" }, {
     stdin = true,
+    stderr = function(_, data)
+      local file = data and io.open(log_path, "a")
+      if file then
+        file:write(data)
+        file:close()
+      end
+    end,
     stdout = function(_, data)
       if not data then
         return
@@ -57,9 +72,24 @@ local function start()
         end)
       end
     end,
-  }, function()
-    proc = nil
+  }, function(result)
+    vim.schedule(function()
+      if proc == mine then
+        proc = nil
+      end
+      -- Its requests still waiting would never be answered.
+      local message = string.format("the engine stopped (exit code %d); see %s", result.code,
+        vim.fn.fnamemodify(log_path, ":~"))
+      for id in pairs(mine.ids) do
+        local cb = pending[id]
+        pending[id] = nil
+        if cb then
+          cb({ message = message })
+        end
+      end
+    end)
   end)
+  proc = mine
 end
 
 ---@param cb fun(err: table|nil, result: any)
@@ -70,12 +100,13 @@ function M.request(method, params, cb)
   local id = next_id
   next_id = next_id + 1
   pending[id] = cb
-  proc:write(vim.json.encode({ jsonrpc = "2.0", id = id, method = method, params = params }) .. "\n")
+  proc.ids[id] = true
+  proc.handle:write(vim.json.encode({ jsonrpc = "2.0", id = id, method = method, params = params }) .. "\n")
 end
 
 function M.stop()
   if proc then
-    proc:write(nil)
+    proc.handle:write(nil)
     proc = nil
   end
 end

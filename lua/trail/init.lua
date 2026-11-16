@@ -2,7 +2,7 @@ local engine = require("trail.engine")
 local diffview = require("trail.diffview")
 local help = require("trail.help")
 local peek = require("trail.peek")
-local graph = require("trail.graph")
+local tree = require("trail.tree")
 local pathview = require("trail.pathview")
 local store = require("trail.state")
 local comments = require("trail.comments")
@@ -31,8 +31,9 @@ local function hunk_label(h)
   return string.format("%s:%d-%d", h.file, side.start, side.start + math.max(side.len, 1) - 1)
 end
 
----Turns the engine's paths, tests and loose hunks into paths the path view can walk.
-local function build_paths(review)
+---Turns the impact paths, the changed test files and the hunks left over
+---into paths the path view can walk. Every hunk lands in one of them.
+local function build_paths(review, impact)
   local nodes, hunks = {}, {}
   for _, n in ipairs(review.nodes) do
     nodes[n.id] = n
@@ -40,13 +41,22 @@ local function build_paths(review)
   for _, h in ipairs(review.hunks) do
     hunks[h.id] = h
   end
+  local covered = {}
   local code = {}
-  for _, p in ipairs(review.paths) do
-    local steps = {}
-    for _, step in ipairs(p.steps) do
-      table.insert(steps, { node = nodes[step[1]] })
+  for _, p in ipairs(impact and impact.paths or {}) do
+    local steps, short = {}, {}
+    for _, n in ipairs(p.nodes) do
+      short[n.id] = n
     end
-    table.insert(code, { id = p.id, title = p.title, kind = "code", entries = p.entries, steps = steps })
+    for _, id in ipairs(p.steps) do
+      if nodes[id] then
+        table.insert(steps, { node = nodes[id] })
+        for _, h in ipairs(nodes[id].hunks) do
+          covered[h] = true
+        end
+      end
+    end
+    table.insert(code, { id = p.id, title = short[p.id].short, kind = "code", impact = p, steps = steps })
   end
   local tests = {}
   for _, t in ipairs(review.tests) do
@@ -55,9 +65,11 @@ local function build_paths(review)
       table.insert(steps, { node = nodes[id] })
       for _, h in ipairs(nodes[id].hunks) do
         in_nodes[h] = true
+        covered[h] = true
       end
     end
     for _, id in ipairs(t.hunks) do
+      covered[id] = true
       if not in_nodes[id] then
         table.insert(steps, { hunk = hunks[id] })
       end
@@ -65,10 +77,44 @@ local function build_paths(review)
     table.insert(tests, { id = "tests:" .. t.file, title = t.file, kind = "tests", steps = steps, test = t })
   end
   local loose = { id = "loose", title = "Not in any path", kind = "loose", steps = {} }
-  for _, id in ipairs(review.unassigned) do
-    table.insert(loose.steps, { hunk = hunks[id] })
+  if impact then
+    for _, h in ipairs(review.hunks) do
+      if not covered[h.id] then
+        table.insert(loose.steps, { hunk = h })
+      end
+    end
   end
   return code, tests, loose
+end
+
+---Changed functions of a path that no test calls, even through other code.
+local function untested(path)
+  local nodes, callers = {}, {}
+  for _, n in ipairs(path.impact.nodes) do
+    nodes[n.id] = n
+  end
+  for _, e in ipairs(path.impact.edges) do
+    callers[e.to] = callers[e.to] or {}
+    table.insert(callers[e.to], e.from)
+  end
+  local out = {}
+  for _, id in ipairs(path.impact.steps) do
+    local seen, queue, reached = { [id] = true }, { id }, false
+    while #queue > 0 and not reached do
+      for _, caller in ipairs(callers[table.remove(queue)] or {}) do
+        if nodes[caller].is_test then
+          reached = true
+        elseif not seen[caller] then
+          seen[caller] = true
+          table.insert(queue, caller)
+        end
+      end
+    end
+    if not reached then
+      table.insert(out, nodes[id].short)
+    end
+  end
+  return out
 end
 
 local function all_paths()
@@ -269,12 +315,47 @@ local function show_target(target, is_node, win, keys, after)
   end)
 end
 
+---Shows a function from an impact tree in the peek popup.
+local function peek_node(node)
+  local language = node.file:match("%.go$") and "go" or (node.file:match("%.rs$") and "rust" or nil)
+  local short = node.short:gsub("^closure in ", "")
+  local name = short:match("([%w_]+)$")
+  local qualifier = short:match("^([%w_]+)[%.:]")
+  engine.request("peek", {
+    repo = state.repo,
+    commit = state.review.head_commit,
+    language = language,
+    name = name,
+    qualifier = qualifier,
+    from_path = node.file,
+  }, function(err, result)
+    if err then
+      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+      return
+    end
+    local match = vim.iter(result.matches):find(function(m)
+      return m.path == node.file and m.start <= node.line
+    end) or result.matches[1]
+    if not match then
+      vim.notify("trail: no function named " .. name, vim.log.levels.INFO)
+      return
+    end
+    local filetype = vim.filetype.match({ filename = match.path }) or language
+    peek.show(match, {
+      filetype = filetype,
+      total = #result.matches,
+      changed = node.status ~= "unchanged",
+      on_open = function()
+        open_definition(match, "new", filetype)
+      end,
+    })
+  end)
+end
+
 local function path_context()
   return {
-    review = function()
-      return state.review
-    end,
     show_target = show_target,
+    peek_node = peek_node,
     home = home,
     window = review_window,
     switch_path = function()
@@ -377,61 +458,129 @@ local function build_home(review)
   local header = string.format("trail  %s  (%s → %s)", state.title,
     review.base_commit:sub(1, 7), review.head_commit:sub(1, 7))
   add(header, nil, { { "Title", 0, #header } })
-  add(string.format("%s · %s · %s · %s not in any path · %s", count(#state.code, "path"), count(#review.nodes, "function"),
-    count(#state.tests, "test file"), count(#state.loose.steps, "hunk"), count(#store.comments(), "comment")), nil,
-    { { "Comment", 0, -1 } })
-  local uncertain = vim.iter(review.edges):any(function(e)
-    return e.source == "name_match" and e.status ~= "removed"
-  end)
-  local note = state.lsp_pending and "Checking calls with the language server…  "
-    or (uncertain and "Calls matched by name (?) may be wrong.  " or "")
-  add(note .. "<CR> or 1-9 enters a path  ·  S send  ·  ? keys", nil,
-    { { "Comment", 0, -1 } })
+  local changed = 0
+  for _, p in ipairs(state.code) do
+    changed = changed + #p.steps
+  end
+  if state.impact then
+    add(string.format("%s · %s · %s · %s not in any path · %s", count(#state.code, "path"), count(changed, "changed function"),
+      count(#state.tests, "test file"), count(#state.loose.steps, "hunk"), count(#store.comments(), "comment")), nil,
+      { { "Comment", 0, -1 } })
+  else
+    add(string.format("%s · %s", count(#review.files, "file"), count(#store.comments(), "comment")), nil, { { "Comment", 0, -1 } })
+  end
+  add("<CR> or 1-9 enters a path  ·  S send  ·  ? keys", nil, { { "Comment", 0, -1 } })
 
   add("")
   add("Paths", nil, { { "Title", 0, 5 } })
-  local title_width = 0
-  for _, p in ipairs(state.code) do
-    title_width = math.max(title_width, vim.fn.strdisplaywidth(p.title))
+  if state.impact_error then
+    add("  The impact could not be worked out: " .. state.impact_error, nil, { { "WarningMsg", 0, -1 } })
+  elseif not state.impact then
+    local waited = state.impact_started and math.floor((vim.uv.now() - state.impact_started) / 1000) or 0
+    add(string.format("  Working out the impact of each change… %ds  (engine log: %s)", waited,
+      vim.fn.fnamemodify(engine.log_path, ":~")), nil, { { "Comment", 0, -1 } })
   end
+  local rows = {}
+  local widths = { 0, 0, 0 }
   for i, p in ipairs(state.code) do
-    local number = i <= 9 and tostring(i) or " "
+    local entries, functions, tested, packages, seen_package = 0, 0, false, {}, {}
+    for _, n in ipairs(p.impact.nodes) do
+      if n.entry then
+        entries = entries + 1
+      end
+      if n.is_test then
+        tested = true
+      else
+        functions = functions + 1
+      end
+    end
+    for _, id in ipairs(p.impact.steps) do
+      for _, n in ipairs(p.impact.nodes) do
+        if n.id == id and not seen_package[n.package] then
+          seen_package[n.package] = true
+          table.insert(packages, n.package)
+        end
+      end
+    end
+    local reach = count(entries, "entry point") .. " · " .. count(functions, "function")
+    if functions <= 1 then
+      reach = tested and "only tests call it" or "nothing calls it"
+    end
     local done = progress(p)
-    local text = string.format("  %s  %s%s  %s  %s %d/%d", number, p.title,
-      string.rep(" ", title_width - vim.fn.strdisplaywidth(p.title)), count(#p.steps, "step"),
-      done == #p.steps and "✓" or "·", done, #p.steps)
-    add(text, { path = p }, {
+    local row = {
+      number = i <= 9 and tostring(i) or " ",
+      title = p.title,
+      changes = count(#p.steps, "change"),
+      reach = reach,
+      progress = string.format("%s %d/%d", done == #p.steps and "✓" or "·", done, #p.steps),
+      packages = table.concat(packages, ", "),
+      done = done == #p.steps,
+      path = p,
+    }
+    widths[1] = math.max(widths[1], vim.fn.strdisplaywidth(row.title))
+    widths[2] = math.max(widths[2], vim.fn.strdisplaywidth(row.changes))
+    widths[3] = math.max(widths[3], vim.fn.strdisplaywidth(row.reach))
+    table.insert(rows, row)
+  end
+  local function pad(text, width)
+    return text .. string.rep(" ", width - vim.fn.strdisplaywidth(text))
+  end
+  for _, r in ipairs(rows) do
+    local left = string.format("  %s  %s   ", r.number, pad(r.title, widths[1]))
+    local text = left .. pad(r.changes, widths[2]) .. "   " .. pad(r.reach, widths[3]) .. "   " .. r.progress .. "   " .. r.packages
+    add(text, { path = r.path }, {
       { "Number", 2, 3 },
-      { done == #p.steps and "TrailAdd" or "Comment", 5 + #p.title + title_width - vim.fn.strdisplaywidth(p.title) + 2, -1 },
+      { "Comment", #left, #text - #r.packages - #r.progress - 3 },
+      { r.done and "TrailAdd" or "Comment", #text - #r.packages - #r.progress - 3, #text - #r.packages - 3 },
+      { "Comment", #text - #r.packages, -1 },
     })
   end
-  if #state.code == 0 then
+  if state.impact and #state.code == 0 then
     add("  (no changed functions)", nil, { { "Comment", 0, -1 } })
   end
 
-  if #state.tests > 0 or #review.uncovered > 0 then
+  local not_reached = {}
+  for _, p in ipairs(state.code) do
+    vim.list_extend(not_reached, untested(p))
+  end
+  if #not_reached > 0 then
     add("")
-    add("Tests", nil, { { "Title", 0, 5 } })
+    add("No test reaches", nil, { { "Title", 0, 15 } })
+    local text = "  " .. table.concat(not_reached, " · ")
+    add(text, nil, { { "Comment", 0, -1 } })
+  end
+
+  if #state.tests > 0 then
+    add("")
+    add("Test changes", nil, { { "Title", 0, 12 } })
     for _, t in ipairs(state.tests) do
       local text = string.format("     %s  %s · covers %s  · %d/%d", t.title, count(#t.test.nodes, "test"),
         count(#t.test.covers, "function"), progress(t), #t.steps)
       add(text, { path = t }, { { "Comment", 5 + #t.title, -1 } })
-    end
-    if #review.uncovered > 0 then
-      local names = vim.tbl_map(function(id)
-        return (id:gsub("^%w+:", ""))
-      end, review.uncovered)
-      local text = "  !  no test change covers " .. table.concat(names, ", ")
-      add(text, nil, { { "WarningMsg", 2, 3 }, { "Comment", 5, -1 } })
     end
   end
 
   if #state.loose.steps > 0 then
     add("")
     add("Not in any path", nil, { { "Title", 0, 15 } })
+    -- One line per file, opening at its first hunk.
+    local files, first, seen = {}, {}, {}
     for i, step in ipairs(state.loose.steps) do
-      local text = (store.seen(step.hunk.id) and "  ✓  " or "     ") .. hunk_label(step.hunk)
-      add(text, { path = state.loose, step = i }, { { "Comment", 0, -1 } })
+      local file = step.hunk.file
+      if not first[file] then
+        first[file] = i
+        table.insert(files, file)
+        seen[file] = { hunks = 0, seen = 0 }
+      end
+      seen[file].hunks = seen[file].hunks + 1
+      if store.seen(step.hunk.id) then
+        seen[file].seen = seen[file].seen + 1
+      end
+    end
+    for _, file in ipairs(files) do
+      local n = seen[file]
+      local text = (n.seen == n.hunks and "  ✓  " or "     ") .. file .. "  " .. count(n.hunks, "hunk")
+      add(text, { path = state.loose, step = first[file] }, { { "Comment", 0, -1 } })
     end
   end
   return lines, items, hls
@@ -448,13 +597,13 @@ local function render_preview()
   end
   state.preview_path = path
   local lines, hls = {}, {}
-  if path then
-    local graph_lines, graph_hls = graph.render(path, state.review, {})
+  if path and path.impact then
+    local tree_lines, tree_hls = tree.render(path.impact, { done = M.done_steps(path) })
     local title = "── " .. path.title .. " "
     lines = { "", title .. string.rep("─", math.max(0, 60 - vim.fn.strdisplaywidth(title))) }
-    vim.list_extend(lines, graph_lines)
+    vim.list_extend(lines, tree_lines)
     table.insert(hls, { 1, 0, -1, "Comment" })
-    for _, h in ipairs(graph_hls) do
+    for _, h in ipairs(tree_hls) do
       table.insert(hls, { h[1] + 2, h[2], h[3], h[4] })
     end
   end
@@ -471,7 +620,7 @@ end
 
 local function render()
   local buf = state.list_buf
-  state.code, state.tests, state.loose = build_paths(state.review)
+  state.code, state.tests, state.loose = build_paths(state.review, state.impact)
   local lines, items, hls = build_home(state.review)
   state.items = items
   vim.bo[buf].modifiable = true
@@ -499,24 +648,29 @@ function M.refresh_home()
   end
 end
 
----Asks the engine to confirm calls with the language server in the
----background, then redraws with the confirmed calls and paths.
-local function confirm_calls()
-  local has_code = vim.iter(state.review.nodes):any(function(n)
-    return n.id:match("^go:") or n.id:match("^rust:")
-  end)
-  if vim.g.trail_lsp == false or not has_code then
-    return
-  end
-  state.lsp_pending = true
+---Asks the engine for the impact paths in the background: the walk through
+---callers and callees can take a while, so the screen shows meanwhile.
+local function request_impact()
   local review = state.review
-  engine.request("open", { repo = state.repo, base = state.base, head = state.head, lsp = true }, function(err, result)
+  state.impact_started = vim.uv.now()
+  -- Redraw every second while waiting, so the time shows the walk is still going.
+  local ticker = vim.uv.new_timer()
+  ticker:start(1000, 1000, vim.schedule_wrap(function()
+    if state.review ~= review or state.impact or state.impact_error then
+      ticker:stop()
+      ticker:close()
+      return
+    end
+    M.refresh_home()
+  end))
+  engine.request("impact", { repo = state.repo, base = state.base, head = state.head }, function(err, result)
     if state.review ~= review then
       return
     end
-    state.lsp_pending = false
-    if not err then
-      state.review = result
+    if err then
+      state.impact_error = err.message
+    else
+      state.impact = result
     end
     M.refresh_home()
   end)
@@ -524,14 +678,17 @@ end
 
 local function review_range()
   store.load(state.repo, state.key)
+  -- Paths from before a reload must not be entered while the new ones are worked out.
+  state.impact, state.impact_error = nil, nil
+  M.refresh_home()
   engine.request("open", { repo = state.repo, base = state.base, head = state.head }, function(err, result)
     if err then
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
       return
     end
     state.review = result
-    state.lsp_pending = false
-    confirm_calls()
+    state.impact, state.impact_error = nil, nil
+    request_impact()
     if vim.api.nvim_buf_is_valid(state.list_buf) then
       render()
     end
