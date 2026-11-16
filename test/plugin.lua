@@ -523,9 +523,14 @@ check(jumped_done and jumped_done < 3, "hunks jumped over above the screen do no
 -- Comments and the send screen.
 vim.o.lines = 24
 local inputs = {}
-vim.ui.input = function(opts, on_confirm)
+local compose = require("trail.compose")
+local real_compose = compose.open
+compose.open = function(opts, on_confirm)
   table.insert(inputs, opts)
-  on_confirm(table.remove(inputs.answers or {}, 1))
+  local body = table.remove(inputs.answers or {}, 1)
+  if body then
+    on_confirm(body, opts.kind)
+  end
 end
 local function answer(...)
   inputs.answers = { ... }
@@ -553,7 +558,7 @@ local function notes_on(b, text)
 end
 answer("why the rename?")
 vim.api.nvim_feedkeys("cq", "x", false)
-check(inputs[1] and inputs[1].prompt == "question: ", "cq asks for a question")
+check(inputs[1] and inputs[1].kind == "question", "cq opens the popup on the question kind")
 local saved_comments = vim.json.decode(table.concat(vim.fn.readfile(state_file), "\n")).comments
 check(#saved_comments == 1 and saved_comments[1].kind == "question" and saved_comments[1].side == "new"
   and saved_comments[1].line == 8 and saved_comments[1].text == "func Login(user string) bool {"
@@ -586,6 +591,47 @@ vim.api.nvim_feedkeys("ce", "x", false)
 check(vim.iter(notes_on(cbuf, "func Login(user string) bool {") or {}):any(function(n)
   return n:match("why rename u to user%?")
 end), "ce edits the comment on the line")
+
+compose.open = real_compose
+local function popup(opts, body)
+  local result
+  compose.open(vim.tbl_extend("force", { kinds = require("trail.comments").kinds, highlight = require("trail.comments").highlight }, opts),
+    function(b, k)
+      result = { body = b, kind = k }
+    end)
+  local win = vim.api.nvim_get_current_win()
+  local pbuf = vim.api.nvim_win_get_buf(win)
+  if body then
+    vim.api.nvim_buf_set_lines(pbuf, 0, -1, false, vim.split(body, "\n"))
+  end
+  local function press(lhs, mode)
+    vim.fn.maparg(lhs, mode, false, true).callback()
+  end
+  return win, pbuf, press, function()
+    return result
+  end
+end
+local pwin, pbuf, press, result = popup({ kind = "question", body = "first" })
+check(vim.api.nvim_win_get_config(pwin).relative ~= "" and vim.inspect(vim.api.nvim_win_get_config(pwin).title):match("question"),
+  "the comment popup is a float titled with the kind")
+check(vim.deep_equal(vim.api.nvim_buf_get_lines(pbuf, 0, -1, false), { "first" }), "an edited comment opens with its text")
+press("<Tab>", "n")
+check(vim.inspect(vim.api.nvim_win_get_config(pwin).title):match("nit"), "<Tab> moves to the next kind")
+press("<Tab>", "n")
+press("<Tab>", "n")
+vim.api.nvim_buf_set_lines(pbuf, 0, -1, false, { "line one", "", "line two  " })
+press("<C-s>", "n")
+check(result() and result().body == "line one\n\nline two" and result().kind == "question",
+  "<C-s> saves multi-line text and the chosen kind, cycling back to the start: " .. vim.inspect(result()))
+check(not vim.api.nvim_win_is_valid(pwin), "saving closes the popup")
+pwin, pbuf, press, result = popup({ kind = "nit" }, "dropped")
+press("q", "n")
+check(result() == nil and not vim.api.nvim_win_is_valid(pwin), "q cancels without saving")
+vim.g.trail_default_comment_kind = "nit"
+check(require("trail.comments").default_kind() == "nit", "the default kind is configurable")
+vim.g.trail_default_comment_kind = "bogus"
+check(require("trail.comments").default_kind() == "blocking", "an unknown default kind falls back to blocking")
+vim.g.trail_default_comment_kind = nil
 
 local list = vim.json.decode(table.concat(vim.fn.readfile(state_file), "\n"))
 list.comments[1].line = 2

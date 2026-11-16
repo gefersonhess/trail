@@ -1,3 +1,4 @@
+local compose = require("trail.compose")
 local store = require("trail.state")
 
 local M = {}
@@ -10,6 +11,12 @@ vim.api.nvim_set_hl(0, "TrailNit", { link = "Comment", default = true })
 
 function M.highlight(kind)
   return kind_hl[kind] or "Comment"
+end
+
+---The kind `cc` starts with: `vim.g.trail_default_comment_kind`, or blocking.
+function M.default_kind()
+  local wanted = vim.g.trail_default_comment_kind
+  return vim.tbl_contains(M.kinds, wanted) and wanted or M.kinds[1]
 end
 
 local function file_of(side, old_path, new_path)
@@ -84,10 +91,11 @@ function M.add(kind, view, old_path, new_path, on_change)
     vim.notify("trail: no code line under the cursor", vim.log.levels.INFO)
     return
   end
-  vim.ui.input({ prompt = kind .. ": " }, function(body)
-    if not body or body == "" then
+  compose.open({ kind = kind, kinds = M.kinds, highlight = M.highlight }, function(body, picked)
+    if body == "" then
       return
     end
+    kind = picked
     table.insert(store.comments(), {
       id = tostring(vim.uv.hrtime()),
       kind = kind,
@@ -108,14 +116,13 @@ function M.edit(view, old_path, new_path, on_change)
     vim.notify("trail: no comment on this line", vim.log.levels.INFO)
     return
   end
-  vim.ui.input({ prompt = comment.kind .. ": ", default = comment.body }, function(body)
-    if not body then
-      return
-    end
+  local opts = { kind = comment.kind, kinds = M.kinds, highlight = M.highlight, body = comment.body }
+  compose.open(opts, function(body, picked)
     if body == "" then
       return M.delete(view, old_path, new_path, on_change)
     end
     comment.body = body
+    comment.kind = picked
     store.save()
     on_change()
   end)
