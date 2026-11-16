@@ -12,16 +12,16 @@ local chosen_folding
 local palettes = {
   dark = {
     TrailAdd = { fg = "#3fb950", bold = true },
-    TrailAddText = { bg = "#2e6b40" },
+    TrailAddText = { fg = "#3fb950", bold = true },
     TrailDelete = { fg = "#f85149", bold = true },
-    TrailDeleteText = { bg = "#7d2e36" },
+    TrailDeleteText = { fg = "#f85149", bold = true },
     TrailFiller = { fg = "#3b3f48" },
   },
   light = {
     TrailAdd = { fg = "#1a7f37", bold = true },
-    TrailAddText = { bg = "#abf2bc" },
+    TrailAddText = { fg = "#1a7f37", bold = true },
     TrailDelete = { fg = "#cf222e", bold = true },
-    TrailDeleteText = { bg = "#ffb3b0" },
+    TrailDeleteText = { fg = "#cf222e", bold = true },
     TrailFiller = { fg = "#d0d7de" },
   },
 }
