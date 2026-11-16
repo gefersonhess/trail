@@ -470,6 +470,9 @@ local function build_home(review)
     add(string.format("%s · %s", count(#review.files, "file"), count(#store.comments(), "comment")), nil, { { "Comment", 0, -1 } })
   end
   add("<CR> or 1-9 enters a path  ·  S send  ·  ? keys", nil, { { "Comment", 0, -1 } })
+  if review.ignored and #review.ignored > 0 then
+    add(count(#review.ignored, "file") .. " hidden by vim.g.trail_ignore", nil, { { "Comment", 0, -1 } })
+  end
 
   add("")
   add("Paths", nil, { { "Title", 0, 5 } })
@@ -682,7 +685,7 @@ local function request_impact()
     end
     M.refresh_home()
   end))
-  engine.request("impact", { repo = state.repo, base = state.base, head = state.head }, function(err, result)
+  engine.request("impact", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore }, function(err, result)
     if state.review ~= review then
       return
     end
@@ -700,7 +703,7 @@ local function review_range()
   -- Paths from before a reload must not be entered while the new ones are worked out.
   state.impact, state.impact_error = nil, nil
   M.refresh_home()
-  engine.request("open", { repo = state.repo, base = state.base, head = state.head }, function(err, result)
+  engine.request("open", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore }, function(err, result)
     if err then
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
       return

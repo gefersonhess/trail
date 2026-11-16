@@ -44,7 +44,7 @@ pub fn compute(
     let old = read(&base, old_path)?;
     let new = read(&head, new_path)?;
     let paths: Vec<&str> = old_path.into_iter().chain(new_path).collect();
-    let hunks = diff::compute(repo, &base, &head, &paths)?.hunks;
+    let hunks = diff::compute(repo, &base, &head, &paths, &diff::Ignore::default())?.hunks;
     let old_lines: Vec<String> = old.lines().map(str::to_string).collect();
     let new_lines: Vec<String> = new.lines().map(str::to_string).collect();
     let (line_rows, old_changed, new_changed) =

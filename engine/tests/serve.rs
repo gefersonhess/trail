@@ -2425,3 +2425,53 @@ fn a_changed_type_starts_its_path_at_the_functions_using_it() {
         (Some("store"), Some("Store"), Some("modified"))
     );
 }
+
+#[test]
+fn ignored_files_are_left_out_and_listed() {
+    let repo = Repo::new();
+    repo.write("keep.go", "package k\n\nfunc A() {}\n");
+    repo.write("api/types.pb.go", "package api\n\nfunc P() {}\n");
+    repo.write("vendor/dep/dep.go", "package dep\n\nfunc D() {}\n");
+    repo.write("docs/go.sum", "a\n");
+    repo.write("go.sum", "a\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("keep.go", "package k\n\nfunc A() { x() }\n");
+    repo.write("api/types.pb.go", "package api\n\nfunc P() { x() }\n");
+    repo.write("vendor/dep/dep.go", "package dep\n\nfunc D() { x() }\n");
+    repo.write("docs/go.sum", "b\n");
+    repo.write("go.sum", "b\n");
+    repo.commit("feature");
+
+    let responses = serve(&[json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "open",
+        "params": {
+            "repo": repo.path(),
+            "base": "main",
+            "head": "feature",
+            "ignore": ["*.pb.go", "vendor/", "/go.sum"],
+        },
+    })]);
+    let result = &responses[0]["result"];
+    let kept: Vec<&str> = result["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(kept, ["docs/go.sum", "keep.go"]);
+    assert_eq!(
+        result["ignored"],
+        json!(["api/types.pb.go", "go.sum", "vendor/dep/dep.go"])
+    );
+    assert!(hunks_of(result, "api/types.pb.go").is_empty());
+    assert!(
+        result["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["file"] == "keep.go")
+    );
+}

@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{impact, peek, pull_request, review, sidebyside, worktree};
+use crate::{diff, impact, peek, pull_request, review, sidebyside, worktree};
 
 const PARSE_ERROR: i64 = -32700;
 const INTERNAL_ERROR: i64 = -32603;
@@ -29,6 +29,8 @@ struct OpenParams {
     head: String,
     #[serde(default)]
     lsp: bool,
+    #[serde(default)]
+    ignore: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -160,10 +162,13 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 code: INVALID_PARAMS,
                 message: e.to_string(),
             })?;
+            let ignore = diff::Ignore::new(&p.ignore);
             let review =
-                review::open(&p.repo, &p.base, &p.head, p.lsp).map_err(|message| RpcError {
-                    code: GIT_ERROR,
-                    message,
+                review::open(&p.repo, &p.base, &p.head, p.lsp, &ignore).map_err(|message| {
+                    RpcError {
+                        code: GIT_ERROR,
+                        message,
+                    }
                 })?;
             log(&format!(
                 "open: {} files, {} hunks, {} nodes, {} edges",
@@ -197,10 +202,13 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 code: INVALID_PARAMS,
                 message: e.to_string(),
             })?;
+            let ignore = diff::Ignore::new(&p.ignore);
             let impact =
-                impact::compute(&p.repo, &p.base, &p.head).map_err(|message| RpcError {
-                    code: GIT_ERROR,
-                    message,
+                impact::compute(&p.repo, &p.base, &p.head, &ignore).map_err(|message| {
+                    RpcError {
+                        code: GIT_ERROR,
+                        message,
+                    }
                 })?;
             log(&format!("impact: {} paths", impact.paths.len()));
             Ok(serde_json::to_value(impact).expect("impact serializes"))

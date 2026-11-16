@@ -20,6 +20,7 @@ pub struct Review {
     pub head_commit: String,
     pub files: Vec<File>,
     pub hunks: Vec<Hunk>,
+    pub ignored: Vec<String>,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
     pub paths: Vec<paths::Path>,
@@ -84,11 +85,17 @@ pub enum NodeStatus {
 
 /// Reviews `head` against its merge base with `base`, like `git diff base...head`,
 /// so changes that landed on `base` after the branch point are not shown.
-pub fn open(repo: &Path, base: &str, head: &str, lsp: bool) -> Result<Review, String> {
+pub fn open(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    lsp: bool,
+    ignore: &diff::Ignore,
+) -> Result<Review, String> {
     let head_commit = git::commit(repo, head)?;
     let base_tip = git::commit(repo, base)?;
     let base_commit = git::merge_base(repo, &base_tip, &head_commit)?;
-    let mut diff = diff::compute(repo, &base_commit, &head_commit, &[])?;
+    let mut diff = diff::compute(repo, &base_commit, &head_commit, &[], ignore)?;
     let mut nodes = Vec::new();
     let mut formatting_only: Vec<String> = Vec::new();
     for file in &diff.files {
@@ -150,6 +157,7 @@ pub fn open(repo: &Path, base: &str, head: &str, lsp: bool) -> Result<Review, St
         head_commit,
         files: diff.files,
         hunks: diff.hunks,
+        ignored: diff.ignored,
         edges,
         nodes,
         paths: layout.paths,
