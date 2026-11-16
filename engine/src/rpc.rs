@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{peek, pull_request, review, sidebyside, worktree};
+use crate::{impact, peek, pull_request, review, sidebyside, worktree};
 
 const PARSE_ERROR: i64 = -32700;
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -80,7 +80,7 @@ pub fn serve(input: impl BufRead, output: impl Write + Send + 'static) -> io::Re
         // on its own thread so diffs and peeks stay responsive.
         let slow = request
             .as_ref()
-            .is_ok_and(|r| r.method == "open" && r.params["lsp"] == true);
+            .is_ok_and(|r| (r.method == "open" && r.params["lsp"] == true) || r.method == "impact");
         let output = Arc::clone(&output);
         let work = move || handle(request, &output);
         if slow {
@@ -176,6 +176,19 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 message,
             })?;
             Ok(serde_json::to_value(diff).expect("side by side serializes"))
+        }
+        "impact" => {
+            let p: OpenParams = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            let impact =
+                impact::compute(&p.repo, &p.base, &p.head).map_err(|message| RpcError {
+                    code: GIT_ERROR,
+                    message,
+                })?;
+            log(&format!("impact: {} paths", impact.paths.len()));
+            Ok(serde_json::to_value(impact).expect("impact serializes"))
         }
         "peek" => {
             let p: PeekParams = serde_json::from_value(params).map_err(|e| RpcError {

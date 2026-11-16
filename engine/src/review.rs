@@ -571,6 +571,18 @@ fn lsp_edges(
     Ok(confirmed)
 }
 
+impl Node {
+    /// Where a function or method's name starts at head: 0-based line and
+    /// UTF-16 column. None for removed code, types and constants.
+    pub fn head_function_at(&self) -> Option<(u32, usize)> {
+        if matches!(self.kind, Kind::Function | Kind::Method) {
+            self.new_name_at
+        } else {
+            None
+        }
+    }
+}
+
 impl Edge {
     fn copy(&self) -> Edge {
         Edge {

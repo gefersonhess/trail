@@ -1710,3 +1710,663 @@ fn added_and_deleted_files_number_their_empty_side_from_zero() {
         json!({ "start": 0, "len": 0 })
     );
 }
+
+fn impact_repo() -> Repo {
+    let service = "package orders\n\nimport \"example.com/shop/store\"\n\ntype Saver interface {\n\tSave(o store.Order) error\n}\n\ntype Service struct{ saver Saver }\n\nfunc New(s *store.Store) *Service { return &Service{saver: s} }\n\nfunc (s *Service) Create(o store.Order) error {\n\treturn s.saver.Save(o)\n}\n\nfunc (s *Service) Import(os []store.Order) error {\n\tfor _, o := range os {\n\t\tif err := s.Create(o); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\treturn nil\n}\n";
+    let (repo, _) = branch_with(
+        &[
+            ("go.mod", "module example.com/shop\n\ngo 1.22\n"),
+            (
+                "store/store.go",
+                "package store\n\ntype Order struct{ ID string }\n\ntype Store struct{ seen map[string]bool }\n\nfunc (s *Store) Save(o Order) error {\n\treturn nil\n}\n\nfunc (s *Store) Reset() {}\n",
+            ),
+            (
+                "store/store_test.go",
+                "package store\n\nimport \"testing\"\n\nfunc TestSave(t *testing.T) {\n\t_ = (&Store{}).Save(Order{})\n}\n\nfunc TestReset(t *testing.T) {\n\t(&Store{}).Reset()\n}\n",
+            ),
+            ("orders/service.go", service),
+            (
+                "api/api.go",
+                "package api\n\nimport (\n\t\"example.com/shop/orders\"\n\t\"example.com/shop/store\"\n)\n\nfunc handleCreateOrder(svc *orders.Service) error {\n\treturn svc.Create(store.Order{ID: \"1\"})\n}\n\nfunc Routes() {\n\tregister(func() {\n\t\t_ = handleCreateOrder(orders.New(&store.Store{}))\n\t})\n}\n\nfunc register(f func()) { f() }\n",
+            ),
+            (
+                "cmd/importer/main.go",
+                "package main\n\nimport (\n\t\"example.com/shop/orders\"\n\t\"example.com/shop/store\"\n)\n\nfunc main() {\n\t_ = orders.New(&store.Store{}).Import(nil)\n}\n",
+            ),
+            (
+                "billing/billing.go",
+                "package billing\n\nfunc Charge() int {\n\treturn 1\n}\n\nfunc Pay() int {\n\treturn Charge()\n}\n",
+            ),
+        ],
+        &[
+            (
+                "store/store.go",
+                "package store\n\nimport \"errors\"\n\ntype Order struct{ ID string }\n\ntype Store struct{ seen map[string]bool }\n\nvar ErrDuplicate = errors.New(\"duplicate\")\n\nfunc (s *Store) Save(o Order) error {\n\tif s.seen[dedupeKey(o)] {\n\t\treturn ErrDuplicate\n\t}\n\treturn nil\n}\n\nfunc dedupeKey(o Order) string {\n\treturn string(Key(o.ID))\n}\n\nfunc (s *Store) Reset() {\n\ts.seen = nil\n}\n\ntype Key string\n",
+            ),
+            (
+                "api/api.go",
+                "package api\n\nimport (\n\t\"errors\"\n\n\t\"example.com/shop/orders\"\n\t\"example.com/shop/store\"\n)\n\nfunc handleCreateOrder(svc *orders.Service) error {\n\terr := svc.Create(store.Order{ID: \"1\"})\n\tif errors.Is(err, store.ErrDuplicate) {\n\t\treturn nil\n\t}\n\treturn err\n}\n\nfunc Routes() {\n\tregister(func() {\n\t\t_ = handleCreateOrder(orders.New(&store.Store{}))\n\t})\n}\n\nfunc register(f func()) { f() }\n",
+            ),
+            (
+                "billing/billing.go",
+                "package billing\n\nfunc Charge() int {\n\treturn 2\n}\n\nfunc Pay() int {\n\treturn Charge()\n}\n",
+            ),
+        ],
+        &[],
+    );
+    repo
+}
+
+fn impact(repo: &Repo, env: &[(&str, &str)]) -> Value {
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "impact",
+            "params": { "repo": repo.path(), "base": "main", "head": "feature" },
+        })],
+        env,
+    );
+    let result = responses[0]["result"].clone();
+    assert!(result.is_object(), "{}", responses[0]);
+    result
+}
+
+/// A path's edges as (caller, callee, via, source), by function name.
+fn impact_edges(path: &Value) -> Vec<(String, String, String, String)> {
+    let name = |id: &Value| {
+        path["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| &n["id"] == id)
+            .map(|n| n["name"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("edge to unknown node {id}"))
+    };
+    let mut out: Vec<_> = path["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                name(&e["from"]),
+                name(&e["to"]),
+                e["via"].as_str().unwrap_or("").to_string(),
+                e["source"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// A path's trees as indented rows of function names, `↑` marking a row
+/// that joins a tree shown earlier, and `*` a tree with no change before it joins.
+fn impact_trees(path: &Value) -> Vec<Vec<String>> {
+    let name = |id: &Value| {
+        path["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| &n["id"] == id)
+            .map(|n| n["name"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("row for unknown node {id}"))
+    };
+    path["trees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tree| {
+            let mut rows: Vec<String> = tree["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    let depth = row["depth"].as_u64().unwrap() as usize;
+                    let mut line = format!("{}{}", "  ".repeat(depth), name(&row["id"]));
+                    if let Some(via) = row["via"].as_str() {
+                        line.push_str(&format!(" via {via}"));
+                    }
+                    if row["join"] == true {
+                        line.push_str(" ↑");
+                    }
+                    line
+                })
+                .collect();
+            if tree["changes"] == false {
+                rows[0].push_str(" *");
+            }
+            rows
+        })
+        .collect()
+}
+
+fn impact_node<'a>(path: &'a Value, name: &str) -> &'a Value {
+    path["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["name"] == name)
+        .unwrap_or_else(|| panic!("no node {name} in {}", path["nodes"]))
+}
+
+fn sorted<T: Ord>(mut items: Vec<T>) -> Vec<T> {
+    items.sort();
+    items
+}
+
+fn edge4(from: &str, to: &str, via: &str, source: &str) -> (String, String, String, String) {
+    (from.into(), to.into(), via.into(), source.into())
+}
+
+fn has_gopls() -> bool {
+    let found = Command::new("gopls").arg("version").output().is_ok();
+    if !found {
+        eprintln!("gopls is not installed; skipping");
+    }
+    found
+}
+
+#[test]
+fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
+    if !has_gopls() {
+        return;
+    }
+    let repo = impact_repo();
+
+    let result = impact(&repo, &[]);
+
+    let paths = result["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 3, "{result}");
+    let orders = &paths[0];
+    assert_eq!(
+        orders["steps"],
+        json!([
+            "go:api.handleCreateOrder",
+            "go:store.Store.Save",
+            "go:store.dedupeKey"
+        ]),
+        "changes reached through unchanged code share one path, in reading order"
+    );
+    assert_eq!(
+        impact_trees(orders),
+        [
+            vec![
+                "api.Routes",
+                "  api.Routes (func literal)",
+                "    api.handleCreateOrder",
+                "      orders.Service.Create",
+                "        store.Store.Save via orders.Saver.Save",
+                "          store.dedupeKey",
+            ],
+            vec![
+                "cmd/importer.main *",
+                "  orders.Service.Import",
+                "    orders.Service.Create ↑",
+            ],
+        ],
+        "a tree per entry point, the one through most changes first, each later one stopping where it joins"
+    );
+    assert_eq!(
+        impact_edges(orders),
+        sorted(vec![
+            edge4("api.Routes", "api.Routes (func literal)", "", "lsp"),
+            edge4(
+                "api.Routes (func literal)",
+                "api.handleCreateOrder",
+                "",
+                "lsp"
+            ),
+            edge4(
+                "orders.Service.Create",
+                "store.Store.Save",
+                "orders.Saver.Save",
+                "lsp"
+            ),
+            edge4("orders.Service.Import", "orders.Service.Create", "", "lsp"),
+            edge4("store.Store.Save", "store.dedupeKey", "", "lsp"),
+            edge4("store.TestSave", "store.Store.Save", "", "lsp"),
+            edge4("api.handleCreateOrder", "orders.Service.Create", "", "lsp"),
+            edge4("cmd/importer.main", "orders.Service.Import", "", "lsp"),
+        ])
+    );
+    let flags = |name: &str| {
+        let n = impact_node(orders, name);
+        (
+            n["status"].as_str().unwrap().to_string(),
+            n["entry"] == true,
+            n["is_test"] == true,
+        )
+    };
+    assert_eq!(flags("api.Routes"), ("unchanged".into(), true, false));
+    assert_eq!(
+        flags("cmd/importer.main"),
+        ("unchanged".into(), true, false)
+    );
+    assert_eq!(
+        flags("orders.Service.Create"),
+        ("unchanged".into(), false, false)
+    );
+    assert_eq!(
+        flags("store.TestSave"),
+        ("unchanged".into(), false, true),
+        "a test calling in is not an entry point"
+    );
+    assert_eq!(flags("store.Store.Save"), ("modified".into(), false, false));
+    assert_eq!(flags("store.dedupeKey"), ("added".into(), false, false));
+    let short = |name: &str| {
+        let n = impact_node(orders, name);
+        (n["package"].as_str().unwrap(), n["short"].as_str().unwrap())
+    };
+    assert_eq!(short("store.Store.Save"), ("store", "Store.Save"));
+    assert_eq!(short("store.dedupeKey"), ("store", "dedupeKey"));
+    assert_eq!(short("cmd/importer.main"), ("cmd/importer", "main"));
+    assert_eq!(
+        short("api.Routes (func literal)"),
+        ("api", "closure in Routes")
+    );
+    let create = impact_node(orders, "orders.Service.Create");
+    assert_eq!(
+        (create["file"].as_str(), create["line"].as_u64()),
+        (Some("orders/service.go"), Some(13))
+    );
+    assert_eq!(orders["truncated"], false);
+
+    let billing = &paths[1];
+    assert_eq!(billing["steps"], json!(["go:billing.Charge"]));
+    assert_eq!(
+        impact_edges(billing),
+        [edge4("billing.Pay", "billing.Charge", "", "lsp")]
+    );
+    let reset = &paths[2];
+    assert_eq!(
+        impact_node(reset, "store.Store.Reset")["entry"],
+        true,
+        "a function only tests call is an entry point: {reset}"
+    );
+}
+
+#[test]
+fn without_a_language_server_impact_matches_calls_by_name() {
+    let repo = impact_repo();
+
+    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+
+    let paths = result["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 3, "{result}");
+    assert_eq!(
+        paths[0]["steps"],
+        json!([
+            "go:api.handleCreateOrder",
+            "go:store.Store.Save",
+            "go:store.dedupeKey"
+        ])
+    );
+    assert_eq!(
+        impact_edges(&paths[0]),
+        sorted(vec![
+            edge4("api.Routes", "api.handleCreateOrder", "", "name_match"),
+            edge4(
+                "orders.Service.Create",
+                "store.Store.Save",
+                "",
+                "name_match"
+            ),
+            edge4(
+                "orders.Service.Import",
+                "orders.Service.Create",
+                "",
+                "name_match"
+            ),
+            edge4("store.Store.Save", "store.dedupeKey", "", "name_match"),
+            edge4("store.TestSave", "store.Store.Save", "", "name_match"),
+            edge4(
+                "api.handleCreateOrder",
+                "orders.Service.Create",
+                "",
+                "name_match"
+            ),
+            edge4(
+                "cmd/importer.main",
+                "orders.Service.Import",
+                "",
+                "name_match"
+            ),
+        ])
+    );
+    assert_eq!(impact_node(&paths[0], "api.Routes")["entry"], true);
+    assert_eq!(
+        impact_edges(&paths[1]),
+        [edge4("billing.Pay", "billing.Charge", "", "name_match")]
+    );
+    assert_eq!(impact_node(&paths[2], "store.Store.Reset")["entry"], true);
+}
+
+#[test]
+fn the_impact_walk_stops_at_the_node_limit_and_says_so() {
+    let repo = impact_repo();
+
+    let result = impact(
+        &repo,
+        &[
+            ("TRAIL_GOPLS", "/nonexistent/gopls"),
+            ("TRAIL_IMPACT_LIMIT", "2"),
+        ],
+    );
+
+    let paths = result["paths"].as_array().unwrap();
+    let billing = paths
+        .iter()
+        .find(|p| p["steps"] == json!(["go:billing.Charge"]))
+        .expect("billing path");
+    assert_eq!(billing["truncated"], false, "{result}");
+    assert!(
+        paths
+            .iter()
+            .filter(|p| p["steps"].to_string().contains("go:store.Store.Save")
+                || p["steps"].to_string().contains("go:api.handleCreateOrder"))
+            .all(|p| p["truncated"] == true),
+        "{result}"
+    );
+}
+
+#[test]
+fn the_impact_walk_stops_at_the_time_limit_and_says_so() {
+    let repo = impact_repo();
+
+    let result = impact(
+        &repo,
+        &[
+            ("TRAIL_GOPLS", "/nonexistent/gopls"),
+            ("TRAIL_IMPACT_TIMEOUT", "0"),
+        ],
+    );
+
+    let paths = result["paths"].as_array().unwrap();
+    assert!(!paths.is_empty(), "{result}");
+    assert!(paths.iter().all(|p| p["truncated"] == true), "{result}");
+}
+
+/// A language server that starts but never finds anything, like gopls on a
+/// module it cannot load.
+const EMPTY_LSP: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    Content-Length:*) len=$(printf '%s' "${line#Content-Length: }" | tr -d '\r') ;;
+    "$(printf '\r')")
+      body=$(dd bs=1 count="$len" 2>/dev/null)
+      id=$(printf '%s' "$body" | sed -n 's/^{"id":\([0-9]*\).*/\1/p')
+      if [ -n "$id" ]; then
+        case "$body" in
+          *'"method":"initialize"'*) result='{"capabilities":{}}' ;;
+          *prepareCallHierarchy*) result='[]' ;;
+          *) result=null ;;
+        esac
+        out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$result}"
+        printf 'Content-Length: %d\r\n\r\n%s' "${#out}" "$out"
+      fi ;;
+  esac
+done
+"#;
+
+#[test]
+fn a_language_server_that_never_finds_anything_falls_back_to_names() {
+    let repo = impact_repo();
+    let tools = Repo::new();
+    let server = tools.path().join("empty-lsp");
+    std::fs::write(&server, EMPTY_LSP).unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&server)
+        .status()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let result = impact(
+        &repo,
+        &[
+            ("TRAIL_GOPLS", server.to_str().unwrap()),
+            ("TRAIL_LSP_TIMEOUT", "2"),
+            ("TRAIL_IMPACT_TIMEOUT", "15"),
+        ],
+    );
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "gives up on the server after its own timeout, not the walk's"
+    );
+    let sources: Vec<String> = impact_edges(&result["paths"][0])
+        .into_iter()
+        .map(|e| e.3)
+        .collect();
+    assert_eq!(sources, ["name_match"; 7], "{result}");
+}
+
+#[test]
+fn a_changed_file_the_build_leaves_out_does_not_stop_the_language_server() {
+    if !has_gopls() {
+        return;
+    }
+    let (repo, _) = branch_with(
+        &[
+            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+            (
+                "run/run.go",
+                "package run\n\nfunc Work() int {\n\treturn 1\n}\n\nfunc Main() int {\n\treturn Work()\n}\n",
+            ),
+        ],
+        &[
+            (
+                "run/run.go",
+                "package run\n\nfunc Work() int {\n\treturn 2\n}\n\nfunc Main() int {\n\treturn Work()\n}\n",
+            ),
+            (
+                "run/legacy.go",
+                "//go:build ignore\n\npackage run\n\nfunc Legacy() int {\n\treturn 3\n}\n",
+            ),
+        ],
+        &[],
+    );
+
+    let result = impact(&repo, &[]);
+
+    let work = result["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["steps"] == json!(["go:run.Work"]))
+        .unwrap_or_else(|| panic!("no path for Work: {result}"));
+    assert_eq!(
+        impact_edges(work),
+        [edge4("run.Main", "run.Work", "", "lsp")]
+    );
+}
+
+#[test]
+fn calls_through_an_interface_from_outside_the_repository_do_not_join_paths() {
+    if !has_gopls() {
+        return;
+    }
+    let (repo, _) = branch_with(
+        &[
+            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+            (
+                "shop/shop.go",
+                "package shop\n\nimport \"fmt\"\n\ntype Order struct{ ID string }\n\nfunc (o Order) String() string {\n\treturn o.ID\n}\n\nfunc describe(s fmt.Stringer) string {\n\treturn s.String()\n}\n\nfunc Print() string {\n\treturn describe(Order{})\n}\n",
+            ),
+        ],
+        &[(
+            "shop/shop.go",
+            "package shop\n\nimport \"fmt\"\n\ntype Order struct{ ID string }\n\nfunc (o Order) String() string {\n\treturn \"order \" + o.ID\n}\n\nfunc describe(s fmt.Stringer) string {\n\treturn \"[\" + s.String() + \"]\"\n}\n\nfunc Print() string {\n\treturn describe(Order{})\n}\n",
+        )],
+        &[],
+    );
+
+    let result = impact(&repo, &[]);
+
+    let steps: Vec<&Value> = result["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| &p["steps"])
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            &json!(["go:shop.Order.String"]),
+            &json!(["go:shop.describe"])
+        ],
+        "{result}"
+    );
+    assert!(
+        impact_edges(&result["paths"][0]).contains(&edge4(
+            "shop.describe",
+            "shop.Order.String",
+            "fmt.Stringer.String",
+            "lsp"
+        )),
+        "{result}"
+    );
+}
+
+#[test]
+fn a_later_tree_shows_its_own_change_before_it_joins() {
+    let (repo, _) = branch_with(
+        &[
+            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+            (
+                "store/store.go",
+                "package store\n\nfunc Save() int {\n\treturn 1\n}\n",
+            ),
+            (
+                "svc/svc.go",
+                "package svc\n\nimport \"example.com/m/store\"\n\nfunc Create() int {\n\treturn store.Save()\n}\n\nfunc Import() int {\n\treturn Create()\n}\n\nfunc Retry() int {\n\treturn store.Save()\n}\n",
+            ),
+            (
+                "api/api.go",
+                "package api\n\nimport \"example.com/m/svc\"\n\nfunc Handle() int {\n\treturn svc.Create()\n}\n",
+            ),
+            (
+                "worker/worker.go",
+                "package worker\n\nimport \"example.com/m/svc\"\n\nfunc Run() int {\n\treturn svc.Retry()\n}\n",
+            ),
+            (
+                "cmd/tool/main.go",
+                "package main\n\nimport \"example.com/m/svc\"\n\nfunc main() {\n\t_ = svc.Import()\n}\n",
+            ),
+        ],
+        &[
+            (
+                "store/store.go",
+                "package store\n\nfunc Save() int {\n\treturn 2\n}\n",
+            ),
+            (
+                "svc/svc.go",
+                "package svc\n\nimport \"example.com/m/store\"\n\nfunc Create() int {\n\treturn store.Save()\n}\n\nfunc Import() int {\n\treturn Create()\n}\n\nfunc Retry() int {\n\treturn store.Save() + 1\n}\n",
+            ),
+            (
+                "api/api.go",
+                "package api\n\nimport \"example.com/m/svc\"\n\nfunc Handle() int {\n\treturn svc.Create() + 1\n}\n",
+            ),
+        ],
+        &[],
+    );
+
+    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+
+    let path = &result["paths"][0];
+    assert_eq!(
+        impact_trees(path),
+        [
+            vec!["api.Handle", "  svc.Create", "    store.Save"],
+            vec!["worker.Run", "  svc.Retry", "    store.Save ↑"],
+            vec!["cmd/tool.main *", "  svc.Import", "    svc.Create ↑"],
+        ],
+        "{result}"
+    );
+    assert_eq!(
+        path["steps"],
+        json!(["go:api.Handle", "go:store.Save", "go:svc.Retry"]),
+        "steps follow the trees top to bottom"
+    );
+}
+
+#[test]
+fn impact_names_rust_functions_by_module_and_short_name() {
+    let (repo, _) = branch_with(
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"m\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub mod store;\n\npub fn run() -> u32 {\n    store::Store::new().save()\n}\n",
+            ),
+            (
+                "src/store.rs",
+                "pub struct Store;\n\nimpl Store {\n    pub fn new() -> Store {\n        Store\n    }\n\n    pub fn save(&self) -> u32 {\n        1\n    }\n}\n",
+            ),
+        ],
+        &[(
+            "src/store.rs",
+            "pub struct Store;\n\nimpl Store {\n    pub fn new() -> Store {\n        Store\n    }\n\n    pub fn save(&self) -> u32 {\n        2\n    }\n}\n",
+        )],
+        &[],
+    );
+
+    let result = impact(
+        &repo,
+        &[("TRAIL_RUST_ANALYZER", "/nonexistent/rust-analyzer")],
+    );
+
+    let path = &result["paths"][0];
+    let named = |id: &str| {
+        let n = path["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == id)
+            .unwrap_or_else(|| panic!("no node {id} in {result}"));
+        (n["package"].as_str().unwrap(), n["short"].as_str().unwrap())
+    };
+    assert_eq!(
+        path["steps"],
+        json!(["rust:store::Store::save"]),
+        "{result}"
+    );
+    assert_eq!(named("rust:store::Store::save"), ("store", "Store::save"));
+}
+
+#[test]
+fn an_interface_method_with_no_implementation_in_the_repository_is_named() {
+    if !has_gopls() {
+        return;
+    }
+    let file = |n: u32| {
+        format!(
+            "package flow\n\ntype resetter interface {{\n\tReset()\n}}\n\nfunc Clear(r resetter) int {{\n\tr.Reset()\n\treturn {n}\n}}\n"
+        )
+    };
+    let (repo, _) = branch_with(
+        &[
+            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+            ("flow/flow.go", &file(1)),
+        ],
+        &[("flow/flow.go", &file(2))],
+        &[],
+    );
+
+    let result = impact(&repo, &[]);
+
+    assert_eq!(
+        impact_trees(&result["paths"][0]),
+        [vec!["flow.Clear", "  flow.resetter.Reset"]],
+        "{result}"
+    );
+    let reset = impact_node(&result["paths"][0], "flow.resetter.Reset");
+    assert_eq!(
+        (reset["package"].as_str(), reset["short"].as_str()),
+        (Some("flow"), Some("resetter.Reset"))
+    );
+}
