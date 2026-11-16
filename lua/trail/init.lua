@@ -216,6 +216,14 @@ local function peek_at_cursor(file, params, side)
 end
 
 ---Shows the diff of a node's or hunk's file in `win`, focused on it.
+---Where a hunk starts on screen: its first removed line, or its first added one.
+local function hunk_start(h)
+  if h.old.len > 0 then
+    return "old", math.max(h.old.start, 1)
+  end
+  return "new", math.max(h.new.start, 1)
+end
+
 local function show_target(target, is_node, win, keys, after)
   local review = state.review
   -- Context nodes can live in files the change does not touch.
@@ -283,6 +291,7 @@ local function show_target(target, is_node, win, keys, after)
       keys = all_keys,
       on_redraw = function(again)
         current = again
+        state.shown = { view = again, file = target.file }
         annotate()
       end,
       hunks = vim.tbl_filter(function(h)
@@ -310,9 +319,14 @@ local function show_target(target, is_node, win, keys, after)
       end,
     })
     current = view
+    state.shown = { view = view, file = target.file }
     annotate()
-    local on_new = target.new and (is_node or target.new.len > 0)
-    view.focus(on_new and "new" or "old", math.max((on_new and target.new or target.old).start, 1))
+    if target.at_start then
+      view.focus(hunk_start(target))
+    else
+      local on_new = target.new and (is_node or target.new.len > 0)
+      view.focus(on_new and "new" or "old", math.max((on_new and target.new or target.old).start, 1))
+    end
     if quiet then
       vim.api.nvim_set_current_win(previous)
       quiet = false
@@ -378,6 +392,41 @@ local function path_context()
     end,
     toggle_reviewed = function(path)
       toggle_reviewed(path)
+    end,
+    hunks_of = function(step)
+      local by_id = {}
+      for _, h in ipairs(state.review.hunks) do
+        by_id[h.id] = h
+      end
+      local hunks = step.node and vim.tbl_map(function(id)
+        return by_id[id]
+      end, step.node.hunks) or { step.hunk }
+      table.sort(hunks, function(a, b)
+        return a.new.start < b.new.start or (a.new.start == b.new.start and a.old.start < b.old.start)
+      end)
+      return hunks
+    end,
+    ---The next hunk of `hunks` after the cursor (or before it, for dir < 0),
+    ---when the diff shown is their file; `false` when another file is shown.
+    next_hunk = function(hunks, dir)
+      local shown = state.shown
+      if not shown or #hunks == 0 or shown.file ~= hunks[1].file then
+        return false
+      end
+      local cursor = shown.view.cursor_row()
+      local first, last = 1, #hunks
+      if dir < 0 then
+        first, last = last, first
+      end
+      for k = first, last, dir do
+        local row = shown.view.row_of(hunk_start(hunks[k]))
+        if (dir > 0 and row > cursor) or (dir < 0 and row < cursor) then
+          return hunks[k]
+        end
+      end
+    end,
+    focus_hunk = function(h)
+      state.shown.view.focus(hunk_start(h))
     end,
   }
 end

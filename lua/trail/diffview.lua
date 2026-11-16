@@ -388,6 +388,20 @@ function M.show(diff, opts)
     report_seen()
   end
 
+  ---The row of a file line in the pane showing its side.
+  function view.row_of(side, line)
+    local p = panes[1]
+    if #panes == 2 and side == "new" then
+      p = panes[2]
+    end
+    return row_for(p.view, side, line)
+  end
+
+  function view.cursor_row()
+    local p = pane_of(vim.api.nvim_get_current_win())
+    return vim.api.nvim_win_get_cursor(p.win)[1]
+  end
+
   local function side_of(p, e)
     if #panes == 2 then
       return p == panes[1] and "old" or "new"

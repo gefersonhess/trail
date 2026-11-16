@@ -161,6 +161,36 @@ check(current_step_line():match("^▶ ● Login   step 1"), "the current step is
 vim.api.nvim_feedkeys("]s", "x", false)
 check(wait_diff_line("func VerifyHash(h string) bool {"), "]s moves to the next step")
 check(current_step_line():match("VerifyHash"), "the tree follows the step")
+
+-- ]c and [c move through the path's own changes, across steps.
+local function press_until(keys, pred)
+  vim.api.nvim_feedkeys(keys, "x", false)
+  return vim.wait(10000, function()
+    return vim.api.nvim_buf_get_name(0):match("^trail://diff/") and pred()
+  end)
+end
+vim.api.nvim_feedkeys("[s", "x", false)
+check(wait_diff_line("func Login(user string) bool {"), "back at Login for ]c")
+check(press_until("]c", function()
+  return current_step_line():match("VerifyHash") and vim.api.nvim_get_current_line() == '\treturn h != ""'
+end), "]c goes to the next step's first change, at its first line: " .. vim.api.nvim_get_current_line())
+check(press_until("]c", function()
+  return current_step_line():match("hashOf") ~= nil
+end), "]c continues into the next step")
+vim.api.nvim_feedkeys("]c", "x", false)
+check(current_step_line():match("hashOf"), "]c stops at the last change of the path")
+check(press_until("[c", function()
+  return current_step_line():match("VerifyHash") and vim.api.nvim_get_current_line() == '\treturn h != ""'
+end), "[c goes back to the previous step's last change")
+check(press_until("[c", function()
+  return current_step_line():match("Login") ~= nil
+end), "[c goes back to the first step")
+vim.api.nvim_feedkeys("[c", "x", false)
+vim.wait(300)
+check(current_step_line():match("Login") and vim.api.nvim_get_current_line() ~= "import (",
+  "[c stops at the first change and skips hunks outside the path")
+vim.api.nvim_feedkeys("]s", "x", false)
+check(wait_diff_line("func VerifyHash(h string) bool {"), "]s still moves by step")
 check(#panes() == 1, "unified is the default layout")
 check(vim.go.statuscolumn == "" and vim.go.winbar == "" and not vim.go.scrollbind and vim.go.foldmethod == "manual" and vim.go.number == false,
   "the diff's window options do not leak into the user's global settings")
