@@ -572,6 +572,12 @@ fn lsp_edges(
 }
 
 impl Node {
+    /// Where the name starts at head: 0-based line and UTF-16 column. None
+    /// for removed code.
+    pub fn head_name_at(&self) -> Option<(u32, usize)> {
+        self.new_name_at
+    }
+
     /// Where a function or method's name starts at head: 0-based line and
     /// UTF-16 column. None for removed code, types and constants.
     pub fn head_function_at(&self) -> Option<(u32, usize)> {

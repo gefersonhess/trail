@@ -1884,9 +1884,11 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
         json!([
             "go:api.handleCreateOrder",
             "go:store.Store.Save",
-            "go:store.dedupeKey"
+            "go:store.dedupeKey",
+            "go:store.Key",
+            "go:store.ErrDuplicate"
         ]),
-        "changes reached through unchanged code share one path, in reading order"
+        "changes reached through unchanged code share one path, in reading order, types and values below what uses them"
     );
     assert_eq!(
         impact_trees(orders),
@@ -1898,6 +1900,8 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
                 "      orders.Service.Create",
                 "        store.Store.Save via orders.Saver.Save",
                 "          store.dedupeKey",
+                "            store.Key",
+                "          store.ErrDuplicate",
             ],
             vec![
                 "cmd/importer.main *",
@@ -1925,6 +1929,8 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
             ),
             edge4("orders.Service.Import", "orders.Service.Create", "", "lsp"),
             edge4("store.Store.Save", "store.dedupeKey", "", "lsp"),
+            edge4("store.Store.Save", "store.ErrDuplicate", "", "lsp"),
+            edge4("store.dedupeKey", "store.Key", "", "lsp"),
             edge4("store.TestSave", "store.Store.Save", "", "lsp"),
             edge4("api.handleCreateOrder", "orders.Service.Create", "", "lsp"),
             edge4("cmd/importer.main", "orders.Service.Import", "", "lsp"),
@@ -1999,7 +2005,9 @@ fn without_a_language_server_impact_matches_calls_by_name() {
         json!([
             "go:api.handleCreateOrder",
             "go:store.Store.Save",
-            "go:store.dedupeKey"
+            "go:store.dedupeKey",
+            "go:store.Key",
+            "go:store.ErrDuplicate"
         ])
     );
     assert_eq!(
@@ -2019,6 +2027,8 @@ fn without_a_language_server_impact_matches_calls_by_name() {
                 "name_match"
             ),
             edge4("store.Store.Save", "store.dedupeKey", "", "name_match"),
+            edge4("store.Store.Save", "store.ErrDuplicate", "", "name_match"),
+            edge4("store.dedupeKey", "store.Key", "", "name_match"),
             edge4("store.TestSave", "store.Store.Save", "", "name_match"),
             edge4(
                 "api.handleCreateOrder",
@@ -2139,7 +2149,7 @@ fn a_language_server_that_never_finds_anything_falls_back_to_names() {
         .into_iter()
         .map(|e| e.3)
         .collect();
-    assert_eq!(sources, ["name_match"; 7], "{result}");
+    assert_eq!(sources, ["name_match"; 9], "{result}");
 }
 
 #[test]
@@ -2368,5 +2378,50 @@ fn an_interface_method_with_no_implementation_in_the_repository_is_named() {
     assert_eq!(
         (reset["package"].as_str(), reset["short"].as_str()),
         (Some("flow"), Some("resetter.Reset"))
+    );
+}
+
+#[test]
+fn a_changed_type_starts_its_path_at_the_functions_using_it() {
+    let (repo, _) = branch_with(
+        &[
+            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+            (
+                "store/store.go",
+                "package store\n\ntype Store struct {\n\tn int\n}\n",
+            ),
+            (
+                "store/run.go",
+                "package store\n\nfunc Run(s *Store) int {\n\treturn s.n\n}\n",
+            ),
+            (
+                "cmd/tool/main.go",
+                "package main\n\nimport \"example.com/m/store\"\n\nfunc main() {\n\t_ = store.Run(nil)\n}\n",
+            ),
+        ],
+        &[(
+            "store/store.go",
+            "package store\n\ntype Store struct {\n\tn    int\n\tname string\n}\n",
+        )],
+        &[],
+    );
+
+    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+
+    let path = &result["paths"][0];
+    assert_eq!(path["steps"], json!(["go:store.Store"]), "{result}");
+    assert_eq!(
+        impact_trees(path),
+        [vec!["cmd/tool.main", "  store.Run", "    store.Store"]],
+        "{result}"
+    );
+    let store = impact_node(path, "store.Store");
+    assert_eq!(
+        (
+            store["package"].as_str(),
+            store["short"].as_str(),
+            store["status"].as_str()
+        ),
+        (Some("store"), Some("Store"), Some("modified"))
     );
 }

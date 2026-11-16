@@ -150,6 +150,15 @@ impl Sources {
         if let Some(name) = self.abstract_methods.get(key) {
             return split(name, 2);
         }
+        let line = key.1;
+        if let Some(declared) = self
+            .symbols(&key.0)
+            .iter()
+            .find(|s| matches!(s.kind, Kind::Type | Kind::Const) && s.name_at.0 + 1 == line)
+        {
+            let name = declared.name.clone();
+            return split(&name, 1);
+        }
         if let Some(function) = self.function(key) {
             // Methods keep their type: `Store.Save`, `Store::save`.
             return split(
@@ -610,6 +619,9 @@ struct Changed {
     status: &'static str,
     is_test: bool,
     name_at: (u32, usize),
+    /// For a changed type or constant: the functions using it, with where
+    /// their names start, since its impact goes through them.
+    users: Option<Vec<(Key, usize)>>,
 }
 
 /// The walk of one language's changed functions.
@@ -663,8 +675,20 @@ fn walk_language(
                 edges: Vec::new(),
                 truncated: false,
             };
-            walker.walk(root, true, &mut reach)?;
-            walker.walk(root, false, &mut reach)?;
+            match &changed[root].users {
+                Some(users) => {
+                    reach.joins.insert(root.clone());
+                    for (user, _) in users {
+                        reach.edges.push((user.clone(), root.clone(), None));
+                        reach.up.push(user.clone());
+                        walker.walk(user, true, &mut reach)?;
+                    }
+                }
+                None => {
+                    walker.walk(root, true, &mut reach)?;
+                    walker.walk(root, false, &mut reach)?;
+                }
+            }
             reaches.push((root.clone(), reach));
         }
         let entries = walker.entries;
@@ -687,16 +711,24 @@ fn walk_language(
             // Wait for the workspace to load only until the first function is found.
             let loading = Instant::now() + Duration::from_secs(setting("TRAIL_LSP_TIMEOUT", 60));
             let mut loaded = false;
-            for root in &roots {
+            // A changed type or constant is walked from the functions using it.
+            let starts: Vec<(Key, usize)> = roots
+                .iter()
+                .flat_map(|root| match &changed[root].users {
+                    Some(users) => users.clone(),
+                    None => vec![(root.clone(), changed[root].name_at.1)],
+                })
+                .collect();
+            for (start, character) in &starts {
                 let until = if loaded {
                     Instant::now()
                 } else {
                     loading.min(deadline)
                 };
-                match server.prepare(root, changed[root].name_at.1, until) {
+                match server.prepare(start, *character, until) {
                     Ok(found) => loaded |= found,
                     // A file the build leaves out has no package for the server to place it in.
-                    Err(e) => log(&format!("impact: skipping {}:{}: {e}", root.0, root.1)),
+                    Err(e) => log(&format!("impact: skipping {}:{}: {e}", start.0, start.1)),
                 }
             }
             if !loaded {
@@ -753,6 +785,41 @@ pub fn compute(repo: &Path, base: &str, head: &str) -> Result<Impact, String> {
                 status,
                 is_test: node.is_test,
                 name_at,
+                users: None,
+            },
+        );
+    }
+    let by_id: HashMap<&str, &review::Node> =
+        review.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    for node in &review.nodes {
+        let (Some(name_at), None) = (node.head_name_at(), node.head_function_at()) else {
+            continue;
+        };
+        let status = match node.status {
+            NodeStatus::Added => "added",
+            NodeStatus::Modified => "modified",
+            _ => continue,
+        };
+        let users = review
+            .edges
+            .iter()
+            .filter(|e| {
+                e.kind == "use" && e.to == node.id && e.status != review::EdgeStatus::Removed
+            })
+            .filter_map(|e| {
+                let user = by_id.get(e.from.as_str())?;
+                let at = user.head_function_at()?;
+                Some(((user.file.clone(), at.0 + 1), at.1))
+            })
+            .collect();
+        changed.insert(
+            (node.file.clone(), name_at.0 + 1),
+            Changed {
+                id: node.id.clone(),
+                status,
+                is_test: node.is_test,
+                name_at,
+                users: Some(users),
             },
         );
     }
