@@ -5,7 +5,7 @@ local WIDTH, HEIGHT = 64, 6
 ---Opens a floating box under the cursor to write a comment in. `<C-s>` saves,
 ---`<Tab>` (`<C-t>` while typing) cycles the kind, `q` or `<Esc>` in normal mode
 ---cancels. `on_confirm` gets the text, possibly empty, and the kind chosen.
----@param opts { kind: string, kinds: string[], highlight: fun(kind: string): string, body?: string }
+---@param opts { kind: string, kinds: string[], highlight: fun(kind: string): string, body?: string, footer?: string }
 ---@param on_confirm fun(body: string, kind: string)
 function M.open(opts, on_confirm)
   local kind = opts.kind
@@ -26,7 +26,7 @@ function M.open(opts, on_confirm)
     border = "rounded",
     title = title(),
     title_pos = "left",
-    footer = " <C-s> save  <Tab> kind  q cancel ",
+    footer = opts.footer or " <C-s> save  <Tab> kind  q cancel ",
     footer_pos = "left",
   })
   vim.wo[win].wrap = true

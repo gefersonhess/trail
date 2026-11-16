@@ -6,6 +6,7 @@ local tree = require("trail.tree")
 local pathview = require("trail.pathview")
 local store = require("trail.state")
 local comments = require("trail.comments")
+local compose = require("trail.compose")
 local send = require("trail.send")
 
 local M = {}
@@ -493,9 +494,67 @@ local function enter(path, step)
   pathview.open(path_context(), path, step or store.position(path.id) or 1)
 end
 
+local verdict_events = { comment = "COMMENT", approve = "APPROVE", ["request changes"] = "REQUEST_CHANGES" }
+
+---Submits the review to the pull request: an overall comment and verdict
+---written in the comment box, and every comment not sent before.
+local function submit_review(done)
+  local verdicts = { "comment", "approve", "request changes", "draft" }
+  local start = vim.tbl_contains(verdicts, store.verdict()) and store.verdict() or "comment"
+  local function highlight(verdict)
+    return verdict == "approve" and "TrailAdd" or verdict == "request changes" and "TrailDelete" or "Title"
+  end
+  compose.open({
+    kind = start,
+    kinds = verdicts,
+    highlight = highlight,
+    footer = " <C-s> submit to GitHub  <Tab> verdict  q cancel ",
+  }, function(body, verdict)
+    local pending = vim.tbl_filter(function(c)
+      return not c.sent
+    end, store.comments())
+    local list = vim.tbl_map(function(c)
+      return { path = c.file, side = c.side, line = c.line, last = c.last, body = string.format("**%s:** %s", c.kind, c.body) }
+    end, pending)
+    local commit = state.review.head_commit
+    local submitting = state
+    vim.notify("trail: submitting the review…", vim.log.levels.INFO)
+    engine.request("submit_review", {
+      repo = state.repo,
+      url = state.pr_url,
+      number = state.pr,
+      commit = commit,
+      event = verdict_events[verdict],
+      body = body,
+      comments = list,
+    }, function(err, result)
+      if err then
+        vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+        return
+      end
+      if state ~= submitting then
+        -- Another review was opened meanwhile; its state must not record this one.
+        vim.notify("trail: review submitted: " .. result.url, vim.log.levels.INFO)
+        return
+      end
+      for _, c in ipairs(pending) do
+        c.sent = true
+      end
+      if verdict ~= "draft" then
+        store.set_verdict(verdict)
+      end
+      store.set_submitted({ commit = commit, url = result.url, verdict = verdict })
+      vim.notify(string.format("trail: %s submitted, %d inline, %d in the overall comment: %s",
+        verdict == "draft" and "pending review" or "review", result.inline, result.in_body, result.url), vim.log.levels.INFO)
+      done()
+    end)
+  end)
+end
+
 local function open_send()
   send.open({
     title = state.title,
+    submit = state.pr and submit_review or nil,
     unseen = function()
       local labels = {}
       for _, h in ipairs(state.review.hunks) do
@@ -822,6 +881,7 @@ local function load()
       return
     end
     state.base, state.head = pr.base, pr.head
+    state.pr_url = pr.url
     state.title = string.format("#%d %s", pr.number, pr.title)
     review_range()
   end)
