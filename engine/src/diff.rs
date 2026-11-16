@@ -9,6 +9,41 @@ use crate::git;
 pub struct Diff {
     pub files: Vec<File>,
     pub hunks: Vec<Hunk>,
+    pub ignored: Vec<String>,
+}
+
+/// Gitignore-style patterns for files left out of the review. A pattern
+/// ending in `/` matches a folder and everything under it.
+#[derive(Default)]
+pub struct Ignore(Vec<gix::glob::Pattern>);
+
+impl Ignore {
+    pub fn new(patterns: &[String]) -> Self {
+        Ignore(
+            patterns
+                .iter()
+                .filter_map(|p| gix::glob::Pattern::from_bytes_without_negation(p.as_bytes()))
+                .collect(),
+        )
+    }
+
+    pub fn matches(&self, path: &str) -> bool {
+        let matches = |text: &str, is_dir: bool| {
+            let basename = text.rfind('/').map(|i| i + 1);
+            self.0.iter().any(|p| {
+                p.matches_repo_relative_path(
+                    text.into(),
+                    basename,
+                    Some(is_dir),
+                    gix::glob::pattern::Case::Sensitive,
+                    gix::glob::wildmatch::Mode::NO_MATCH_SLASH_LITERAL,
+                )
+            })
+        };
+        path.match_indices('/')
+            .any(|(i, _)| matches(&path[..i], true))
+            || matches(path, false)
+    }
 }
 
 #[derive(Serialize)]
@@ -48,7 +83,13 @@ pub struct Range {
 /// Diffs two commits' trees with rename detection, ignoring whitespace within
 /// lines like `git diff --ignore-all-space --unified=0`. `paths` limits it to
 /// changes touching those paths when not empty.
-pub fn compute(repo: &Path, from: &str, to: &str, paths: &[&str]) -> Result<Diff, String> {
+pub fn compute(
+    repo: &Path,
+    from: &str,
+    to: &str,
+    paths: &[&str],
+    ignore: &Ignore,
+) -> Result<Diff, String> {
     let repository = git::open(repo)?;
     let old_tree = git::tree(&repository, from)?;
     let new_tree = git::tree(&repository, to)?;
@@ -59,6 +100,7 @@ pub fn compute(repo: &Path, from: &str, to: &str, paths: &[&str]) -> Result<Diff
     let mut diff = Diff {
         files: Vec::new(),
         hunks: Vec::new(),
+        ignored: Vec::new(),
     };
     let mut seen_ids = HashMap::new();
     let mut files = Vec::new();
@@ -120,12 +162,17 @@ pub fn compute(repo: &Path, from: &str, to: &str, paths: &[&str]) -> Result<Diff
         {
             continue;
         }
+        if ignore.matches(&path) || old_path.as_deref().is_some_and(|p| ignore.matches(p)) {
+            diff.ignored.push(path);
+            continue;
+        }
         let read = |id: Option<gix::ObjectId>| -> Result<Vec<u8>, String> {
             id.map_or(Ok(Vec::new()), |id| git::blob(&repository, id))
         };
         files.push((status, old_path, path, read(old_id)?, read(new_id)?));
     }
     files.sort_by(|a, b| a.2.cmp(&b.2));
+    diff.ignored.sort();
     for (status, old_path, path, old, new) in files {
         let binary = is_binary(&old) || is_binary(&new);
         let hunks = if binary {

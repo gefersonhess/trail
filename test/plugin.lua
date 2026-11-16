@@ -28,12 +28,14 @@ write("auth/auth.go", "package auth\n\nimport \"fmt\"\n\nfunc Login(u string) bo
 sh("git add -A && git commit -qm base && git checkout -qb feature")
 write("auth/auth.go", "package auth\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc Login(user string) bool {\n\treturn VerifyHash(user)\n}\n\nfunc VerifyHash(h string) bool {\n\treturn hashOf(h) == h\n}\n\nfunc hashOf(h string) string { return strings.ToLower(h) }\n\nfunc p1() {}\nfunc p2() {}\nfunc p3() {}\nfunc p4() {}\nfunc p5() {}\nfunc p6() {}\nfunc p7() {}\nfunc p8() {}\nfunc p9() {}\nfunc p10() {}\n\nfunc Tidy() {\n\tx()\n}\n\nfunc Squash() { y() }")
 write("auth/auth_test.go", "package auth\n\nfunc TestLogin(t *testing.T) {\n\tLogin(\"x\")\n}")
+write("notes.md", "notes")
 sh("git add -A && git commit -qm feature")
 sh("git checkout -q main")
 local cache = repo .. "-cache"
 vim.env.XDG_CACHE_HOME = cache
 
 vim.env.TRAIL_GOPLS = repo .. "-no-gopls"
+vim.g.trail_ignore = { "*.md" }
 vim.cmd.cd(repo)
 vim.cmd("Trail main..feature")
 local buf = vim.api.nvim_get_current_buf()
@@ -56,6 +58,8 @@ local function line_of(pattern)
 end
 
 check(line_of("^trail  main%.%.feature  %("), "header names the review")
+check(line_of("^1 file hidden by vim%.g%.trail_ignore$"), "ignored files are counted on the paths screen")
+check(not text:match("notes%.md"), "an ignored file is not listed")
 check(line_of("^1 path · 3 changed functions · 1 test file · 1 hunk not in any path · 0 comments$"), "summary line")
 check(line_of("^  1  Login   3 changes   1 entry point · 3 functions   · 0/3   auth$"),
   "a path is listed by its first change, with its changes, reach, progress and packages")

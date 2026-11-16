@@ -792,8 +792,13 @@ fn setting(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-pub fn compute(repo: &Path, base: &str, head: &str) -> Result<Impact, String> {
-    let review = review::open(repo, base, head, false)?;
+pub fn compute(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    ignore: &diff::Ignore,
+) -> Result<Impact, String> {
+    let review = review::open(repo, base, head, false, ignore)?;
     let mut changed: HashMap<Key, Changed> = HashMap::new();
     for node in &review.nodes {
         let Some(name_at) = node.head_function_at() else {
