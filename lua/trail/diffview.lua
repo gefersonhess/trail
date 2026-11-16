@@ -78,6 +78,9 @@ local function make_buf(name, path, view, unified)
   vim.bo[buf].modifiable = false
   if path then
     vim.bo[buf].filetype = vim.filetype.match({ filename = path, buf = buf }) or ""
+    -- Unchanged code stays one colour so only the changed tokens stand out.
+    vim.bo[buf].syntax = "off"
+    pcall(vim.treesitter.stop, buf)
   end
   gutters[buf] = { rows = view.gutter, unified = unified }
   vim.api.nvim_create_autocmd("BufWipeout", {
