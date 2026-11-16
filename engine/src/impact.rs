@@ -52,9 +52,6 @@ pub struct Row {
     pub via: Option<String>,
     /// Already shown earlier, so its callees are not repeated here.
     pub join: bool,
-    /// Callers through an interface declared outside the repository, left out
-    /// of the trees.
-    pub outside_callers: usize,
 }
 
 #[derive(Serialize)]
@@ -81,9 +78,6 @@ pub struct ImpactEdge {
     pub to: String,
     /// The interface or trait method the call goes through, when it is not direct.
     pub via: Option<String>,
-    /// Through an interface declared outside the repository: the walk does not
-    /// go further up from the caller, and the trees leave it out.
-    pub outside: bool,
     pub source: &'static str,
 }
 
@@ -508,7 +502,7 @@ struct Reach {
     /// Reached without an interface from outside the repository on the way,
     /// so a changed function among them shares the path.
     joins: HashSet<Key>,
-    edges: Vec<(Key, Key, Option<String>, bool)>,
+    edges: Vec<(Key, Key, Option<String>)>,
     truncated: bool,
 }
 
@@ -559,8 +553,6 @@ impl Walker<'_> {
     /// Breadth first from `root`, callers when `up`, else callees.
     fn walk(&mut self, root: &Key, up: bool, reach: &mut Reach) -> Result<(), String> {
         let mut seen: HashSet<Key> = HashSet::from([root.clone()]);
-        // Callers through an outside interface, not walked further unless reached directly too.
-        let mut stopped: HashSet<Key> = HashSet::new();
         reach.joins.insert(root.clone());
         let mut queue = VecDeque::from([root.clone()]);
         while let Some(key) = queue.pop_front() {
@@ -594,23 +586,17 @@ impl Walker<'_> {
                         continue;
                     }
                     seen.insert(next.clone());
-                    if outside {
-                        stopped.insert(next.clone());
-                    } else {
-                        queue.push_back(next.clone());
-                    }
+                    queue.push_back(next.clone());
                     if up {
                         reach.up.push(next.clone());
                     } else {
                         reach.down.push(next.clone());
                     }
-                } else if !outside && stopped.remove(&next) {
-                    queue.push_back(next.clone());
                 }
                 let edge = if up {
-                    (next, key.clone(), via, outside)
+                    (next, key.clone(), via)
                 } else {
-                    (key.clone(), next, via, outside)
+                    (key.clone(), next, via)
                 };
                 reach.edges.push(edge);
             }
@@ -844,18 +830,12 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
             let reach = &reaches[i].1;
             truncated |= reach.truncated;
             keys.extend(reach.up.iter().chain(&reach.down).cloned());
-            edges.extend(
-                reach
-                    .edges
-                    .iter()
-                    .map(|(from, to, via, outside)| ImpactEdge {
-                        from: id_of(from),
-                        to: id_of(to),
-                        via: via.clone(),
-                        outside: *outside,
-                        source,
-                    }),
-            );
+            edges.extend(reach.edges.iter().map(|(from, to, via)| ImpactEdge {
+                from: id_of(from),
+                to: id_of(to),
+                via: via.clone(),
+                source,
+            }));
         }
         keys.sort();
         keys.dedup();
@@ -906,24 +886,13 @@ fn layout(
     let is_changed = |id: &str| own.contains(id);
     let mut callees: HashMap<&str, Vec<(&str, Option<&str>)>> = HashMap::new();
     let mut called: HashSet<&str> = HashSet::new();
-    let mut outside_callers: HashMap<&str, usize> = HashMap::new();
     for e in edges.iter().filter(|e| !is_test(&e.from)) {
-        if e.outside {
-            *outside_callers.entry(&e.to).or_default() += 1;
-            continue;
-        }
         callees
             .entry(&e.from)
             .or_default()
             .push((&e.to, e.via.as_deref()));
         called.insert(&e.to);
     }
-    // In the trees only through an outside interface: shown as a count on what they call.
-    let only_outside: HashSet<&str> = edges
-        .iter()
-        .filter(|e| e.outside && !callees.contains_key(e.from.as_str()))
-        .map(|e| e.from.as_str())
-        .collect();
     let changes_below = |start: &str| {
         let mut seen = HashSet::from([start]);
         let mut queue = vec![start];
@@ -953,7 +922,7 @@ fn layout(
     let mut starts: Vec<&str> = nodes
         .iter()
         .map(|n| n.id.as_str())
-        .filter(|id| !is_test(id) && !called.contains(id) && !only_outside.contains(id))
+        .filter(|id| !is_test(id) && !called.contains(id))
         .collect();
     starts.sort_by(order);
     // Changed functions only reachable through a cycle get a tree of their own.
@@ -990,7 +959,6 @@ fn layout(
                 depth,
                 via: via.map(str::to_string),
                 join,
-                outside_callers: outside_callers.get(id).copied().unwrap_or(0),
             });
         }
         trees.push(Tree { rows, changes });

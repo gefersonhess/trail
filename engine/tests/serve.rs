@@ -1801,9 +1801,7 @@ fn impact_edges(path: &Value) -> Vec<(String, String, String, String)> {
 }
 
 /// A path's trees as indented rows of function names, `↑` marking a row
-/// that joins a tree shown earlier, `⇡n` a row with n callers through an
-/// interface from outside the repository, and `*` a tree with no change
-/// before it joins.
+/// that joins a tree shown earlier, and `*` a tree with no change before it joins.
 fn impact_trees(path: &Value) -> Vec<Vec<String>> {
     let name = |id: &Value| {
         path["nodes"]
@@ -1831,9 +1829,6 @@ fn impact_trees(path: &Value) -> Vec<Vec<String>> {
                     }
                     if row["join"] == true {
                         line.push_str(" ↑");
-                    }
-                    if let Some(n) = row["outside_callers"].as_u64().filter(|&n| n > 0) {
-                        line.push_str(&format!(" ⇡{n}"));
                     }
                     line
                 })
@@ -2232,17 +2227,6 @@ fn calls_through_an_interface_from_outside_the_repository_do_not_join_paths() {
         )),
         "{result}"
     );
-    assert_eq!(
-        impact_trees(&result["paths"][0]),
-        [vec!["shop.Order.String ⇡1"]],
-        "the walk stops at callers through an outside interface, kept out of the trees: {result}"
-    );
-    assert!(
-        !result["paths"][0]["nodes"]
-            .to_string()
-            .contains("shop.Print"),
-        "{result}"
-    );
 }
 
 #[test]
@@ -2352,40 +2336,6 @@ fn impact_names_rust_functions_by_module_and_short_name() {
         "{result}"
     );
     assert_eq!(named("rust:store::Store::save"), ("store", "Store::save"));
-}
-
-#[test]
-fn a_caller_also_reached_directly_is_walked_up_past_an_outside_interface() {
-    if !has_gopls() {
-        return;
-    }
-    let shop = |id: &str| {
-        format!(
-            "package shop\n\nimport \"fmt\"\n\ntype Order struct{{ ID string }}\n\nfunc (o Order) String() string {{\n\treturn {id}\n}}\n\nfunc label() string {{\n\treturn Order{{}}.String()\n}}\n\nfunc describe(s fmt.Stringer) string {{\n\treturn s.String() + label()\n}}\n\nfunc Print() string {{\n\treturn describe(Order{{}})\n}}\n"
-        )
-    };
-    let (base, head) = (shop("o.ID"), shop("\"order \" + o.ID"));
-    let (repo, _) = branch_with(
-        &[
-            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
-            ("shop/shop.go", &base),
-        ],
-        &[("shop/shop.go", &head)],
-        &[],
-    );
-
-    let result = impact(&repo, &[]);
-
-    assert_eq!(
-        impact_trees(&result["paths"][0]),
-        [vec![
-            "shop.Print",
-            "  shop.describe",
-            "    shop.label",
-            "      shop.Order.String ⇡1",
-        ]],
-        "{result}"
-    );
 }
 
 #[test]
