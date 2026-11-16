@@ -2452,6 +2452,7 @@ fn ignored_files_are_left_out_and_listed() {
             "base": "main",
             "head": "feature",
             "ignore": ["*.pb.go", "vendor/", "/go.sum"],
+            "ignore_defaults": false,
         },
     })]);
     let result = &responses[0]["result"];
@@ -2474,4 +2475,56 @@ fn ignored_files_are_left_out_and_listed() {
             .iter()
             .all(|n| n["file"] == "keep.go")
     );
+}
+
+#[test]
+fn go_and_rust_lockfiles_vendored_and_generated_code_are_ignored_by_default() {
+    let repo = Repo::new();
+    let files = [
+        ("keep.go", "package k\n\nfunc A() {}\n"),
+        ("src/target/keep.go", "package target\n\nfunc T() {}\n"),
+        ("go.sum", "a\n"),
+        ("sub/go.sum", "a\n"),
+        ("vendor/dep/dep.go", "package dep\n\nfunc D() {}\n"),
+        ("api/x.pb.go", "package api\n\nfunc P() {}\n"),
+        ("api/x_gen.go", "package api\n\nfunc G() {}\n"),
+        ("zz_generated.deepcopy.go", "package api\n\nfunc Z() {}\n"),
+        ("Cargo.lock", "a\n"),
+        ("target/debug/out.rs", "fn o() {}\n"),
+    ];
+    for (path, content) in files {
+        repo.write(path, content);
+    }
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    for (path, content) in files {
+        repo.write(path, &format!("{content}// changed\n"));
+    }
+    repo.commit("feature");
+
+    let paths_of = |params: Value| -> (Vec<String>, Vec<String>) {
+        let mut p = json!({ "repo": repo.path(), "base": "main", "head": "feature" });
+        p.as_object_mut()
+            .unwrap()
+            .extend(params.as_object().unwrap().clone());
+        let responses =
+            serve(&[json!({ "jsonrpc": "2.0", "id": 1, "method": "open", "params": p })]);
+        let list = |key: &str| -> Vec<String> {
+            responses[0]["result"][key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f.as_str().or(f["path"].as_str()).unwrap().to_string())
+                .collect()
+        };
+        (list("files"), list("ignored"))
+    };
+
+    let (kept, ignored) = paths_of(json!({}));
+    assert_eq!(kept, ["keep.go", "src/target/keep.go"]);
+    assert_eq!(ignored.len(), 8, "{ignored:?}");
+
+    let (kept, ignored) = paths_of(json!({ "ignore_defaults": false }));
+    assert_eq!(kept.len(), 10);
+    assert!(ignored.is_empty());
 }

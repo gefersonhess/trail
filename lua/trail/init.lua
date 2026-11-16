@@ -685,7 +685,7 @@ local function request_impact()
     end
     M.refresh_home()
   end))
-  engine.request("impact", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore }, function(err, result)
+  engine.request("impact", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore, ignore_defaults = vim.g.trail_ignore_defaults ~= false }, function(err, result)
     if state.review ~= review then
       return
     end
@@ -703,7 +703,7 @@ local function review_range()
   -- Paths from before a reload must not be entered while the new ones are worked out.
   state.impact, state.impact_error = nil, nil
   M.refresh_home()
-  engine.request("open", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore }, function(err, result)
+  engine.request("open", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore, ignore_defaults = vim.g.trail_ignore_defaults ~= false }, function(err, result)
     if err then
       vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
       return
