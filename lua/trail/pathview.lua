@@ -1,4 +1,4 @@
-local graph = require("trail.graph")
+local tree = require("trail.tree")
 local help = require("trail.help")
 
 local M = {}
@@ -7,23 +7,66 @@ local ns = vim.api.nvim_create_namespace("trail.pathview")
 local view
 
 local function valid()
-  return view and vim.api.nvim_win_is_valid(view.graph_win) and vim.api.nvim_win_get_buf(view.graph_win) == view.graph_buf
+  return view and vim.api.nvim_win_is_valid(view.tree_win) and vim.api.nvim_win_get_buf(view.tree_win) == view.tree_buf
 end
 
-local function graph_height(lines)
+local function tree_height(lines)
   return math.max(1, math.min(lines, math.floor(vim.o.lines / 3)))
 end
 
-local function render_graph()
-  local ctx, path = view.ctx, view.path
-  local lines, hls, step_of_row = graph.render(path, ctx.review(), { current = view.step, done = ctx.done_steps(path) })
-  local header = string.format(" %s  ·  step %d of %d", path.title, view.step, #path.steps)
-  table.insert(lines, 1, header)
-  view.step_of_row = {}
-  for row, step in pairs(step_of_row) do
-    view.step_of_row[row + 1] = step
+---A path with no impact tree (a test file, or hunks in no path) as a list of its steps.
+local function list_lines(path, current, done)
+  local lines, hls, item_of_row = {}, {}, {}
+  for i, step in ipairs(path.steps) do
+    local label
+    if step.node then
+      label = step.node.id:gsub("^%w+:", "")
+    else
+      local h = step.hunk
+      local side = h.new.len > 0 and h.new or h.old
+      label = string.format("%s:%d-%d", h.file, side.start, side.start + math.max(side.len, 1) - 1)
+    end
+    local marker = i == current and "▶ " or (done[i] and "✓ " or "  ")
+    local line = marker .. label
+    table.insert(lines, line)
+    if i == current then
+      table.insert(hls, { #lines - 1, 0, #line, "TrailCurrentStep" })
+    end
+    item_of_row[#lines] = { step = i }
   end
-  local buf = view.graph_buf
+  return lines, hls, item_of_row
+end
+
+---Folds the user opened, per path, kept while the review is open.
+local expanded_by_path = {}
+
+local function render_tree(keep_cursor)
+  local ctx, path = view.ctx, view.path
+  local expanded = expanded_by_path[path.id] or {}
+  local lines, hls, item_of_row
+  if path.impact then
+    lines, hls, item_of_row = tree.render(path.impact, {
+      expanded = expanded,
+      current = view.step,
+      done = ctx.done_steps(path),
+    })
+  else
+    lines, hls, item_of_row = list_lines(path, view.step, ctx.done_steps(path))
+  end
+  local header = string.format(" %s  ·  step %d of %d", path.title, view.step, #path.steps)
+  if path.impact then
+    local functions = #vim.tbl_filter(function(n)
+      return not n.is_test
+    end, path.impact.nodes)
+    header = header .. string.format("  ·  %d functions", functions)
+  end
+  table.insert(lines, 1, header)
+  view.item_of_row = {}
+  for row, item in pairs(item_of_row) do
+    view.item_of_row[row + 1] = item
+  end
+  local cursor = keep_cursor and vim.api.nvim_win_get_cursor(view.tree_win)
+  local buf = view.tree_buf
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
@@ -32,27 +75,41 @@ local function render_graph()
   for _, h in ipairs(hls) do
     vim.api.nvim_buf_set_extmark(buf, ns, h[1] + 1, h[2], { end_col = h[3], hl_group = h[4] })
   end
-  vim.api.nvim_win_set_height(view.graph_win, graph_height(#lines))
-  for row, step in pairs(view.step_of_row) do
-    if step == view.step then
-      vim.api.nvim_win_set_cursor(view.graph_win, { row, 0 })
+  vim.api.nvim_win_set_height(view.tree_win, tree_height(#lines))
+  if cursor then
+    pcall(vim.api.nvim_win_set_cursor, view.tree_win, cursor)
+    return
+  end
+  for row, item in pairs(view.item_of_row) do
+    if item.step == view.step then
+      vim.api.nvim_win_set_cursor(view.tree_win, { row, 0 })
       break
     end
   end
 end
 
-local function show_step(i, focus_graph)
+local function show_step(i, focus_tree)
   local path = view.path
   i = math.max(1, math.min(i, #path.steps))
   view.step = i
   view.ctx.on_step(path, i)
-  render_graph()
+  render_tree()
   local target = path.steps[i]
   view.ctx.show_target(target.node or target.hunk, target.node ~= nil, view.diff_win, view.keys, function()
-    if focus_graph and vim.api.nvim_win_is_valid(view.graph_win) then
-      vim.api.nvim_set_current_win(view.graph_win)
+    if focus_tree and vim.api.nvim_win_is_valid(view.tree_win) then
+      vim.api.nvim_set_current_win(view.tree_win)
     end
   end)
+end
+
+---Shows an unchanged function from the tree in the diff window, in its file.
+local function show_function(node)
+  view.ctx.show_target({ file = node.file, new = { start = node.line, len = 1 } }, true, view.diff_win, view.keys,
+    function()
+      if vim.api.nvim_win_is_valid(view.tree_win) then
+        vim.api.nvim_set_current_win(view.tree_win)
+      end
+    end)
 end
 
 function M.step(delta)
@@ -64,7 +121,7 @@ function M.step(delta)
     vim.notify(delta > 0 and "trail: last step of this path" or "trail: first step of this path", vim.log.levels.INFO)
     return
   end
-  show_step(target, vim.api.nvim_get_current_win() == view.graph_win)
+  show_step(target, vim.api.nvim_get_current_win() == view.tree_win)
 end
 
 ---The path and step being shown, if the path view is open.
@@ -76,12 +133,12 @@ end
 
 function M.refresh_graph()
   if valid() then
-    render_graph()
+    render_tree(true)
   end
 end
 
----Opens `path` at `step` in the review window: the call graph on top, the diff below.
----@param ctx table callbacks from the plugin: review, show_target, home, window, switch_path, done_steps, on_step
+---Opens `path` at `step` in the review window: the path's tree on top, the diff below.
+---@param ctx table callbacks from the plugin: show_target, peek_node, home, window, switch_path, done_steps, on_step
 function M.open(ctx, path, step)
   if valid() then
     vim.api.nvim_set_current_tabpage(view.tab)
@@ -89,24 +146,44 @@ function M.open(ctx, path, step)
     local diff_win = ctx.window()
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].bufhidden = "wipe"
-    vim.api.nvim_buf_set_name(buf, "trail://graph")
+    vim.api.nvim_buf_set_name(buf, "trail://path")
     vim.cmd("aboveleft split")
-    local graph_win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(graph_win, buf)
-    local wo = vim.wo[graph_win][0]
-    wo.winfixheight, wo.number, wo.relativenumber, wo.wrap, wo.cursorline = true, false, false, false, false
+    local tree_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(tree_win, buf)
+    local wo = vim.wo[tree_win][0]
+    wo.winfixheight, wo.number, wo.relativenumber, wo.wrap, wo.cursorline = true, false, false, false, true
     wo.signcolumn, wo.foldcolumn, wo.statuscolumn = "no", "0", ""
-    view = { tab = vim.api.nvim_get_current_tabpage(), graph_win = graph_win, graph_buf = buf, diff_win = diff_win }
+    view = { tab = vim.api.nvim_get_current_tabpage(), tree_win = tree_win, tree_buf = buf, diff_win = diff_win }
 
     local function map(lhs, fn, desc)
       vim.keymap.set("n", lhs, fn, { buffer = buf, desc = desc, nowait = true })
     end
+    local function item()
+      return view.item_of_row[vim.api.nvim_win_get_cursor(0)[1]] or {}
+    end
     map("<CR>", function()
-      local step = view.step_of_row[vim.api.nvim_win_get_cursor(0)[1]]
-      if step then
-        show_step(step, true)
+      local it = item()
+      if it.fold then
+        local expanded = expanded_by_path[view.path.id] or {}
+        expanded[it.fold] = true
+        expanded_by_path[view.path.id] = expanded
+        render_tree(true)
+      elseif it.step then
+        show_step(it.step, true)
+      elseif it.node then
+        show_function(it.node)
       end
-    end, "Show this step")
+    end, "Open the fold, or show this function below")
+    map("c", function()
+      expanded_by_path[view.path.id] = nil
+      render_tree()
+    end, "Fold back to the changes")
+    map("K", function()
+      local it = item()
+      if it.node then
+        view.ctx.peek_node(it.node)
+      end
+    end, "Show this function's code")
     map("n", function()
       M.step(1)
     end, "Next step")

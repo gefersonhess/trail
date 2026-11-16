@@ -18,14 +18,15 @@ Two levels, like a file explorer.
 ### Paths screen (home)
 
 - A list of paths. Each path is a thread of related changes with its step count and progress.
-- A Tests section after the code paths.
+- "No test reaches": the changes no test calls, even through other code.
+- The changed test files, with the functions they cover.
 - A "Not in any path" section. Every changed hunk lands in a path, in Tests, or here.
-- A preview of the selected path's call graph below the list.
+- A preview of the selected path's tree below the list.
 - `<CR>` or a number enters a path. `S` opens the send screen.
 
 ### Inside a path
 
-- The path's call graph (DAG) on top, current step highlighted, at most a third of the screen and scrollable beyond that.
+- The path's tree on top, from each entry point down to the last change, current step highlighted, at most a third of the screen and scrollable beyond that. What leads to no change is folded; `<CR>` opens a fold and `c` folds back.
 - A scrollable diff below, unified by default and side by side with `t`, with unchanged stretches folded.
 - `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen.
 - `<CR>` on a node in the graph jumps the diff to it.
@@ -41,8 +42,8 @@ Two levels, like a file explorer.
 
 ### Tests
 
-- Test files never appear in code paths. They are detected by path patterns (`*_test.go`, `tests/`, and so on), configurable.
-- Each test file is linked to the code it covers, through the call graph.
+- Tests never start a tree. They are detected by path patterns (`*_test.go`, `tests/`, and so on), configurable, and show as a count on the rows they call.
+- Each changed test file is listed with the code it covers.
 - Changed functions that no test change covers are listed as warnings.
 
 ### Comments and sending
@@ -114,7 +115,7 @@ In:
 - `:Trail main..branch` and `:Trail #123` (GitHub PR via `gh`).
 - Changed symbols from git diff and tree-sitter, for Go and Rust.
 - Call edges from the LSP call hierarchy.
-- Paths built from the graph without AI: one path per connected group of changed functions, starting at its entry point. Tests separated.
+- Paths built without AI: the impact of each change, walked through the call hierarchy up to its entry points and down through its calls (see `decisions.md`). Tests separated.
 - Paths screen and path view.
 - The difftastic diff: the engine runs `difft` (JSON output) on both versions of a file, and the plugin draws its line alignment and changed tokens in its own buffers, so comments and navigation work on them. Without `difft`, a line diff with whitespace ignored. Moved code is not marked yet.
 - Comments and per-node progress, saved under `.git/`.
