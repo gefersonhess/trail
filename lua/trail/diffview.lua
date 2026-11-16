@@ -388,6 +388,13 @@ function M.show(diff, opts)
     report_seen()
   end
 
+  local function side_of(p, e)
+    if #panes == 2 then
+      return p == panes[1] and "old" or "new"
+    end
+    return (e.mark == "-" or not e.new) and "old" or "new"
+  end
+
   ---The file line under the cursor: which side, its number and its text.
   function view.line_at_cursor()
     local p = pane_of(vim.api.nvim_get_current_win())
@@ -395,15 +402,37 @@ function M.show(diff, opts)
     if not e then
       return nil
     end
-    local side
-    if #panes == 2 then
-      side = p == panes[1] and "old" or "new"
-    else
-      side = (e.mark == "-" or not e.new) and "old" or "new"
-    end
+    local side = side_of(p, e)
     local line = e[side]
     local lines = side == "old" and diff.old_lines or diff.new_lines
     return { side = side, line = line, text = lines[line] }
+  end
+
+  ---The file lines covered by the visual selection, all on the side of its
+  ---first line: that side, the first and last line numbers and the first line's text.
+  function view.selection()
+    local p = pane_of(vim.api.nvim_get_current_win())
+    local from, to = vim.fn.line("v"), vim.fn.line(".")
+    if from > to then
+      from, to = to, from
+    end
+    local side, first, last
+    for row = from, to do
+      local e = p.view.gutter[row]
+      if e then
+        side = side or side_of(p, e)
+        local n = e[side]
+        if n then
+          first = math.min(first or n, n)
+          last = math.max(last or n, n)
+        end
+      end
+    end
+    if not first then
+      return nil
+    end
+    local lines = side == "old" and diff.old_lines or diff.new_lines
+    return { side = side, line = first, last = last, text = lines[first] }
   end
 
   ---Draws notes as virtual lines under their file lines, replacing earlier ones.
@@ -480,8 +509,8 @@ function M.show(diff, opts)
   end
 
   for _, p in ipairs(panes) do
-    local function map(key, fn, desc)
-      vim.keymap.set("n", key, fn, { buffer = p.buf, desc = desc })
+    local function map(key, fn, desc, mode)
+      vim.keymap.set(mode or "n", key, fn, { buffer = p.buf, desc = desc })
     end
     map("]h", function()
       jump(1)
@@ -501,7 +530,7 @@ function M.show(diff, opts)
     map("-", opts.on_back, "Back to the paths screen")
     map("q", opts.on_back, "Back to the paths screen")
     for _, k in ipairs(opts.keys or {}) do
-      map(k[1], k[2], k[3])
+      map(k[1], k[2], k[3], k[4])
     end
   end
   return view

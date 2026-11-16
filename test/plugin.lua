@@ -592,6 +592,28 @@ check(vim.iter(notes_on(cbuf, "func Login(user string) bool {") or {}):any(funct
   return n:match("why rename u to user%?")
 end), "ce edits the comment on the line")
 
+-- A comment on several lines selected in visual mode.
+local first = row_with(cbuf, "func Login(user string) bool {")
+vim.api.nvim_win_set_cursor(0, { first, 0 })
+answer("this pair reads backwards")
+vim.api.nvim_feedkeys("Vjcn", "x", false)
+local ranged = require("trail.state").comments()
+ranged = ranged[#ranged]
+check(ranged.kind == "nit" and ranged.line == 8 and ranged.last == 9 and ranged.side == "new"
+  and ranged.text == "func Login(user string) bool {", "a visual selection saves the first and last line: " .. vim.inspect(ranged))
+check(vim.fn.mode() == "n", "the selection is left after commenting")
+check(vim.iter(notes_on(cbuf, "\treturn VerifyHash(user)") or {}):any(function(n)
+  return n:match("nit 8%-9") and n:match("this pair reads backwards")
+end), "a range comment shows under its last line, with its lines")
+check(require("trail.comments").markdown("x"):match("%*%*nit%*%* %(lines 8%-9%): this pair reads backwards"), "markdown names the lines")
+vim.api.nvim_win_set_cursor(0, { row_with(cbuf, "\treturn VerifyHash(user)"), 0 })
+answer("this pair reads better")
+vim.api.nvim_feedkeys("ce", "x", false)
+check(ranged.body == "this pair reads better", "ce on any line of the range edits it")
+local all = require("trail.state").comments()
+table.remove(all)
+require("trail.state").save()
+
 compose.open = real_compose
 local function popup(opts, body)
   local result
