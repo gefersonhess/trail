@@ -1954,6 +1954,17 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
     );
     assert_eq!(flags("store.Store.Save"), ("modified".into(), false, false));
     assert_eq!(flags("store.dedupeKey"), ("added".into(), false, false));
+    let short = |name: &str| {
+        let n = impact_node(orders, name);
+        (n["package"].as_str().unwrap(), n["short"].as_str().unwrap())
+    };
+    assert_eq!(short("store.Store.Save"), ("store", "Store.Save"));
+    assert_eq!(short("store.dedupeKey"), ("store", "dedupeKey"));
+    assert_eq!(short("cmd/importer.main"), ("cmd/importer", "main"));
+    assert_eq!(
+        short("api.Routes (func literal)"),
+        ("api", "closure in Routes")
+    );
     let create = impact_node(orders, "orders.Service.Create");
     assert_eq!(
         (create["file"].as_str(), create["line"].as_u64()),
@@ -2278,4 +2289,51 @@ fn a_later_tree_shows_its_own_change_before_it_joins() {
         json!(["go:api.Handle", "go:store.Save", "go:svc.Retry"]),
         "steps follow the trees top to bottom"
     );
+}
+
+#[test]
+fn impact_names_rust_functions_by_module_and_short_name() {
+    let (repo, _) = branch_with(
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"m\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub mod store;\n\npub fn run() -> u32 {\n    store::Store::new().save()\n}\n",
+            ),
+            (
+                "src/store.rs",
+                "pub struct Store;\n\nimpl Store {\n    pub fn new() -> Store {\n        Store\n    }\n\n    pub fn save(&self) -> u32 {\n        1\n    }\n}\n",
+            ),
+        ],
+        &[(
+            "src/store.rs",
+            "pub struct Store;\n\nimpl Store {\n    pub fn new() -> Store {\n        Store\n    }\n\n    pub fn save(&self) -> u32 {\n        2\n    }\n}\n",
+        )],
+        &[],
+    );
+
+    let result = impact(
+        &repo,
+        &[("TRAIL_RUST_ANALYZER", "/nonexistent/rust-analyzer")],
+    );
+
+    let path = &result["paths"][0];
+    let named = |id: &str| {
+        let n = path["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == id)
+            .unwrap_or_else(|| panic!("no node {id} in {result}"));
+        (n["package"].as_str().unwrap(), n["short"].as_str().unwrap())
+    };
+    assert_eq!(
+        path["steps"],
+        json!(["rust:store::Store::save"]),
+        "{result}"
+    );
+    assert_eq!(named("rust:store::Store::save"), ("store", "Store::save"));
 }

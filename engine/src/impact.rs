@@ -57,7 +57,12 @@ pub struct Row {
 #[derive(Serialize)]
 pub struct ImpactNode {
     pub id: String,
+    /// The full name, package included: `internal/platform/postgres.Store.Save`.
     pub name: String,
+    /// Where it lives: the Go package folder or the Rust module path.
+    pub package: String,
+    /// The name without its package: `Store.Save`, or `closure in Routes`.
+    pub short: String,
     pub file: String,
     /// 1-based line of the function's name at head.
     pub line: u32,
@@ -127,13 +132,33 @@ impl Sources {
             .map(|s| (key.0.clone(), s.name_at.0 + 1))
     }
 
-    fn name(&mut self, key: &Key) -> String {
+    /// The full name, the package, and the name without the package.
+    fn names(&mut self, key: &Key) -> (String, String, String) {
+        let separator = if self.language == "rust" { "::" } else { "." };
         if let Some(function) = self.function(key) {
-            return function.name.clone();
+            // Methods keep their type: `Store.Save`, `Store::save`.
+            let keep = if function.kind == Kind::Method { 2 } else { 1 };
+            let parts: Vec<&str> = function.name.split(separator).collect();
+            let at = parts.len().saturating_sub(keep);
+            return (
+                function.name.clone(),
+                parts[..at].join(separator),
+                parts[at..].join(separator),
+            );
         }
         match self.enclosing(key) {
-            Some(outer) => format!("{} (func literal)", self.name(&outer)),
-            None => format!("{}:{}", key.0, key.1),
+            Some(outer) => {
+                let (name, package, short) = self.names(&outer);
+                (
+                    format!("{name} (func literal)"),
+                    package,
+                    format!("closure in {short}"),
+                )
+            }
+            None => {
+                let at = format!("{}:{}", key.0, key.1);
+                (at.clone(), String::new(), at)
+            }
         }
     }
 
@@ -806,11 +831,13 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
         let nodes = keys
             .iter()
             .map(|key| {
-                let name = sources.name(key);
+                let (name, package, short) = sources.names(key);
                 let is_test = diff::is_test(&key.0);
                 ImpactNode {
                     id: id_of(key),
                     name,
+                    package,
+                    short,
                     file: key.0.clone(),
                     line: key.1,
                     status: changed.get(key).map_or("unchanged", |c| c.status),
