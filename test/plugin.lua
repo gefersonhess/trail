@@ -715,7 +715,7 @@ local function fsh(cmd)
   assert(out.code == 0, cmd .. ": " .. out.stderr)
 end
 local function a_go(n)
-  return "package a\n\nfunc Entry() {\n\tWork()\n}\n\nfunc Other() {\n\tWork()\n}\n\nfunc Work() int {\n\tfirst()\n\tsecond()\n\treturn "
+  return "package a\n\nfunc Entry() {\n\thop1()\n\tside()\n}\n\nfunc hop1() {\n\thop2()\n}\n\nfunc hop2() {\n\tWork()\n}\n\nfunc side() {\n\tWork()\n}\n\nfunc Other() {\n\tWork()\n}\n\nfunc Work() int {\n\tfirst()\n\tsecond()\n\treturn "
     .. n .. "\n}\n\nfunc first() {}\n\nfunc second() {}\n\nfunc Lone() int {\n\treturn " .. n .. "\n}"
 end
 fsh("git init -q -b main && git config user.email t@t && git config user.name t")
@@ -750,13 +750,24 @@ local function tree_row(pattern)
     end
   end
 end
-check(tree_row("^  ◆ Entry   entry%s+a$") and tree_row("^▶ └─ ● Work   step 1$") and tree_row("^     └─ ▸ 2 more$")
-  and tree_row("^  ▸ 1 more entry point reaches this path without other changes$") and not tree_row("first"),
-  "the path opens stopping at its last change: " .. table.concat(tree_lines(), "\n"))
+check(tree_row("^  ◆ Entry   entry%s+a$") and tree_row("^  └─ ▸ 2 functions$") and tree_row("^▶    └─ ● Work   step 1$")
+  and tree_row("^  ▸ 1 more entry point reaches this path without other changes$") and not tree_row("hop") and not tree_row("first")
+  and not tree_row("joins above"),
+  "a path opens showing its changes, with the functions between them folded: " .. table.concat(tree_lines(), "\n"))
 vim.api.nvim_set_current_win(fold_win)
-vim.api.nvim_win_set_cursor(fold_win, { tree_row("▸ 2 more"), 0 })
+vim.api.nvim_win_set_cursor(fold_win, { tree_row("▸ 2 functions"), 0 })
 vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
-check(tree_row("^     ├─ ○ first$") and tree_row("^     └─ ○ second$") and not tree_row("▸ 2 more"),
+check(tree_row("^  └─ ○ hop1$") and tree_row("^     └─ ○ hop2$") and tree_row("^▶       └─ ● Work   step 1$")
+  and not tree_row("▸ 2 functions") and not tree_row("first"),
+  "<CR> on the link shows the functions between the changes: " .. table.concat(tree_lines(), "\n"))
+check(vim.api.nvim_get_current_line():match("hop1"), "the cursor stays where the link was")
+
+vim.api.nvim_feedkeys("a", "x", false)
+check(tree_row("^  ├─ ○ hop1$") and tree_row("^▶ │     └─ ● Work   step 1$") and tree_row("^  │        └─ ▸ 2 more$")
+  and tree_row("^  └─ ▸ 2 more$"), "a shows every function on the way, stopping at the last change: " .. table.concat(tree_lines(), "\n"))
+vim.api.nvim_win_set_cursor(fold_win, { tree_row("^  │        └─ ▸ 2 more$"), 0 })
+vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+check(tree_row("^  │        ├─ ○ first$") and tree_row("^  │        └─ ○ second$") and not tree_row("^  │        └─ ▸ 2 more$"),
   "<CR> on a fold opens it: " .. table.concat(tree_lines(), "\n"))
 check(vim.api.nvim_get_current_win() == fold_win and vim.api.nvim_get_current_line():match("first"),
   "the cursor stays where the fold was")
@@ -765,7 +776,8 @@ vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
 check(tree_row("^  ◆ Other   entry") and tree_row("^  └─ ● Work   modified · ↑ joins above$"),
   "<CR> on the entry points line shows the trees that only join: " .. table.concat(tree_lines(), "\n"))
 vim.api.nvim_feedkeys("c", "x", false)
-check(tree_row("▸ 2 more") and tree_row("▸ 1 more entry point") and not tree_row("Other"), "c folds back to the changes")
+check(tree_row("▸ 2 functions") and tree_row("▸ 1 more entry point") and not tree_row("Other") and not tree_row("hop"),
+  "c folds back to the changes: " .. table.concat(tree_lines(), "\n"))
 vim.api.nvim_win_set_cursor(fold_win, { tree_row("◆ Entry"), 0 })
 vim.api.nvim_feedkeys("K", "x", false)
 check(vim.wait(10000, function()

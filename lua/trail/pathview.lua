@@ -37,8 +37,10 @@ local function list_lines(path, current, done)
   return lines, hls, item_of_row
 end
 
----Folds the user opened, per path, kept while the review is open.
+---Folds the user opened, and whether the path shows every function, per
+---path, kept while the review is open.
 local expanded_by_path = {}
+local all_by_path = {}
 
 local function render_tree(keep_cursor)
   local ctx, path = view.ctx, view.path
@@ -47,6 +49,7 @@ local function render_tree(keep_cursor)
   if path.impact then
     lines, hls, item_of_row = tree.render(path.impact, {
       expanded = expanded,
+      all = all_by_path[path.id],
       current = view.step,
       done = ctx.done_steps(path),
     })
@@ -176,8 +179,13 @@ function M.open(ctx, path, step)
     end, "Open the fold, or show this function below")
     map("c", function()
       expanded_by_path[view.path.id] = nil
+      all_by_path[view.path.id] = nil
       render_tree()
     end, "Fold back to the changes")
+    map("a", function()
+      all_by_path[view.path.id] = not all_by_path[view.path.id] or nil
+      render_tree()
+    end, "Show every function on the way, or only the changes")
     map("K", function()
       local it = item()
       if it.node then

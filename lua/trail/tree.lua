@@ -63,14 +63,78 @@ local function visible(rows, tree_index, is_step, expanded)
   return out
 end
 
+---The rows to draw for one tree in the changes view: its entry point and the
+---path's changes, each under the change above it, with a link line standing
+---for the unchanged functions the call goes through until opened.
+local function changes_only(rows, tree_index, is_step, expanded)
+  local out = {}
+  -- The row on each depth above the current one, to find a row's ancestors.
+  local above = {}
+  -- Rows already drawn, with the depth they were drawn at.
+  local drawn = {}
+  -- Changes drawn in this tree, or joined to: a join is kept only once, and
+  -- only for a change shown in an earlier tree.
+  local here = {}
+  for k, row in ipairs(rows) do
+    for d = #above, row.depth + 1, -1 do
+      above[d] = nil
+    end
+    above[row.depth + 1] = k
+    local keep = k == 1 or is_step(row) or (row.join and is_step({ id = row.id }) and not here[row.id])
+    if keep then
+      here[row.id] = true
+    end
+    if keep and k > 1 then
+      -- The nearest ancestor already drawn, and the unchanged rows between.
+      local parent, chain = nil, {}
+      for d = row.depth, 1, -1 do
+        local a = above[d]
+        if drawn[a] then
+          parent = a
+          break
+        end
+        table.insert(chain, 1, rows[a])
+      end
+      local depth = parent and drawn[parent] + 1 or 0
+      local key = tree_index .. ":link:" .. k
+      if #chain > 0 and not expanded[key] then
+        table.insert(out, {
+          fold = key,
+          depth = depth,
+          label = #chain .. " function" .. (#chain == 1 and "" or "s"),
+        })
+        depth = depth + 1
+      elseif #chain > 0 then
+        for _, link in ipairs(chain) do
+          table.insert(out, { row = link, depth = depth })
+          depth = depth + 1
+        end
+      end
+      -- The call's interface belongs to the hop just above, hidden while the link is folded.
+      local shown = row
+      if #chain > 0 and not expanded[key] then
+        shown = { id = row.id, depth = row.depth, join = row.join }
+      end
+      table.insert(out, { row = shown, depth = depth })
+      drawn[k] = depth
+    elseif keep then
+      table.insert(out, { row = row, depth = 0 })
+      drawn[k] = 0
+    end
+  end
+  return out
+end
+
 local function plural(n, word)
   return n .. " " .. word .. (n == 1 and "" or "s")
 end
 
----Draws an impact path from its entry points down, stopping at its last
----change: what leads to no change is folded until `expanded` opens it.
+---Draws an impact path from its entry points down. By default it shows only
+---the changes and how they connect; `opts.all` shows every function on the
+---way, stopping at the last change. What leads to no change is folded until
+---`expanded` opens it.
 ---@param path table the engine's impact path
----@param opts { expanded: table<string, boolean>|nil, current: integer|nil, done: table<integer, boolean>|nil, width: integer|nil }
+---@param opts { expanded: table<string, boolean>|nil, all: boolean|nil, current: integer|nil, done: table<integer, boolean>|nil }
 ---@return string[] lines, table[] highlights, table<integer, table> item_of_row
 function M.render(path, opts)
   opts = opts or {}
@@ -96,9 +160,16 @@ function M.render(path, opts)
   local quiet = {}
   for t, tree in ipairs(path.trees) do
     if tree.changes or expanded.entries then
-      local shown = tree.changes and visible(tree.rows, t, is_step, expanded) or vim.tbl_map(function(row)
-        return { row = row }
-      end, tree.rows)
+      local shown
+      if not tree.changes then
+        shown = vim.tbl_map(function(row)
+          return { row = row }
+        end, tree.rows)
+      elseif opts.all then
+        shown = visible(tree.rows, t, is_step, expanded)
+      else
+        shown = changes_only(tree.rows, t, is_step, expanded)
+      end
       if #items > 0 then
         table.insert(items, { blank = true })
       end
@@ -118,7 +189,7 @@ function M.render(path, opts)
 
   -- Whether each item is the last child of its parent, for the connectors.
   local function depth(item)
-    return item.row and item.row.depth or item.depth
+    return item.depth or item.row.depth
   end
   local last = {}
   for k, item in ipairs(items) do
@@ -156,7 +227,7 @@ function M.render(path, opts)
       end
       if item.fold then
         table.insert(rendered, {
-          text = item.text or (prefix .. "▸ " .. item.count .. " more"),
+          text = item.text or (prefix .. "▸ " .. (item.label or (item.count .. " more"))),
           fold = item.fold,
         })
       else
