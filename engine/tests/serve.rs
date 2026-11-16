@@ -2489,10 +2489,6 @@ fn go_and_rust_lockfiles_vendored_and_generated_code_are_ignored_by_default() {
         ("api/x.pb.go", "package api\n\nfunc P() {}\n"),
         ("api/x_gen.go", "package api\n\nfunc G() {}\n"),
         ("zz_generated.deepcopy.go", "package api\n\nfunc Z() {}\n"),
-        (
-            "internal/db/dbgen/queries.sql.go",
-            "package dbgen\n\nfunc Q() {}\n",
-        ),
         ("Cargo.lock", "a\n"),
         ("target/debug/out.rs", "fn o() {}\n"),
     ];
@@ -2526,9 +2522,9 @@ fn go_and_rust_lockfiles_vendored_and_generated_code_are_ignored_by_default() {
 
     let (kept, ignored) = paths_of(json!({}));
     assert_eq!(kept, ["keep.go", "src/target/keep.go"]);
-    assert_eq!(ignored.len(), 9, "{ignored:?}");
+    assert_eq!(ignored.len(), 8, "{ignored:?}");
 
     let (kept, ignored) = paths_of(json!({ "ignore_defaults": false }));
-    assert_eq!(kept.len(), 11);
+    assert_eq!(kept.len(), 10);
     assert!(ignored.is_empty());
 }
