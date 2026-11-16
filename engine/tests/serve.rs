@@ -1741,7 +1741,7 @@ fn impact_repo() -> Repo {
         &[
             (
                 "store/store.go",
-                "package store\n\nimport \"errors\"\n\ntype Order struct{ ID string }\n\ntype Store struct{ seen map[string]bool }\n\nvar ErrDuplicate = errors.New(\"duplicate\")\n\nfunc (s *Store) Save(o Order) error {\n\tif s.seen[dedupeKey(o)] {\n\t\treturn ErrDuplicate\n\t}\n\treturn nil\n}\n\nfunc dedupeKey(o Order) string {\n\treturn o.ID\n}\n\nfunc (s *Store) Reset() {\n\ts.seen = nil\n}\n",
+                "package store\n\nimport \"errors\"\n\ntype Order struct{ ID string }\n\ntype Store struct{ seen map[string]bool }\n\nvar ErrDuplicate = errors.New(\"duplicate\")\n\nfunc (s *Store) Save(o Order) error {\n\tif s.seen[dedupeKey(o)] {\n\t\treturn ErrDuplicate\n\t}\n\treturn nil\n}\n\nfunc dedupeKey(o Order) string {\n\treturn string(Key(o.ID))\n}\n\nfunc (s *Store) Reset() {\n\ts.seen = nil\n}\n\ntype Key string\n",
             ),
             (
                 "api/api.go",
@@ -1800,6 +1800,47 @@ fn impact_edges(path: &Value) -> Vec<(String, String, String, String)> {
     out
 }
 
+/// A path's trees as indented rows of function names, `↑` marking a row
+/// that joins a tree shown earlier, and `*` a tree with no change before it joins.
+fn impact_trees(path: &Value) -> Vec<Vec<String>> {
+    let name = |id: &Value| {
+        path["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| &n["id"] == id)
+            .map(|n| n["name"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("row for unknown node {id}"))
+    };
+    path["trees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tree| {
+            let mut rows: Vec<String> = tree["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    let depth = row["depth"].as_u64().unwrap() as usize;
+                    let mut line = format!("{}{}", "  ".repeat(depth), name(&row["id"]));
+                    if let Some(via) = row["via"].as_str() {
+                        line.push_str(&format!(" via {via}"));
+                    }
+                    if row["join"] == true {
+                        line.push_str(" ↑");
+                    }
+                    line
+                })
+                .collect();
+            if tree["changes"] == false {
+                rows[0].push_str(" *");
+            }
+            rows
+        })
+        .collect()
+}
+
 fn impact_node<'a>(path: &'a Value, name: &str) -> &'a Value {
     path["nodes"]
         .as_array()
@@ -1841,11 +1882,30 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
     assert_eq!(
         orders["steps"],
         json!([
-            "go:store.dedupeKey",
+            "go:api.handleCreateOrder",
             "go:store.Store.Save",
-            "go:api.handleCreateOrder"
+            "go:store.dedupeKey"
         ]),
-        "changes reached through unchanged code share one path, the most reached first"
+        "changes reached through unchanged code share one path, in reading order"
+    );
+    assert_eq!(
+        impact_trees(orders),
+        [
+            vec![
+                "api.Routes",
+                "  api.Routes (func literal)",
+                "    api.handleCreateOrder",
+                "      orders.Service.Create",
+                "        store.Store.Save via orders.Saver.Save",
+                "          store.dedupeKey",
+            ],
+            vec![
+                "cmd/importer.main *",
+                "  orders.Service.Import",
+                "    orders.Service.Create ↑",
+            ],
+        ],
+        "a tree per entry point, the one through most changes first, each later one stopping where it joins"
     );
     assert_eq!(
         impact_edges(orders),
@@ -1926,9 +1986,9 @@ fn without_a_language_server_impact_matches_calls_by_name() {
     assert_eq!(
         paths[0]["steps"],
         json!([
-            "go:store.dedupeKey",
+            "go:api.handleCreateOrder",
             "go:store.Store.Save",
-            "go:api.handleCreateOrder"
+            "go:store.dedupeKey"
         ])
     );
     assert_eq!(
@@ -2155,5 +2215,67 @@ fn calls_through_an_interface_from_outside_the_repository_do_not_join_paths() {
             "lsp"
         )),
         "{result}"
+    );
+}
+
+#[test]
+fn a_later_tree_shows_its_own_change_before_it_joins() {
+    let (repo, _) = branch_with(
+        &[
+            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+            (
+                "store/store.go",
+                "package store\n\nfunc Save() int {\n\treturn 1\n}\n",
+            ),
+            (
+                "svc/svc.go",
+                "package svc\n\nimport \"example.com/m/store\"\n\nfunc Create() int {\n\treturn store.Save()\n}\n\nfunc Import() int {\n\treturn Create()\n}\n\nfunc Retry() int {\n\treturn store.Save()\n}\n",
+            ),
+            (
+                "api/api.go",
+                "package api\n\nimport \"example.com/m/svc\"\n\nfunc Handle() int {\n\treturn svc.Create()\n}\n",
+            ),
+            (
+                "worker/worker.go",
+                "package worker\n\nimport \"example.com/m/svc\"\n\nfunc Run() int {\n\treturn svc.Retry()\n}\n",
+            ),
+            (
+                "cmd/tool/main.go",
+                "package main\n\nimport \"example.com/m/svc\"\n\nfunc main() {\n\t_ = svc.Import()\n}\n",
+            ),
+        ],
+        &[
+            (
+                "store/store.go",
+                "package store\n\nfunc Save() int {\n\treturn 2\n}\n",
+            ),
+            (
+                "svc/svc.go",
+                "package svc\n\nimport \"example.com/m/store\"\n\nfunc Create() int {\n\treturn store.Save()\n}\n\nfunc Import() int {\n\treturn Create()\n}\n\nfunc Retry() int {\n\treturn store.Save() + 1\n}\n",
+            ),
+            (
+                "api/api.go",
+                "package api\n\nimport \"example.com/m/svc\"\n\nfunc Handle() int {\n\treturn svc.Create() + 1\n}\n",
+            ),
+        ],
+        &[],
+    );
+
+    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+
+    let path = &result["paths"][0];
+    assert_eq!(
+        impact_trees(path),
+        [
+            vec!["api.Handle", "  svc.Create", "    store.Save"],
+            vec!["worker.Run", "  svc.Retry", "    store.Save ↑"],
+            vec!["cmd/tool.main *", "  svc.Import", "    svc.Create ↑"],
+        ],
+        "{result}"
+    );
+    assert_eq!(
+        path["steps"],
+        json!(["go:api.Handle", "go:store.Save", "go:svc.Retry"]),
+        "steps follow the trees top to bottom"
     );
 }

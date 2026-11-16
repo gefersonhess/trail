@@ -25,12 +25,33 @@ pub struct Impact {
 #[derive(Serialize)]
 pub struct ImpactPath {
     pub id: String,
-    /// The changed functions, the one reached through most other changes first.
+    /// The changed functions in the order the trees show them.
     pub steps: Vec<String>,
     pub nodes: Vec<ImpactNode>,
     pub edges: Vec<ImpactEdge>,
+    /// The path read from beginning to end: one tree per entry point, the one
+    /// through most changes first, each later tree stopping where it joins
+    /// one shown before.
+    pub trees: Vec<Tree>,
     /// The walk hit the node or time limit, so some callers or callees are missing.
     pub truncated: bool,
+}
+
+#[derive(Serialize)]
+pub struct Tree {
+    pub rows: Vec<Row>,
+    /// A changed function appears in it before it joins an earlier tree.
+    pub changes: bool,
+}
+
+#[derive(Serialize)]
+pub struct Row {
+    pub id: String,
+    pub depth: usize,
+    /// The interface or trait method the call from the row above goes through.
+    pub via: Option<String>,
+    /// Already shown earlier, so its callees are not repeated here.
+    pub join: bool,
 }
 
 #[derive(Serialize)]
@@ -114,6 +135,12 @@ impl Sources {
             Some(outer) => format!("{} (func literal)", self.name(&outer)),
             None => format!("{}:{}", key.0, key.1),
         }
+    }
+
+    fn is_type(&mut self, key: &Key) -> bool {
+        self.symbols(&key.0)
+            .iter()
+            .any(|s| s.kind == Kind::Type && s.name_at.0 + 1 == key.1)
     }
 
     /// A method declared inside an interface or trait, which calls dispatch through.
@@ -295,6 +322,10 @@ impl Calls for Server<'_> {
             let Some(callee) = self.key(&to["uri"], &to["selectionRange"]["start"]["line"]) else {
                 continue;
             };
+            // A conversion like `T(x)` comes back as a call to the type.
+            if sources.is_type(&callee) {
+                continue;
+            }
             if !sources.is_abstract(&callee) {
                 self.items.insert(callee.clone(), to.clone());
                 out.push(Link {
@@ -754,21 +785,6 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
     };
     let mut out = Vec::new();
     for members in groups.into_values() {
-        // Reading order: the change that most other changes lead to first.
-        let mut steps: Vec<(usize, String)> = members
-            .iter()
-            .map(|&i| {
-                let (root, reach) = &reaches[i];
-                let above = reach
-                    .up
-                    .iter()
-                    .filter(|k| *k != root && index.contains_key(k))
-                    .count();
-                (above, id_of(root))
-            })
-            .collect();
-        steps.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-
         let mut keys: Vec<Key> = Vec::new();
         let mut edges: Vec<ImpactEdge> = Vec::new();
         let mut truncated = false;
@@ -802,14 +818,110 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
                     entry: !is_test && entries.contains(key),
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let own: HashSet<String> = members.iter().map(|&i| id_of(&reaches[i].0)).collect();
+        let (trees, steps) = layout(&nodes, &edges, &own);
         out.push(ImpactPath {
-            id: steps[0].1.clone(),
-            steps: steps.into_iter().map(|(_, id)| id).collect(),
+            id: steps[0].clone(),
+            steps,
             nodes,
             edges,
+            trees,
             truncated,
         });
     }
     out
+}
+
+/// Lays a path out as trees from its entry points down, and lists its own
+/// changed functions in the order the trees show them. A change that belongs
+/// to another path still shows in the trees, without being a step.
+fn layout(
+    nodes: &[ImpactNode],
+    edges: &[ImpactEdge],
+    own: &HashSet<String>,
+) -> (Vec<Tree>, Vec<String>) {
+    let node: HashMap<&str, &ImpactNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let is_test = |id: &str| node[id].is_test;
+    let is_changed = |id: &str| own.contains(id);
+    let mut callees: HashMap<&str, Vec<(&str, Option<&str>)>> = HashMap::new();
+    let mut called: HashSet<&str> = HashSet::new();
+    for e in edges.iter().filter(|e| !is_test(&e.from)) {
+        callees
+            .entry(&e.from)
+            .or_default()
+            .push((&e.to, e.via.as_deref()));
+        called.insert(&e.to);
+    }
+    let changes_below = |start: &str| {
+        let mut seen = HashSet::from([start]);
+        let mut queue = vec![start];
+        while let Some(id) = queue.pop() {
+            for &(next, _) in callees.get(id).into_iter().flatten() {
+                if seen.insert(next) {
+                    queue.push(next);
+                }
+            }
+        }
+        seen.into_iter().filter(|&id| is_changed(id)).count()
+    };
+    let mut weight: HashMap<&str, usize> = HashMap::new();
+    for n in nodes {
+        weight.insert(&n.id, changes_below(&n.id));
+    }
+    let order = |a: &&str, b: &&str| {
+        weight[b]
+            .cmp(&weight[a])
+            .then(node[a].name.cmp(&node[b].name))
+    };
+    for list in callees.values_mut() {
+        list.sort_by(|a, b| order(&a.0, &b.0));
+        list.dedup_by(|a, b| a.0 == b.0);
+    }
+
+    let mut starts: Vec<&str> = nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .filter(|id| !is_test(id) && !called.contains(id))
+        .collect();
+    starts.sort_by(order);
+    // Changed functions only reachable through a cycle get a tree of their own.
+    let mut rest: Vec<&str> = nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .filter(|&id| is_changed(id))
+        .collect();
+    rest.sort_by(order);
+
+    let mut shown: HashSet<&str> = HashSet::new();
+    let mut trees = Vec::new();
+    let mut steps = Vec::new();
+    for start in starts.into_iter().chain(rest) {
+        if shown.contains(start) {
+            continue;
+        }
+        let mut rows = Vec::new();
+        let mut changes = false;
+        let mut stack: Vec<(&str, usize, Option<&str>)> = vec![(start, 0, None)];
+        while let Some((id, depth, via)) = stack.pop() {
+            let join = !shown.insert(id);
+            if !join {
+                if is_changed(id) {
+                    changes = true;
+                    steps.push(id.to_string());
+                }
+                for &(next, next_via) in callees.get(id).into_iter().flatten().rev() {
+                    stack.push((next, depth + 1, next_via));
+                }
+            }
+            rows.push(Row {
+                id: id.to_string(),
+                depth,
+                via: via.map(str::to_string),
+                join,
+            });
+        }
+        trees.push(Tree { rows, changes });
+    }
+    (trees, steps)
 }
