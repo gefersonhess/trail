@@ -13,6 +13,31 @@ function M.highlight(kind)
   return kind_hl[kind] or "Comment"
 end
 
+local function blend(a, b, t)
+  local out = 0
+  for shift = 0, 16, 8 do
+    local x, y = bit.band(bit.rshift(a, shift), 0xff), bit.band(bit.rshift(b, shift), 0xff)
+    out = out + bit.lshift(math.floor(x * t + y * (1 - t) + 0.5), shift)
+  end
+  return out
+end
+
+---A faint background in each kind's colour, behind a saved comment.
+local function set_block_highlights()
+  local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+  local bg = normal.bg or (vim.o.background == "light" and 0xffffff or 0x0d1117)
+  for _, hl in pairs(kind_hl) do
+    local fg = vim.api.nvim_get_hl(0, { name = hl, link = false }).fg or normal.fg or 0x888888
+    vim.api.nvim_set_hl(0, hl .. "Block", { bg = blend(fg, bg, 0.14), default = true })
+  end
+end
+set_block_highlights()
+vim.api.nvim_create_autocmd("ColorScheme", { callback = set_block_highlights })
+
+function M.block_highlight(kind)
+  return M.highlight(kind) .. "Block"
+end
+
 ---The kind `cc` starts with: `vim.g.trail_default_comment_kind`, or blocking.
 function M.default_kind()
   local wanted = vim.g.trail_default_comment_kind
@@ -68,12 +93,18 @@ function M.notes(view, old_path, new_path)
       if line then
         local virt = {}
         local label = c.kind .. (c.last and string.format(" %d-%d", c.line, c.last) or "")
-        for i, body_line in ipairs(vim.split(c.body, "\n", { plain = true })) do
-          local hl = M.highlight(c.kind)
+        local hl, block = M.highlight(c.kind), M.block_highlight(c.kind)
+        local body = vim.split(c.body, "\n", { plain = true })
+        local width = 0
+        for _, body_line in ipairs(body) do
+          width = math.max(width, vim.fn.strdisplaywidth(body_line))
+        end
+        for i, body_line in ipairs(body) do
+          local pad = string.rep(" ", width - vim.fn.strdisplaywidth(body_line) + 2)
           table.insert(virt, {
-            { "▎ ", hl },
-            { i == 1 and label or string.rep(" ", #label), hl },
-            { "  " .. body_line, "Normal" },
+            { "▎ ", { hl, block } },
+            { i == 1 and label or string.rep(" ", #label), { hl, block } },
+            { "  " .. body_line .. pad, { "Normal", block } },
           })
         end
         table.insert(notes, { side = c.side, line = line + span(c), lines = virt })
