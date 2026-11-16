@@ -31,6 +31,12 @@ struct OpenParams {
     lsp: bool,
     #[serde(default)]
     ignore: Vec<String>,
+    #[serde(default = "enabled")]
+    ignore_defaults: bool,
+}
+
+fn enabled() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -162,7 +168,7 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 code: INVALID_PARAMS,
                 message: e.to_string(),
             })?;
-            let ignore = diff::Ignore::new(&p.ignore);
+            let ignore = diff::Ignore::new(&p.ignore, p.ignore_defaults);
             let review =
                 review::open(&p.repo, &p.base, &p.head, p.lsp, &ignore).map_err(|message| {
                     RpcError {
@@ -202,7 +208,7 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 code: INVALID_PARAMS,
                 message: e.to_string(),
             })?;
-            let ignore = diff::Ignore::new(&p.ignore);
+            let ignore = diff::Ignore::new(&p.ignore, p.ignore_defaults);
             let impact =
                 impact::compute(&p.repo, &p.base, &p.head, &ignore).map_err(|message| {
                     RpcError {

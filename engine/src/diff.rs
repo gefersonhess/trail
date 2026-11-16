@@ -12,16 +12,29 @@ pub struct Diff {
     pub ignored: Vec<String>,
 }
 
+/// Lockfiles, vendored and generated code, left out unless the caller opts out.
+const DEFAULT_IGNORE: &[&str] = &[
+    "go.sum",
+    "/vendor/",
+    "*.pb.go",
+    "*.pb.gw.go",
+    "*_gen.go",
+    "zz_generated.*.go",
+    "Cargo.lock",
+    "/target/",
+];
+
 /// Gitignore-style patterns for files left out of the review. A pattern
 /// ending in `/` matches a folder and everything under it.
 #[derive(Default)]
 pub struct Ignore(Vec<gix::glob::Pattern>);
 
 impl Ignore {
-    pub fn new(patterns: &[String]) -> Self {
+    pub fn new(patterns: &[String], defaults: bool) -> Self {
+        let defaults = DEFAULT_IGNORE.iter().filter(|_| defaults).copied();
         Ignore(
-            patterns
-                .iter()
+            defaults
+                .chain(patterns.iter().map(String::as_str))
                 .filter_map(|p| gix::glob::Pattern::from_bytes_without_negation(p.as_bytes()))
                 .collect(),
         )
