@@ -476,7 +476,9 @@ local function build_home(review)
   if state.impact_error then
     add("  The impact could not be worked out: " .. state.impact_error, nil, { { "WarningMsg", 0, -1 } })
   elseif not state.impact then
-    add("  Working out the impact of each change…", nil, { { "Comment", 0, -1 } })
+    local waited = state.impact_started and math.floor((vim.uv.now() - state.impact_started) / 1000) or 0
+    add(string.format("  Working out the impact of each change… %ds  (engine log: %s)", waited,
+      vim.fn.fnamemodify(engine.log_path, ":~")), nil, { { "Comment", 0, -1 } })
   end
   local rows = {}
   local widths = { 0, 0, 0 }
@@ -650,6 +652,17 @@ end
 ---callers and callees can take a while, so the screen shows meanwhile.
 local function request_impact()
   local review = state.review
+  state.impact_started = vim.uv.now()
+  -- Redraw every second while waiting, so the time shows the walk is still going.
+  local ticker = vim.uv.new_timer()
+  ticker:start(1000, 1000, vim.schedule_wrap(function()
+    if state.review ~= review or state.impact or state.impact_error then
+      ticker:stop()
+      ticker:close()
+      return
+    end
+    M.refresh_home()
+  end))
   engine.request("impact", { repo = state.repo, base = state.base, head = state.head }, function(err, result)
     if state.review ~= review then
       return

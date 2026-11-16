@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::{impact, peek, pull_request, review, sidebyside, worktree};
 
 const PARSE_ERROR: i64 = -32700;
+const INTERNAL_ERROR: i64 = -32603;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const GIT_ERROR: i64 = 1;
@@ -105,7 +106,21 @@ fn handle(
     let started = Instant::now();
     let (id, method, result) = match request {
         Ok(req) => {
-            let result = dispatch(&req.method, req.params);
+            // A bug in one request must still answer it, or the client waits forever.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                dispatch(&req.method, req.params)
+            }))
+            .unwrap_or_else(|panic| {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic");
+                Err(RpcError {
+                    code: INTERNAL_ERROR,
+                    message: format!("the engine crashed: {message}"),
+                })
+            });
             (req.id, req.method, result)
         }
         Err(e) => (

@@ -442,11 +442,16 @@ fn outside_interface(uri: &Value, line: u32, method: &str, language: &str) -> Op
 struct Names {
     pattern: &'static str,
     containing: HashMap<String, Vec<String>>,
+    deadline: Instant,
 }
 
 impl Names {
     fn files(&mut self, word: &str, sources: &Sources) -> Result<Vec<String>, String> {
         if !self.containing.contains_key(word) {
+            // Each search reads the whole tree, so one function can take long on a big repository.
+            if Instant::now() >= self.deadline {
+                return Err("time limit reached".to_string());
+            }
             let files = git::files_containing(&sources.repo, &sources.commit, word, self.pattern)?;
             self.containing.insert(word.to_string(), files);
         }
@@ -667,7 +672,17 @@ fn walk_language(
             deadline,
         };
         let mut reaches = Vec::new();
-        for root in &roots {
+        let started = Instant::now();
+        let by = if source == "lsp" {
+            "the language server"
+        } else {
+            "name"
+        };
+        log(&format!(
+            "impact: {language}: walking {} changes by {by}",
+            roots.len()
+        ));
+        for (done, root) in roots.iter().enumerate() {
             let mut reach = Reach {
                 up: vec![root.clone()],
                 down: Vec::new(),
@@ -690,6 +705,13 @@ fn walk_language(
                 }
             }
             reaches.push((root.clone(), reach));
+            log(&format!(
+                "impact: {language}: {}/{} changes walked, {} functions asked about, {}s",
+                done + 1,
+                roots.len(),
+                walker.callers.len() + walker.callees.len(),
+                started.elapsed().as_secs()
+            ));
         }
         let entries = walker.entries;
         Ok(Walked {
@@ -709,6 +731,9 @@ fn walk_language(
                 deadline,
             };
             // Wait for the workspace to load only until the first function is found.
+            log(&format!(
+                "impact: {language}: waiting for the language server to load the workspace"
+            ));
             let loading = Instant::now() + Duration::from_secs(setting("TRAIL_LSP_TIMEOUT", 60));
             let mut loaded = false;
             // A changed type or constant is walked from the functions using it.
@@ -746,6 +771,7 @@ fn walk_language(
         let mut names = Names {
             pattern: if language == "rust" { "*.rs" } else { "*.go" },
             containing: HashMap::new(),
+            deadline,
         };
         run(&mut names, "name_match")
     })

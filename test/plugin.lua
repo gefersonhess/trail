@@ -776,6 +776,47 @@ check(vim.wait(10000, function()
 end), "K on a row shows that function's code")
 vim.fn.delete(folds, "rf")
 
+-- An engine that stops while working out the impact: the screen says so instead of waiting forever.
+local stopping = repo .. "-stopping-engine"
+vim.fn.writefile({
+  "#!/bin/sh",
+  "while IFS= read -r line; do",
+  "  id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\([0-9]*\\).*/\\1/p')",
+  "  case \"$line\" in",
+  "    *'\"method\":\"open\"'*)",
+  "      printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"base_commit\":\"aaaaaaa1\",\"head_commit\":\"bbbbbbb2\",\"files\":[],\"hunks\":[],\"nodes\":[],\"edges\":[],\"tests\":[],\"paths\":[],\"unassigned\":[],\"uncovered\":[]}}\\n' \"$id\" ;;",
+  "    *'\"method\":\"impact\"'*)",
+  "      echo 'fake engine: walking' >&2",
+  "      sleep 2",
+  "      exit 3 ;;",
+  "  esac",
+  "done",
+}, stopping)
+vim.fn.setfperm(stopping, "rwxr-xr-x")
+require("trail.engine").stop()
+vim.g.trail_engine = stopping
+vim.cmd.cd(repo)
+vim.cmd("Trail main..feature")
+local sbuf2 = vim.api.nvim_get_current_buf()
+local log_path = require("trail.engine").log_path
+local function stop_line(pattern)
+  return vim.iter(vim.api.nvim_buf_get_lines(sbuf2, 0, -1, false)):find(function(l)
+    return l:match(pattern)
+  end)
+end
+check(vim.wait(5000, function()
+  return stop_line("^  Working out the impact of each change… %d+s") ~= nil
+end), "while waiting, the screen shows how long it has been: " .. table.concat(vim.api.nvim_buf_get_lines(sbuf2, 0, -1, false), "\n"))
+check(stop_line("engine log: " .. vim.pesc(vim.fn.fnamemodify(log_path, ":~"))), "and where the engine's log is")
+check(vim.wait(10000, function()
+  return stop_line("^  The impact could not be worked out: the engine stopped") ~= nil
+end), "an engine that stops is reported instead of waiting forever: " .. table.concat(vim.api.nvim_buf_get_lines(sbuf2, 0, -1, false), "\n"))
+check(vim.iter(vim.fn.readfile(log_path)):any(function(l)
+  return l:match("fake engine: walking")
+end), "the engine's output goes to the log file")
+vim.g.trail_engine = nil
+vim.fn.delete(stopping)
+
 vim.fn.delete(repo, "rf")
 if failures > 0 then
   io.stderr:write(failures .. " failures\n")
