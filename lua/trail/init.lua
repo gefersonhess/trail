@@ -261,10 +261,17 @@ local function show_target(target, is_node, win, keys, after)
     end
     local all_keys = vim.list_extend({}, keys or {})
     for _, kind in ipairs(comments.kinds) do
-      table.insert(all_keys, { "c" .. kind:sub(1, 1), function()
+      local function add()
         comments.add(kind, current, params.old_path, params.new_path, changed)
-      end, "Add a " .. kind .. " comment on this line" })
+      end
+      table.insert(all_keys, { "c" .. kind:sub(1, 1), add, "Add a " .. kind .. " comment on this line" })
+      table.insert(all_keys, { "c" .. kind:sub(1, 1), add, "Add a " .. kind .. " comment on the selected lines", "x" })
     end
+    local function add_default()
+      comments.add(comments.default_kind(), current, params.old_path, params.new_path, changed)
+    end
+    table.insert(all_keys, { "cc", add_default, "Add a comment on this line (kind from vim.g.trail_default_comment_kind)" })
+    table.insert(all_keys, { "cc", add_default, "Add a comment on the selected lines", "x" })
     table.insert(all_keys, { "ce", function()
       comments.edit(current, params.old_path, params.new_path, changed)
     end, "Edit the comment on this line" })
