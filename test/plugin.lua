@@ -579,6 +579,17 @@ check(#saved_comments == 1 and saved_comments[1].kind == "question" and saved_co
 local cbuf = vim.api.nvim_get_current_buf()
 local notes = notes_on(cbuf, "func Login(user string) bool {")
 check(notes and notes[1] and notes[1]:match("question") and notes[1]:match("why the rename%?"), "the comment shows under its line: " .. vim.inspect(notes))
+local tinted = false
+for _, m in ipairs(vim.api.nvim_buf_get_extmarks(cbuf, -1, 0, -1, { details = true })) do
+  for _, vl in ipairs(m[4].virt_lines or {}) do
+    for _, chunk in ipairs(vl) do
+      tinted = tinted or vim.tbl_contains(type(chunk[2]) == "table" and chunk[2] or { chunk[2] }, "TrailQuestionBlock")
+    end
+  end
+end
+local block_bg = vim.api.nvim_get_hl(0, { name = "TrailQuestionBlock" }).bg
+check(tinted and block_bg and block_bg ~= vim.api.nvim_get_hl(0, { name = "Normal" }).bg,
+  "a saved comment sits on a faint background in its kind's colour")
 
 vim.api.nvim_win_set_cursor(0, { row_with(cbuf, "\tGone()"), 0 })
 answer("keep the audit")
