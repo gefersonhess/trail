@@ -158,6 +158,7 @@ check(vim.api.nvim_get_current_line() == "func VerifyHash(h string) bool {", "un
 check(gutter(uwin, urow):match("^%s*10%s+12%s+$"), "unified gutter shows old and new numbers, got " .. gutter(uwin, urow))
 check(vim.wo[uwin].winbar:match("difftastic"), "unified winbar names the diff engine")
 check(vim.bo[ubuf].filetype == "go", "unified go filetype")
+check(has_span(ubuf, urow, "TrailContext", 0, #"func VerifyHash(h string) bool {"), "unchanged text gets one colour whatever else highlights it")
 check(vim.bo[ubuf].syntax == "off" and not vim.treesitter.highlighter.active[ubuf], "unchanged code is not syntax highlighted")
 check(vim.wo[uwin].winbar:match("%? keys"), "diff winbar hints at ?")
 local dfloating, dkeys, dclosed = help_lines()

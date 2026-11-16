@@ -27,7 +27,7 @@ What was decided while building trail, and why. `design.md` describes how trail 
 ## Diff
 
 - **difftastic, drawn by trail:** the engine runs `difft --display json` and the plugin draws the result in its own buffers. Comments on lines are essential, so difftastic's read-only terminal output was not an option. Without `difft`, a line diff with whitespace ignored is used.
-- **Unchanged code is one colour:** syntax and tree-sitter highlighting are off in diff buffers, so the changed tokens are the only colour on screen. Syntax colours competed with them and made the diff noisy. The filetype is still set.
+- **Unchanged code is one colour:** syntax and tree-sitter highlighting are off in diff buffers, so the changed tokens are the only colour on screen. Syntax colours competed with them and made the diff noisy. The filetype is still set. Because a user's config can turn tree-sitter or semantic tokens back on afterwards, every line also gets a whole-line `TrailContext` highlight (the `Normal` text colour) above those and below the changed tokens.
 - **What counts as changed:** difftastic decides. Hunks that are only formatting are dropped from the review.
 - **Markers, not tinted lines:** changed lines get a `+` or `-` in the gutter, and only the changed tokens are highlighted. The tokens are drawn in colour (bold green or red text), not on a coloured background, as difftastic does: a background made a wholly new function look like a solid block.
 - **Unified by default:** `t` switches to side by side and `o` toggles between folded and whole-file views. Both choices carry over to the next file.
