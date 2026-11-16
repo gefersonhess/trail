@@ -30,20 +30,20 @@ local function render()
   local order, groups = comments.by_file()
   if #order == 0 then
     add("")
-    add("No comments yet. Add them in a diff with cb, cq or cn.", { 0, -1, "Comment" })
+    add("No comments yet. Add them in a diff with cc, cb, cq or cn, on a line or on a visual selection.", { 0, -1, "Comment" })
   end
   for _, file in ipairs(order) do
     add("")
     add(file, { 0, #file, "Directory" })
     for _, c in ipairs(groups[file]) do
-      local where = c.side == "old" and string.format("-%d", c.line) or string.format("%d", c.line)
+      local where = (c.side == "old" and "-" or "") .. comments.where(c)
       local body = vim.split(c.body, "\n", { plain = true })
-      local head = string.format("  %5s  %-8s  %s", where, c.kind, body[1])
-      add(head, { 9, 9 + #c.kind, comments.highlight(c.kind) }, c)
+      local head = string.format("  %9s  %-8s  %s", where, c.kind, body[1])
+      add(head, { 13, 13 + #c.kind, comments.highlight(c.kind) }, c)
       for i = 2, #body do
-        add(string.rep(" ", 19) .. body[i], nil, c)
+        add(string.rep(" ", 23) .. body[i], nil, c)
       end
-      add(string.rep(" ", 19) .. "> " .. vim.trim(c.text), { 19, -1, "Comment" }, c)
+      add(string.rep(" ", 23) .. "> " .. vim.trim(c.text), { 23, -1, "Comment" }, c)
     end
   end
   local buf = screen.buf

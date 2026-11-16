@@ -38,6 +38,16 @@ function M.anchor(comment, lines)
   return best
 end
 
+---How many lines a comment covers beyond its first.
+local function span(comment)
+  return comment.last and comment.last - comment.line or 0
+end
+
+---"12", or "12-15" for a comment on several lines.
+function M.where(comment)
+  return comment.last and string.format("%d-%d", comment.line, comment.last) or tostring(comment.line)
+end
+
 local function in_file(comment, old_path, new_path)
   return comment.file == file_of(comment.side, old_path, new_path)
 end
@@ -49,20 +59,24 @@ function M.notes(view, old_path, new_path)
     if in_file(c, old_path, new_path) then
       local line = M.anchor(c, view.lines(c.side))
       if line and line ~= c.line then
+        if c.last then
+          c.last = line + span(c)
+        end
         c.line = line
         moved = true
       end
       if line then
         local virt = {}
+        local label = c.kind .. (c.last and string.format(" %d-%d", c.line, c.last) or "")
         for i, body_line in ipairs(vim.split(c.body, "\n", { plain = true })) do
           local hl = M.highlight(c.kind)
           table.insert(virt, {
             { "▎ ", hl },
-            { i == 1 and c.kind or string.rep(" ", #c.kind), hl },
+            { i == 1 and label or string.rep(" ", #label), hl },
             { "  " .. body_line, "Normal" },
           })
         end
-        table.insert(notes, { side = c.side, line = line, lines = virt })
+        table.insert(notes, { side = c.side, line = line + span(c), lines = virt })
       end
     end
   end
@@ -78,7 +92,8 @@ local function at_cursor(view, old_path, new_path)
     return nil
   end
   for i, c in ipairs(store.comments()) do
-    if in_file(c, old_path, new_path) and c.side == here.side and M.anchor(c, view.lines(c.side)) == here.line then
+    local anchored = in_file(c, old_path, new_path) and c.side == here.side and M.anchor(c, view.lines(c.side))
+    if anchored and here.line >= anchored and here.line <= anchored + span(c) then
       return c, i, here
     end
   end
@@ -86,7 +101,12 @@ local function at_cursor(view, old_path, new_path)
 end
 
 function M.add(kind, view, old_path, new_path, on_change)
-  local here = view.line_at_cursor()
+  local mode = vim.fn.mode()
+  local visual = mode == "v" or mode == "V" or mode == "\22"
+  local here = visual and view.selection() or view.line_at_cursor()
+  if visual then
+    vim.cmd.normal({ args = { "\27" }, bang = true })
+  end
   if not here then
     vim.notify("trail: no code line under the cursor", vim.log.levels.INFO)
     return
@@ -103,6 +123,7 @@ function M.add(kind, view, old_path, new_path, on_change)
       file = file_of(here.side, old_path, new_path),
       side = here.side,
       line = here.line,
+      last = here.last and here.last > here.line and here.last or nil,
       text = here.text,
     })
     store.save()
@@ -167,7 +188,8 @@ function M.markdown(title)
   for _, file in ipairs(order) do
     vim.list_extend(out, { "### " .. file, "" })
     for _, c in ipairs(groups[file]) do
-      local where = c.side == "old" and string.format("removed line %d", c.line) or string.format("line %d", c.line)
+      local lines = c.last and "lines" or "line"
+      local where = (c.side == "old" and "removed " or "") .. lines .. " " .. M.where(c)
       local body = vim.split(c.body, "\n", { plain = true })
       table.insert(out, string.format("- **%s** (%s): %s", c.kind, where, body[1]))
       for i = 2, #body do
