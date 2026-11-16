@@ -69,6 +69,21 @@ function M.mark_seen(ids)
   return changed
 end
 
+---Clears hunks' seen marks; returns whether anything changed.
+function M.unmark_seen(ids)
+  local changed = false
+  for _, id in ipairs(ids) do
+    if data.seen[id] then
+      data.seen[id] = nil
+      changed = true
+    end
+  end
+  if changed then
+    M.save()
+  end
+  return changed
+end
+
 function M.position(path_id)
   return data.positions[path_id]
 end
