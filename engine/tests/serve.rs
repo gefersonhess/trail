@@ -734,7 +734,13 @@ fn file_diff_falls_back_to_a_line_diff_without_difftastic() {
         rows.contains(&json!([12, 14])),
         "unchanged lines after it pair up"
     );
-    assert_eq!(changes(&result, "new_changes", 8), Some(json!([])));
+    let line = NEW_AUTH.lines().nth(7).unwrap();
+    let indent = line.len() - line.trim_start().len();
+    assert_eq!(
+        changes(&result, "new_changes", 8),
+        Some(json!([[indent, line.len()]])),
+        "a changed line is marked from its first character to its end"
+    );
     assert_eq!(changes(&result, "new_changes", 1), None);
 }
 
@@ -750,9 +756,20 @@ fn file_diff_shows_added_and_deleted_files_against_filler() {
     let deleted = file_diff(&repo, &review, Some("gone.go"), None, &[]);
 
     assert_eq!(added["rows"], json!([[null, 1]]));
-    assert_eq!(added["new_changes"], json!([{ "line": 1, "spans": [] }]));
+    assert_eq!(
+        added["new_changes"],
+        json!([{ "line": 1, "spans": [[0, 9]] }]),
+        "every line of an added file is marked as changed text"
+    );
     assert_eq!(deleted["rows"], json!([[1, null], [2, null], [3, null]]));
-    assert_eq!(deleted["old_changes"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        deleted["old_changes"],
+        json!([
+            { "line": 1, "spans": [[0, 9]] },
+            { "line": 2, "spans": [] },
+            { "line": 3, "spans": [[0, 11]] },
+        ])
+    );
 }
 
 #[test]
