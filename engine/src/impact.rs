@@ -958,7 +958,14 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
             })
             .collect::<Vec<_>>();
         let own: HashSet<String> = members.iter().map(|&i| id_of(&reaches[i].0)).collect();
-        let (trees, steps) = layout(&nodes, &edges, &own);
+        let calls: HashMap<String, Vec<String>> = keys
+            .iter()
+            .filter_map(|key| {
+                let names = sources.function(key)?.calls.iter().map(|c| c.name.clone());
+                Some((id_of(key), names.collect()))
+            })
+            .collect();
+        let (trees, steps) = layout(&nodes, &edges, &own, &calls);
         out.push(ImpactPath {
             id: steps[0].clone(),
             steps,
@@ -972,12 +979,15 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
 }
 
 /// Lays a path out as trees from its entry points down, and lists its own
-/// changed functions in the order the trees show them. A change that belongs
-/// to another path still shows in the trees, without being a step.
+/// changed functions in the order the trees show them. A function's callees
+/// follow the order of their first call in its body (`calls`, the names it
+/// calls in source order), so the tree reads like the code. A change that
+/// belongs to another path still shows in the trees, without being a step.
 fn layout(
     nodes: &[ImpactNode],
     edges: &[ImpactEdge],
     own: &HashSet<String>,
+    calls: &HashMap<String, Vec<String>>,
 ) -> (Vec<Tree>, Vec<String>) {
     let node: HashMap<&str, &ImpactNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let is_test = |id: &str| node[id].is_test;
@@ -1012,8 +1022,21 @@ fn layout(
             .cmp(&weight[a])
             .then(node[a].name.cmp(&node[b].name))
     };
-    for list in callees.values_mut() {
-        list.sort_by(|a, b| order(&a.0, &b.0));
+    // Callees not called by name in the body (a type reached through its
+    // users, say) come after, in the same order as the trees.
+    let called_at = |caller: &str, callee: &str| {
+        let name = short_name(&node[callee].name);
+        calls
+            .get(caller)
+            .and_then(|names| names.iter().position(|n| n == name))
+            .unwrap_or(usize::MAX)
+    };
+    for (caller, list) in callees.iter_mut() {
+        list.sort_by(|a, b| {
+            called_at(caller, a.0)
+                .cmp(&called_at(caller, b.0))
+                .then(order(&a.0, &b.0))
+        });
         list.dedup_by(|a, b| a.0 == b.0);
     }
 
