@@ -70,6 +70,19 @@ struct PullRequestParams {
     number: u32,
 }
 
+#[derive(Deserialize)]
+struct SubmitReviewParams {
+    repo: PathBuf,
+    url: String,
+    number: u32,
+    commit: String,
+    event: Option<String>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    comments: Vec<pull_request::ReviewComment>,
+}
+
 struct RpcError {
     code: i64,
     message: String,
@@ -259,6 +272,26 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 message,
             })?;
             Ok(serde_json::to_value(pr).expect("pull request serializes"))
+        }
+        "submit_review" => {
+            let p: SubmitReviewParams = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            let submitted = pull_request::submit_review(
+                &p.repo,
+                &p.url,
+                p.number,
+                &p.commit,
+                p.event.as_deref(),
+                &p.body,
+                &p.comments,
+            )
+            .map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
+            Ok(serde_json::to_value(submitted).expect("submitted review serializes"))
         }
         _ => Err(RpcError {
             code: METHOD_NOT_FOUND,

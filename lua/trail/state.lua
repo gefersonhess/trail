@@ -34,6 +34,7 @@ function M.load(repo, key)
       data.positions = next(decoded.positions or {}) and decoded.positions or vim.empty_dict()
       data.comments = decoded.comments or {}
       data.verdict = decoded.verdict
+      data.submitted = decoded.submitted
     end
   end
 end
@@ -105,6 +106,16 @@ end
 
 function M.set_verdict(verdict)
   data.verdict = verdict
+  M.save()
+end
+
+---The last review submitted to GitHub: its head commit, url and verdict.
+function M.submitted()
+  return data.submitted
+end
+
+function M.set_submitted(submitted)
+  data.submitted = submitted
   M.save()
 end
 

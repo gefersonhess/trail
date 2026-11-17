@@ -917,6 +917,75 @@ end), "K on a row shows that function's code")
 vim.fn.delete(folds, "rf")
 
 -- An engine that stops while working out the impact: the screen says so instead of waiting forever.
+-- Submitting a pull request review to GitHub from the send screen.
+do
+  local eng = require("trail.engine")
+  local real_request = eng.request
+  local function rev(ref)
+    return vim.trim(vim.fn.system({ "git", "-C", repo, "rev-parse", ref }))
+  end
+  local base_sha, head_sha = rev("main"), rev("feature")
+  local submitted
+  eng.request = function(method, params, cb)
+    if method == "pull_request" then
+      return vim.schedule(function()
+        cb(nil, { number = 7, title = "Add hashing", url = "https://github.com/owner/repo/pull/7", base = base_sha, head = head_sha })
+      end)
+    elseif method == "submit_review" then
+      submitted = params
+      return vim.schedule(function()
+        cb(nil, { url = "https://github.com/owner/repo/pull/7#pullrequestreview-1", inline = #params.comments, in_body = 0 })
+      end)
+    end
+    return real_request(method, params, cb)
+  end
+  vim.cmd.cd(repo)
+  vim.cmd("Trail #7")
+  local prbuf = vim.api.nvim_get_current_buf()
+  check(vim.wait(15000, function()
+    return vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
+      return l:match("^  1  Login ")
+    end)
+  end), "the pull request review opens")
+  local pstore = require("trail.state")
+  table.insert(pstore.comments(), { id = "1", kind = "nit", body = "name it user", file = "auth/auth.go", side = "new",
+    line = 8, last = 9, text = "func Login(user string) bool {" })
+  pstore.save()
+  vim.api.nvim_feedkeys("S", "x", false)
+  local pbuf = vim.api.nvim_get_current_buf()
+  local function ptext()
+    return table.concat(vim.api.nvim_buf_get_lines(pbuf, 0, -1, false), "\n")
+  end
+  check(ptext():match("P submits it to GitHub"), "the send screen offers submitting on a pull request")
+  vim.api.nvim_feedkeys("P", "x", false)
+  local box = vim.api.nvim_get_current_buf()
+  check(vim.api.nvim_win_get_config(0).relative ~= "" and vim.inspect(vim.api.nvim_win_get_config(0).title):match("comment"),
+    "P opens the overall comment box on the verdict")
+  vim.api.nvim_buf_set_lines(box, 0, -1, false, { "Ship it" })
+  vim.fn.maparg("<Tab>", "n", false, true).callback()
+  vim.fn.maparg("<C-s>", "n", false, true).callback()
+  check(vim.wait(5000, function()
+    return submitted ~= nil
+  end), "the review is submitted")
+  check(submitted and submitted.url == "https://github.com/owner/repo/pull/7" and submitted.number == 7
+    and submitted.commit == head_sha and submitted.event == "APPROVE" and submitted.body == "Ship it"
+    and #submitted.comments == 1 and submitted.comments[1].path == "auth/auth.go" and submitted.comments[1].side == "new"
+    and submitted.comments[1].line == 8 and submitted.comments[1].last == 9
+    and submitted.comments[1].body == "**nit:** name it user", "the review carries the verdict, body and comments: " .. vim.inspect(submitted))
+  check(vim.wait(2000, function()
+    return ptext():match("name it user  · sent") ~= nil and ptext():match("Last submitted at " .. head_sha:sub(1, 7)) ~= nil
+  end), "sent comments and the submitted review show on the send screen: " .. ptext())
+  check(pstore.verdict() == "approve", "the verdict chosen is kept")
+  submitted = nil
+  vim.api.nvim_feedkeys("P", "x", false)
+  vim.fn.maparg("<C-s>", "n", false, true).callback()
+  check(vim.wait(5000, function()
+    return submitted ~= nil
+  end) and #submitted.comments == 0 and submitted.event == "APPROVE", "a second submit leaves out comments already sent")
+  vim.wait(200)
+  eng.request = real_request
+end
+
 local stopping = repo .. "-stopping-engine"
 vim.fn.writefile({
   "#!/bin/sh",

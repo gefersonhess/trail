@@ -21,7 +21,14 @@ local function render()
   local title = "Review of " .. ctx.title
   add(title, { 0, #title, "Title" })
   local verdict = "Verdict: " .. (store.verdict() or "none")
-  add(verdict .. "   (v changes it, y copies the review as markdown)", { 0, #verdict, store.verdict() and "Special" or "Comment" })
+  local keys = ctx.submit and "v changes it, y copies the review as markdown, P submits it to GitHub"
+    or "v changes it, y copies the review as markdown"
+  add(verdict .. "   (" .. keys .. ")", { 0, #verdict, store.verdict() and "Special" or "Comment" })
+  local submitted = store.submitted()
+  if submitted then
+    local text = string.format("Last submitted at %s: %s", submitted.commit:sub(1, 7), submitted.url)
+    add(text, { 0, -1, "Comment" })
+  end
   local unseen = ctx.unseen()
   if #unseen > 0 then
     local text = string.format("! %d %s not seen yet: %s", #unseen, #unseen == 1 and "hunk" or "hunks", table.concat(unseen, ", "))
@@ -38,8 +45,11 @@ local function render()
     for _, c in ipairs(groups[file]) do
       local where = (c.side == "old" and "-" or "") .. comments.where(c)
       local body = vim.split(c.body, "\n", { plain = true })
-      local head = string.format("  %9s  %-8s  %s", where, c.kind, body[1])
+      local head = string.format("  %9s  %-8s  %s", where, c.kind, body[1]) .. (c.sent and "  · sent" or "")
       add(head, { 13, 13 + #c.kind, comments.highlight(c.kind) }, c)
+      if c.sent then
+        table.insert(hls, { #lines - 1, #head - #"  · sent", #head, "Comment" })
+      end
       for i = 2, #body do
         add(string.rep(" ", 23) .. body[i], nil, c)
       end
@@ -59,7 +69,7 @@ end
 
 ---Opens the send screen: comments grouped by file, a verdict, and a warning
 ---for hunks not seen yet.
----@param ctx { title: string, unseen: fun(): string[], jump: fun(comment: table), home: fun(), window: fun(): integer }
+---@param ctx { title: string, unseen: fun(): string[], jump: fun(comment: table), home: fun(), window: fun(): integer, submit?: fun(done: fun()) }
 function M.open(ctx)
   if screen and vim.api.nvim_buf_is_valid(screen.buf) and vim.fn.bufwinid(screen.buf) ~= -1 then
     vim.api.nvim_set_current_win(vim.fn.bufwinid(screen.buf))
@@ -97,6 +107,13 @@ function M.open(ctx)
         screen.ctx.jump(c)
       end
     end, "Go to the comment")
+    map("P", function()
+      if not screen.ctx.submit then
+        vim.notify("trail: submitting works on pull requests (:Trail #123)", vim.log.levels.INFO)
+        return
+      end
+      screen.ctx.submit(render)
+    end, "Submit the review to GitHub")
     map("d", function()
       local c = screen.items[vim.api.nvim_win_get_cursor(0)[1]]
       if c then

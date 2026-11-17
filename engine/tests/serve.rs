@@ -2528,3 +2528,87 @@ fn go_and_rust_lockfiles_vendored_and_generated_code_are_ignored_by_default() {
     assert_eq!(kept.len(), 10);
     assert!(ignored.is_empty());
 }
+
+fn fake_gh_for_reviews(dir: &Path) -> PathBuf {
+    let script = dir.join("gh");
+    let files = r#"["a.go","@@ -1,4 +1,6 @@\n x\n-y\n+y2\n+z\n@@ -20,2 +22,3 @@\n m\n+n"]
+["gone.go",""]"#;
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  'api repos/owner/repo/pulls/7/files --paginate'*) printf '%s\\n' '{files}' ;;\n  'api --method POST repos/owner/repo/pulls/7/reviews --input -') cat > \"{}/payload.json\"; echo '{{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/7#pullrequestreview-1\"}}' ;;\n  *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n",
+            dir.display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&script)
+        .status()
+        .unwrap();
+    script
+}
+
+#[test]
+fn a_review_is_submitted_with_inline_comments_and_the_rest_in_its_body() {
+    let tools = Repo::new();
+    let gh = fake_gh_for_reviews(tools.path());
+    let submit = |event: Value| {
+        let responses = serve_with_env(
+            &[json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "submit_review",
+                "params": {
+                    "repo": tools.path(),
+                    "url": "https://github.com/owner/repo/pull/7",
+                    "number": 7,
+                    "commit": "abc123",
+                    "event": event,
+                    "body": "Looks close.",
+                    "comments": [
+                        { "path": "a.go", "side": "new", "line": 2, "body": "**nit:** name" },
+                        { "path": "a.go", "side": "new", "line": 2, "last": 3, "body": "**question:** why?" },
+                        { "path": "a.go", "side": "old", "line": 2, "body": "**blocking:** keep" },
+                        { "path": "a.go", "side": "new", "line": 10, "body": "**nit:** far away" },
+                        { "path": "a.go", "side": "new", "line": 6, "last": 22, "body": "**nit:** spans hunks" },
+                        { "path": "other.go", "side": "new", "line": 1, "last": 2, "body": "**nit:** not in the PR" },
+                    ],
+                },
+            })],
+            &[("TRAIL_GH", gh.to_str().unwrap())],
+        );
+        let payload: Value = serde_json::from_str(
+            &std::fs::read_to_string(tools.path().join("payload.json")).unwrap(),
+        )
+        .unwrap();
+        (responses.into_iter().next().unwrap(), payload)
+    };
+
+    let (response, payload) = submit(json!("REQUEST_CHANGES"));
+    assert_eq!(
+        response["result"],
+        json!({ "url": "https://github.com/owner/repo/pull/7#pullrequestreview-1", "inline": 3, "in_body": 3 }),
+        "{response}"
+    );
+    assert_eq!(payload["commit_id"], "abc123");
+    assert_eq!(payload["event"], "REQUEST_CHANGES");
+    assert_eq!(
+        payload["comments"],
+        json!([
+            { "path": "a.go", "body": "**nit:** name", "line": 2, "side": "RIGHT" },
+            { "path": "a.go", "body": "**question:** why?", "line": 3, "side": "RIGHT", "start_line": 2, "start_side": "RIGHT" },
+            { "path": "a.go", "body": "**blocking:** keep", "line": 2, "side": "LEFT" },
+        ])
+    );
+    assert_eq!(
+        payload["body"],
+        "Looks close.\n\nComments on lines outside the diff:\n\n- `a.go` line 10: **nit:** far away\n- `a.go` line 6-22: **nit:** spans hunks\n- `other.go` line 1-2: **nit:** not in the PR"
+    );
+
+    let (_, payload) = submit(Value::Null);
+    assert!(
+        payload.get("event").is_none(),
+        "a draft is a pending review: {payload}"
+    );
+}
