@@ -138,17 +138,19 @@ fn gh_command() -> String {
     std::env::var("TRAIL_GH").unwrap_or_else(|_| "gh".to_string())
 }
 
-/// `owner/repo` from a pull request's url, `https://github.com/owner/repo/pull/7`.
-fn repository_of(url: &str, number: u32) -> Result<String, String> {
+/// The host and `owner/repo` of a pull request's url,
+/// `https://github.com/owner/repo/pull/7`.
+fn repository_of(url: &str, number: u32) -> Result<(String, String), String> {
+    let unexpected = || format!("unexpected pull request url {url}");
     let base = url
         .strip_suffix(&format!("/pull/{number}"))
-        .ok_or_else(|| format!("unexpected pull request url {url}"))?;
-    let mut parts = base.rsplit('/');
-    match (parts.next(), parts.next()) {
-        (Some(repo), Some(owner)) if !repo.is_empty() && !owner.is_empty() => {
-            Ok(format!("{owner}/{repo}"))
+        .ok_or_else(unexpected)?;
+    let (_, rest) = base.split_once("://").ok_or_else(unexpected)?;
+    match rest.split('/').collect::<Vec<_>>()[..] {
+        [host, owner, repo] if !host.is_empty() && !owner.is_empty() && !repo.is_empty() => {
+            Ok((host.to_string(), format!("{owner}/{repo}")))
         }
-        _ => Err(format!("unexpected pull request url {url}")),
+        _ => Err(unexpected()),
     }
 }
 
@@ -166,11 +168,15 @@ pub fn submit_review(
     comments: &[ReviewComment],
 ) -> Result<Submitted, String> {
     let gh = gh_command();
-    let repository = repository_of(url, number)?;
+    // `gh api` goes to github.com unless told otherwise, even inside a
+    // repository on GitHub Enterprise, where `gh pr view` finds the host itself.
+    let (host, repository) = repository_of(url, number)?;
     let out = Command::new(&gh)
         .current_dir(repo)
         .args([
             "api",
+            "--hostname",
+            &host,
             &format!("repos/{repository}/pulls/{number}/files"),
             "--paginate",
             "--jq",
@@ -239,6 +245,8 @@ pub fn submit_review(
         .current_dir(repo)
         .args([
             "api",
+            "--hostname",
+            &host,
             "--method",
             "POST",
             &format!("repos/{repository}/pulls/{number}/reviews"),

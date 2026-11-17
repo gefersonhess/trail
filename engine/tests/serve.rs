@@ -2546,14 +2546,14 @@ fn go_and_rust_lockfiles_vendored_and_generated_code_are_ignored_by_default() {
     assert!(ignored.is_empty());
 }
 
-fn fake_gh_for_reviews(dir: &Path) -> PathBuf {
+fn fake_gh_for_reviews(dir: &Path, host: &str) -> PathBuf {
     let script = dir.join("gh");
     let files = r#"["a.go","@@ -1,4 +1,6 @@\n x\n-y\n+y2\n+z\n@@ -20,2 +22,3 @@\n m\n+n"]
 ["gone.go",""]"#;
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\ncase \"$*\" in\n  'api repos/owner/repo/pulls/7/files --paginate'*) printf '%s\\n' '{files}' ;;\n  'api --method POST repos/owner/repo/pulls/7/reviews --input -') cat > \"{}/payload.json\"; echo '{{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/7#pullrequestreview-1\"}}' ;;\n  *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$*\" in\n  'api --hostname {host} repos/owner/repo/pulls/7/files --paginate'*) printf '%s\\n' '{files}' ;;\n  'api --hostname {host} --method POST repos/owner/repo/pulls/7/reviews --input -') cat > \"{}/payload.json\"; echo '{{\"id\":1,\"html_url\":\"https://{host}/owner/repo/pull/7#pullrequestreview-1\"}}' ;;\n  *) echo \"HTTP 401: Bad credentials (unexpected: $*)\" >&2; exit 1 ;;\nesac\n",
             dir.display()
         ),
     )
@@ -2569,7 +2569,7 @@ fn fake_gh_for_reviews(dir: &Path) -> PathBuf {
 #[test]
 fn a_review_is_submitted_with_inline_comments_and_the_rest_in_its_body() {
     let tools = Repo::new();
-    let gh = fake_gh_for_reviews(tools.path());
+    let gh = fake_gh_for_reviews(tools.path(), "github.com");
     let submit = |event: Value| {
         let responses = serve_with_env(
             &[json!({
@@ -2671,5 +2671,32 @@ fn a_function_s_calls_are_laid_out_in_the_order_its_body_makes_them() {
         names,
         ["a.Top", "a.b", "a.a", "a.c"],
         "steps follow the same order"
+    );
+}
+
+#[test]
+fn a_review_on_github_enterprise_goes_to_that_host() {
+    let tools = Repo::new();
+    let gh = fake_gh_for_reviews(tools.path(), "ghe.example.com");
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "submit_review",
+            "params": {
+                "repo": tools.path(),
+                "url": "https://ghe.example.com/owner/repo/pull/7",
+                "number": 7,
+                "commit": "abc123",
+                "body": "From the company host.",
+            },
+        })],
+        &[("TRAIL_GH", gh.to_str().unwrap())],
+    );
+    assert_eq!(
+        responses[0]["result"]["url"],
+        "https://ghe.example.com/owner/repo/pull/7#pullrequestreview-1",
+        "gh api defaults to github.com, so the pull request's own host is passed: {}",
+        responses[0]
     );
 }
