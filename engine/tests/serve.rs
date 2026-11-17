@@ -2629,3 +2629,47 @@ fn a_review_is_submitted_with_inline_comments_and_the_rest_in_its_body() {
         "a draft is a pending review: {payload}"
     );
 }
+
+#[test]
+fn a_function_s_calls_are_laid_out_in_the_order_its_body_makes_them() {
+    let repo = Repo::new();
+    let base = "package a\n\nfunc Top() {\n\tb()\n\ta()\n}\n\nfunc a() { c() }\n\nfunc b() {}\n\nfunc c() {}\n";
+    repo.write("go.mod", "module ex\n\ngo 1.22\n");
+    repo.write("a.go", base);
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write(
+        "a.go",
+        "package a\n\nfunc Top() {\n\tb()\n\ta()\n\t_ = 0\n}\n\nfunc a() { c(); _ = 1 }\n\nfunc b() { _ = 2 }\n\nfunc c() { _ = 3 }\n",
+    );
+    repo.commit("feature");
+
+    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+
+    let path = &result["paths"][0];
+    assert_eq!(
+        impact_trees(path),
+        [["a.Top", "  a.b", "  a.a", "    a.c"]],
+        "b is called first, though a has more changes below it: {result}"
+    );
+    let names: Vec<&str> = path["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| {
+            path["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| &n["id"] == id)
+                .unwrap()["name"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["a.Top", "a.b", "a.a", "a.c"],
+        "steps follow the same order"
+    );
+}
