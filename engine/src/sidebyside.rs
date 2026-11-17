@@ -19,7 +19,7 @@ pub struct SideBySide {
     new_changes: Vec<LineChange>,
 }
 
-/// A changed line, with the byte ranges of its changed tokens when known.
+/// A changed line, with the byte ranges of its changed tokens.
 #[derive(Serialize)]
 struct LineChange {
     line: u32,
@@ -54,12 +54,20 @@ pub fn compute(
         (Some(_), Some(_)) => difftastic::diff(name, &old, &new),
         _ => None,
     };
-    let whole = |lines: BTreeSet<u32>| -> Vec<LineChange> {
-        lines
+    // Without token information a changed line is changed from its first
+    // character to its end; its indentation stays plain, as difftastic's does.
+    let whole = |changed: BTreeSet<u32>, text: &[String]| -> Vec<LineChange> {
+        changed
             .into_iter()
-            .map(|line| LineChange {
-                line,
-                spans: Vec::new(),
+            .map(|line| {
+                let content = text.get(line as usize - 1).map_or("", String::as_str);
+                let start = content.len() - content.trim_start().len();
+                let spans = if start < content.len() {
+                    vec![(start, content.len())]
+                } else {
+                    Vec::new()
+                };
+                LineChange { line, spans }
             })
             .collect()
     };
@@ -71,7 +79,12 @@ pub fn compute(
     let (engine, rows, old_changes, new_changes) = match structural {
         Some(Outcome::Changed(s)) => ("difftastic", s.rows, spans(s.old), spans(s.new)),
         Some(Outcome::Unchanged) => ("difftastic", line_rows, Vec::new(), Vec::new()),
-        None => ("text", line_rows, whole(old_changed), whole(new_changed)),
+        None => (
+            "text",
+            line_rows,
+            whole(old_changed, &old_lines),
+            whole(new_changed, &new_lines),
+        ),
     };
     Ok(SideBySide {
         engine,
