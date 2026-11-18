@@ -79,6 +79,17 @@ struct ReviewThreadsParams {
 }
 
 #[derive(Deserialize)]
+struct UpdateThreadParams {
+    repo: PathBuf,
+    url: String,
+    number: u32,
+    thread: String,
+    #[serde(default)]
+    body: String,
+    state: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct SubmitReviewParams {
     repo: PathBuf,
     url: String,
@@ -276,6 +287,25 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 message,
             })?;
             Ok(serde_json::to_value(pr).expect("pull request serializes"))
+        }
+        "update_thread" => {
+            let p: UpdateThreadParams = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            pull_request::update_thread(
+                &p.repo,
+                &p.url,
+                p.number,
+                &p.thread,
+                &p.body,
+                p.state.as_deref(),
+            )
+            .map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
+            Ok(serde_json::json!({}))
         }
         "review_threads" => {
             let p: ReviewThreadsParams = serde_json::from_value(params).map_err(|e| RpcError {

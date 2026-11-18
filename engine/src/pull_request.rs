@@ -481,3 +481,70 @@ pub fn review_threads(repo: &Path, url: &str, number: u32) -> Result<Vec<Thread>
     ));
     Ok(threads)
 }
+
+const REPLY_MUTATION: &str = "mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) { comment { url } }
+}";
+const RESOLVE_MUTATION: &str = "mutation($threadId: ID!) { resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } } }";
+const REOPEN_MUTATION: &str = "mutation($threadId: ID!) { unresolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } } }";
+
+/// Runs one GraphQL request through `gh` on `host`, with string variables.
+fn graphql(repo: &Path, host: &str, vars: &[(&str, &str)], query: &str) -> Result<(), String> {
+    let gh = gh_command();
+    let mut args = vec![
+        "api".to_string(),
+        "graphql".to_string(),
+        "--hostname".to_string(),
+        host.to_string(),
+    ];
+    for (name, value) in vars {
+        args.extend(["-f".to_string(), format!("{name}={value}")]);
+    }
+    args.extend(["-f".to_string(), format!("query={query}")]);
+    let out = Command::new(&gh)
+        .current_dir(repo)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("running {gh}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{gh} api graphql: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Replies to a review thread, then resolves or reopens it when asked
+/// (`state` is `resolve` or `reopen`). An empty `body` posts no reply.
+pub fn update_thread(
+    repo: &Path,
+    url: &str,
+    number: u32,
+    thread: &str,
+    body: &str,
+    state: Option<&str>,
+) -> Result<(), String> {
+    let (host, _) = repository_of(url, number)?;
+    let body = body.trim();
+    if !body.is_empty() {
+        graphql(
+            repo,
+            &host,
+            &[("threadId", thread), ("body", body)],
+            REPLY_MUTATION,
+        )?;
+    }
+    match state {
+        Some("resolve") => graphql(repo, &host, &[("threadId", thread)], RESOLVE_MUTATION)?,
+        Some("reopen") => graphql(repo, &host, &[("threadId", thread)], REOPEN_MUTATION)?,
+        Some(other) => return Err(format!("unknown thread state {other}")),
+        None => {}
+    }
+    log(&format!(
+        "updated review thread {thread} of pull request {number}: reply {}, {}",
+        if body.is_empty() { "none" } else { "posted" },
+        state.unwrap_or("state unchanged")
+    ));
+    Ok(())
+}

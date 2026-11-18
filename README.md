@@ -65,6 +65,7 @@ Inside a path (tree on top, diff below)
 | `]h` `[h` | Next / previous hunk in the file shown |
 | `]t` `[t` | Next / previous review thread of this path |
 | `<CR>` in the diff | Open or fold the resolved thread on the line |
+| `r` | Reply to the review thread on the line (also in the `T` list); `<Tab>` resolves or reopens it too |
 | `<CR>` in the tree | Open a fold, show a step or function |
 | `a` / `c` in the tree | Show every function on the way / fold back to the changes |
 | `t` | Unified or side by side |

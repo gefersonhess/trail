@@ -2828,3 +2828,83 @@ fn review_threads_are_read_page_by_page_from_the_pull_request_s_host() {
         responses[0]
     );
 }
+
+#[test]
+fn a_thread_gets_a_reply_and_is_resolved_or_reopened_on_the_pull_request_s_host() {
+    let tools = Repo::new();
+    let script = tools.path().join("gh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{dir}/calls\"\ncase \"$*\" in\n  'api graphql --hostname ghe.example.com -f threadId=T1 -f body='*'-f query=mutation'*addPullRequestReviewThreadReply*) echo '{{}}' ;;\n  'api graphql --hostname ghe.example.com -f threadId=T1 -f query=mutation'*'{{ resolveReviewThread('*) echo '{{}}' ;;\n  *) echo \"GraphQL: unexpected ($*)\" >&2; exit 1 ;;\nesac\n",
+            dir = tools.path().display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&script)
+        .status()
+        .unwrap();
+    let update = |body: &str, state: Value| {
+        let _ = std::fs::remove_file(tools.path().join("calls"));
+        let responses = serve_with_env(
+            &[json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "update_thread",
+                "params": {
+                    "repo": tools.path(),
+                    "url": "https://ghe.example.com/owner/repo/pull/7",
+                    "number": 7,
+                    "thread": "T1",
+                    "body": body,
+                    "state": state,
+                },
+            })],
+            &[("TRAIL_GH", script.to_str().unwrap())],
+        );
+        let calls = std::fs::read_to_string(tools.path().join("calls")).unwrap_or_default();
+        let mutations: Vec<&str> = [
+            "addPullRequestReviewThreadReply",
+            "unresolveReviewThread",
+            "resolveReviewThread",
+        ]
+        .into_iter()
+        .filter(|m| {
+            calls
+                .lines()
+                .any(|l| l.contains(&format!("{{ {m}(")) || l.contains(&format!(" {m}(")))
+        })
+        .collect();
+        (responses.into_iter().next().unwrap(), mutations, calls)
+    };
+
+    let (response, mutations, calls) = update("Fixed in the next push.\nThanks!", json!("resolve"));
+    assert_eq!(response["result"], json!({}), "{response}");
+    assert_eq!(
+        mutations,
+        ["addPullRequestReviewThreadReply", "resolveReviewThread"]
+    );
+    assert!(
+        calls.contains("-f body=Fixed in the next push.\nThanks!"),
+        "{calls}"
+    );
+
+    let (response, mutations, _) = update("  ", json!("resolve"));
+    assert_eq!(response["result"], json!({}), "{response}");
+    assert_eq!(
+        mutations,
+        ["resolveReviewThread"],
+        "an empty reply posts nothing"
+    );
+
+    let (response, _, _) = update("", json!("reopen"));
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("GraphQL: unexpected"),
+        "GitHub's error comes back: {response}"
+    );
+}
