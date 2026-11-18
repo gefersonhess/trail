@@ -1019,15 +1019,35 @@ do
   end
   local base_sha, head_sha = rev("main"), rev("feature")
   local submitted
+  local thread_reads = 0
+  local function comment(author, body)
+    return { author = author, body = body, created_at = "2026-11-17T10:00:00Z", url = "https://github.com/owner/repo/pull/7#c" }
+  end
+  local pr_threads = {
+    { id = "T4", path = "auth/auth.go", side = "new", line = 9, resolved = false, outdated = false, diff_hunk = "",
+      comments = { comment("alice", "start here") } },
+    { id = "T1", path = "auth/auth.go", side = "new", line = 13, resolved = false, outdated = false, diff_hunk = "",
+      comments = { comment("alice", "why compare?"), comment("bob", "it guards") } },
+    { id = "T2", path = "auth/auth.go", side = "new", line = 16, resolved = true, outdated = false, diff_hunk = "",
+      comments = { comment("carol", "lowercase ok?") } },
+    { id = "T3", path = "auth/auth.go", side = "old", line = vim.NIL, original_line = 6, resolved = false, outdated = true,
+      diff_hunk = "@@ -5,3 +5,1 @@\n func Login(u string) bool {\n-\tGone()", comments = { comment("dave", "gone?") } },
+  }
   eng.request = function(method, params, cb)
-    if method == "pull_request" then
+    if method == "review_threads" then
+      thread_reads = thread_reads + 1
+      return vim.schedule(function()
+        cb(nil, pr_threads)
+      end)
+    elseif method == "pull_request" then
       return vim.schedule(function()
         cb(nil, { number = 7, title = "Add hashing", url = "https://github.com/owner/repo/pull/7", base = base_sha, head = head_sha })
       end)
     elseif method == "submit_review" then
       submitted = params
       return vim.schedule(function()
-        cb(nil, { url = "https://github.com/owner/repo/pull/7#pullrequestreview-1", inline = #params.comments, in_body = 0 })
+        cb(nil, { url = "https://github.com/owner/repo/pull/7#pullrequestreview-1", inline = 1, in_body = #params.comments - 1,
+          inline_comments = #params.comments > 0 and { 0 } or {} })
       end)
     end
     return real_request(method, params, cb)
@@ -1040,9 +1060,62 @@ do
       return l:match("^  1  Login ")
     end)
   end), "the pull request review opens")
+  check(vim.wait(5000, function()
+    return vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
+      return l:match("^  1  Login +3 changes · 3 threads ")
+    end)
+  end), "a path row counts the threads on its functions, outdated ones aside")
+  check(thread_reads == 1, "the threads are read once when the pull request opens")
+
+  vim.api.nvim_feedkeys("T", "x", false)
+  local tbuf = vim.api.nvim_get_current_buf()
+  local ttext = table.concat(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false), "\n")
+  check(vim.api.nvim_buf_get_name(tbuf):match("trail://threads$") and ttext:match("auth/auth%.go")
+    and ttext:match("\n +~6  outdated  dave  gone%?") and ttext:match("\n +16  ✓ +carol  lowercase ok%?")
+    and ttext:match("\n +13  ● +alice  why compare%?  · 2 comments") and ttext:match("%-\tGone%(%)"),
+    "T lists every thread, outdated ones with their old code: " .. ttext)
+  local trow
+  for k, l in ipairs(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false)) do
+    if l:match("why compare") then
+      trow = k
+    end
+  end
+  vim.api.nvim_win_set_cursor(0, { trow, 0 })
+  vim.api.nvim_feedkeys("\r", "x", false)
+  check(wait_diff_line("\treturn hashOf(h) == h") and current_step_line():match("VerifyHash"),
+    "<CR> on a thread opens its step at its line")
+  local dbuf = vim.api.nvim_get_current_buf()
+  local function notes_text(text)
+    return table.concat(notes_on(vim.api.nvim_get_current_buf(), text) or {}, "\n")
+  end
+  check(notes_text("\treturn hashOf(h) == h"):match("alice · 2026%-11%-17.*why compare%?.*bob · 2026%-11%-17.*it guards"),
+    "a thread shows under its line with each comment's author and date: " .. notes_text("\treturn hashOf(h) == h"))
+  vim.api.nvim_feedkeys("]t", "x", false)
+  check(wait_diff_line("func hashOf(h string) string { return strings.ToLower(h) }") and current_step_line():match("hashOf"),
+    "]t goes to the next thread, in the next step")
+  local hash_line = "func hashOf(h string) string { return strings.ToLower(h) }"
+  check(notes_text(hash_line):match("✓ resolved · carol: lowercase ok%?  <CR> opens"), "a resolved thread takes one line: " .. notes_text(hash_line))
+  vim.api.nvim_feedkeys("\r", "x", false)
+  check(notes_text(hash_line):match("<CR> folds") and notes_text(hash_line):match("carol · 2026"), "<CR> opens a resolved thread")
+  vim.api.nvim_feedkeys("\r", "x", false)
+  check(notes_text(hash_line):match("<CR> opens"), "<CR> folds it again")
+  vim.api.nvim_feedkeys("]t", "x", false)
+  vim.wait(300)
+  check(vim.api.nvim_get_current_line() == hash_line, "]t stops at the last thread of the path")
+  vim.api.nvim_feedkeys("[t", "x", false)
+  check(wait_diff_line("\treturn hashOf(h) == h"), "[t goes back to the previous thread")
+  vim.api.nvim_feedkeys("[t", "x", false)
+  check(wait_diff_line("\treturn VerifyHash(user)") and current_step_line():match("Login"), "[t continues into the step before")
+  vim.api.nvim_feedkeys("-", "x", false)
+  check(vim.wait(3000, function()
+    return vim.api.nvim_get_current_buf() == prbuf
+  end), "- goes back to the paths screen")
+
   local pstore = require("trail.state")
   table.insert(pstore.comments(), { id = "1", kind = "nit", body = "name it user", file = "auth/auth.go", side = "new",
     line = 8, last = 9, text = "func Login(user string) bool {" })
+  table.insert(pstore.comments(), { id = "2", kind = "question", body = "far from the diff", file = "auth/auth.go", side = "new",
+    line = 30, text = "func Tidy() {" })
   pstore.save()
   vim.api.nvim_feedkeys("S", "x", false)
   local pbuf = vim.api.nvim_get_current_buf()
@@ -1062,12 +1135,18 @@ do
   end), "the review is submitted")
   check(submitted and submitted.url == "https://github.com/owner/repo/pull/7" and submitted.number == 7
     and submitted.commit == head_sha and submitted.event == "APPROVE" and submitted.body == "Ship it"
-    and #submitted.comments == 1 and submitted.comments[1].path == "auth/auth.go" and submitted.comments[1].side == "new"
+    and #submitted.comments == 2 and submitted.comments[1].path == "auth/auth.go" and submitted.comments[1].side == "new"
     and submitted.comments[1].line == 8 and submitted.comments[1].last == 9
     and submitted.comments[1].body == "**nit:** name it user", "the review carries the verdict, body and comments: " .. vim.inspect(submitted))
   check(vim.wait(2000, function()
-    return ptext():match("name it user  · sent") ~= nil and ptext():match("Last submitted at " .. head_sha:sub(1, 7)) ~= nil
-  end), "sent comments and the submitted review show on the send screen: " .. ptext())
+    return ptext():match("far from the diff  · sent") ~= nil and ptext():match("Last submitted at " .. head_sha:sub(1, 7)) ~= nil
+  end), "a comment that went into the overall comment stays, marked sent: " .. ptext())
+  check(not ptext():match("name it user") and not vim.iter(pstore.comments()):any(function(c)
+    return c.body == "name it user"
+  end), "a comment posted inline is a GitHub thread now, not a trail comment")
+  check(vim.wait(2000, function()
+    return thread_reads == 2
+  end), "the threads are read again after submitting")
   check(pstore.verdict() == "approve", "the verdict chosen is kept")
   submitted = nil
   vim.api.nvim_feedkeys("P", "x", false)

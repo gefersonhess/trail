@@ -107,6 +107,8 @@ pub struct Submitted {
     url: String,
     inline: usize,
     in_body: usize,
+    /// Positions, in the comments given, of those posted inline.
+    inline_comments: Vec<usize>,
 }
 
 /// Line ranges of one side of a file that GitHub accepts comments on: the
@@ -197,8 +199,9 @@ pub fn submit_review(
     }
 
     let mut inline = Vec::new();
+    let mut inline_comments = Vec::new();
     let mut elsewhere = Vec::new();
-    for c in comments {
+    for (index, c) in comments.iter().enumerate() {
         let last = c.last.unwrap_or(c.line);
         let fits = ranges.get(&c.path).is_some_and(|(old, new)| {
             let side = if c.side == Side::Old { old } else { new };
@@ -226,6 +229,7 @@ pub fn submit_review(
             comment["start_side"] = side.into();
         }
         inline.push(comment);
+        inline_comments.push(index);
     }
 
     let mut text = body.trim().to_string();
@@ -292,5 +296,188 @@ pub fn submit_review(
         url: posted.html_url,
         inline: inline.len(),
         in_body: elsewhere.len(),
+        inline_comments,
     })
+}
+
+const THREADS_QUERY: &str =
+    "query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated path line startLine originalLine diffSide
+          comments(first: 100) {
+            nodes { author { login } body createdAt url diffHunk }
+          }
+        }
+      }
+    }
+  }
+}";
+
+#[derive(Serialize)]
+pub struct Thread {
+    id: String,
+    path: String,
+    side: &'static str,
+    line: Option<u32>,
+    start_line: Option<u32>,
+    original_line: Option<u32>,
+    resolved: bool,
+    outdated: bool,
+    diff_hunk: String,
+    comments: Vec<ThreadComment>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
+pub struct ThreadComment {
+    #[serde(deserialize_with = "login")]
+    author: String,
+    body: String,
+    created_at: String,
+    url: String,
+    #[serde(skip_serializing, default)]
+    diff_hunk: String,
+}
+
+/// A deleted account comes back without an author.
+fn login<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    struct Author {
+        login: String,
+    }
+    let author: Option<Author> = Option::deserialize(d)?;
+    Ok(author.map_or_else(|| "ghost".to_string(), |a| a.login))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawThread {
+    id: String,
+    is_resolved: bool,
+    is_outdated: bool,
+    path: String,
+    line: Option<u32>,
+    start_line: Option<u32>,
+    original_line: Option<u32>,
+    diff_side: String,
+    comments: Nodes<ThreadComment>,
+}
+
+#[derive(Deserialize)]
+struct Nodes<T> {
+    nodes: Vec<T>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Page {
+    page_info: PageInfo,
+    nodes: Vec<RawThread>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+/// The review threads of a pull request, from GitHub's GraphQL API, the only
+/// one that says whether a thread is resolved or outdated.
+pub fn review_threads(repo: &Path, url: &str, number: u32) -> Result<Vec<Thread>, String> {
+    let gh = gh_command();
+    let (host, repository) = repository_of(url, number)?;
+    let (owner, name) = repository.split_once('/').expect("owner/repo");
+    let mut threads = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "--hostname".to_string(),
+            host.clone(),
+            "-F".to_string(),
+            format!("owner={owner}"),
+            "-F".to_string(),
+            format!("name={name}"),
+            "-F".to_string(),
+            format!("number={number}"),
+        ];
+        if let Some(cursor) = &after {
+            args.extend(["-f".to_string(), format!("after={cursor}")]);
+        }
+        args.extend(["-f".to_string(), format!("query={THREADS_QUERY}")]);
+        let out = Command::new(&gh)
+            .current_dir(repo)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("running {gh}: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "{gh} api graphql (review threads of {number}): {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        #[derive(Deserialize)]
+        struct Response {
+            data: Data,
+        }
+        #[derive(Deserialize)]
+        struct Data {
+            repository: Repository,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Repository {
+            pull_request: PullRequestThreads,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PullRequestThreads {
+            review_threads: Page,
+        }
+        let page = serde_json::from_slice::<Response>(&out.stdout)
+            .map_err(|e| format!("reading {gh} output: {e}"))?
+            .data
+            .repository
+            .pull_request
+            .review_threads;
+        for raw in page.nodes {
+            let diff_hunk = raw
+                .comments
+                .nodes
+                .first()
+                .map(|c| c.diff_hunk.clone())
+                .unwrap_or_default();
+            threads.push(Thread {
+                id: raw.id,
+                path: raw.path,
+                side: if raw.diff_side == "LEFT" {
+                    "old"
+                } else {
+                    "new"
+                },
+                line: raw.line,
+                start_line: raw.start_line,
+                original_line: raw.original_line,
+                resolved: raw.is_resolved,
+                outdated: raw.is_outdated,
+                diff_hunk,
+                comments: raw.comments.nodes,
+            });
+        }
+        match (page.page_info.has_next_page, page.page_info.end_cursor) {
+            (true, Some(cursor)) => after = Some(cursor),
+            _ => break,
+        }
+    }
+    log(&format!(
+        "read {} review threads of pull request {number}",
+        threads.len()
+    ));
+    Ok(threads)
 }

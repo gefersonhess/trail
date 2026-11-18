@@ -2644,7 +2644,7 @@ fn a_review_is_submitted_with_inline_comments_and_the_rest_in_its_body() {
     let (response, payload) = submit(json!("REQUEST_CHANGES"));
     assert_eq!(
         response["result"],
-        json!({ "url": "https://github.com/owner/repo/pull/7#pullrequestreview-1", "inline": 3, "in_body": 3 }),
+        json!({ "url": "https://github.com/owner/repo/pull/7#pullrequestreview-1", "inline": 3, "in_body": 3, "inline_comments": [0, 1, 2] }),
         "{response}"
     );
     assert_eq!(payload["commit_id"], "abc123");
@@ -2736,6 +2736,95 @@ fn a_review_on_github_enterprise_goes_to_that_host() {
         responses[0]["result"]["url"],
         "https://ghe.example.com/owner/repo/pull/7#pullrequestreview-1",
         "gh api defaults to github.com, so the pull request's own host is passed: {}",
+        responses[0]
+    );
+}
+
+#[test]
+fn review_threads_are_read_page_by_page_from_the_pull_request_s_host() {
+    let tools = Repo::new();
+    let page = |cursor: &str, more: bool, nodes: Value| {
+        json!({ "data": { "repository": { "pullRequest": { "reviewThreads": {
+            "pageInfo": { "hasNextPage": more, "endCursor": cursor },
+            "nodes": nodes,
+        } } } } })
+        .to_string()
+    };
+    let first = page(
+        "c1",
+        true,
+        json!([{
+            "id": "T1", "isResolved": false, "isOutdated": false, "path": "a.go",
+            "line": 12, "startLine": 10, "originalLine": 12, "diffSide": "RIGHT",
+            "comments": { "nodes": [
+                { "author": { "login": "alice" }, "body": "why?", "createdAt": "2026-11-17T10:00:00Z",
+                  "url": "https://ghe.example.com/owner/repo/pull/7#discussion_r1", "diffHunk": "@@ -1,2 +1,3 @@\n a\n+b" },
+                { "author": null, "body": "because", "createdAt": "2026-11-17T11:00:00Z",
+                  "url": "https://ghe.example.com/owner/repo/pull/7#discussion_r2", "diffHunk": "@@" },
+            ] },
+        }]),
+    );
+    let second = page(
+        "c2",
+        false,
+        json!([{
+            "id": "T2", "isResolved": true, "isOutdated": true, "path": "b.go",
+            "line": null, "startLine": null, "originalLine": 4, "diffSide": "LEFT",
+            "comments": { "nodes": [
+                { "author": { "login": "bob" }, "body": "old", "createdAt": "2026-11-16T09:00:00Z",
+                  "url": "https://ghe.example.com/owner/repo/pull/7#discussion_r3", "diffHunk": "@@ -4 +4 @@\n-x" },
+            ] },
+        }]),
+    );
+    std::fs::write(tools.path().join("page1.json"), first).unwrap();
+    std::fs::write(tools.path().join("page2.json"), second).unwrap();
+    let script = tools.path().join("gh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  'api graphql --hostname ghe.example.com -F owner=owner -F name=repo -F number=7 -f after=c1 -f query='*) cat \"{dir}/page2.json\" ;;\n  'api graphql --hostname ghe.example.com -F owner=owner -F name=repo -F number=7 -f query='*) cat \"{dir}/page1.json\" ;;\n  *) echo \"HTTP 401: Bad credentials (unexpected: $*)\" >&2; exit 1 ;;\nesac\n",
+            dir = tools.path().display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&script)
+        .status()
+        .unwrap();
+
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "review_threads",
+            "params": { "repo": tools.path(), "url": "https://ghe.example.com/owner/repo/pull/7", "number": 7 },
+        })],
+        &[("TRAIL_GH", script.to_str().unwrap())],
+    );
+    assert_eq!(
+        responses[0]["result"],
+        json!([
+            {
+                "id": "T1", "path": "a.go", "side": "new", "line": 12, "start_line": 10, "original_line": 12,
+                "resolved": false, "outdated": false, "diff_hunk": "@@ -1,2 +1,3 @@\n a\n+b",
+                "comments": [
+                    { "author": "alice", "body": "why?", "created_at": "2026-11-17T10:00:00Z",
+                      "url": "https://ghe.example.com/owner/repo/pull/7#discussion_r1" },
+                    { "author": "ghost", "body": "because", "created_at": "2026-11-17T11:00:00Z",
+                      "url": "https://ghe.example.com/owner/repo/pull/7#discussion_r2" },
+                ],
+            },
+            {
+                "id": "T2", "path": "b.go", "side": "old", "line": null, "start_line": null, "original_line": 4,
+                "resolved": true, "outdated": true, "diff_hunk": "@@ -4 +4 @@\n-x",
+                "comments": [
+                    { "author": "bob", "body": "old", "created_at": "2026-11-16T09:00:00Z",
+                      "url": "https://ghe.example.com/owner/repo/pull/7#discussion_r3" },
+                ],
+            },
+        ]),
+        "{}",
         responses[0]
     );
 }

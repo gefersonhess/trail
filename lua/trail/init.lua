@@ -8,6 +8,7 @@ local store = require("trail.state")
 local comments = require("trail.comments")
 local compose = require("trail.compose")
 local send = require("trail.send")
+local threads = require("trail.threads")
 
 local M = {}
 
@@ -128,6 +129,43 @@ end
 
 ---Leaves a single window in the review tab and returns it. The paths screen,
 ---a path and the send screen take turns in it, so a review is one tab.
+---A thread's line as a target the diff can open at.
+local function thread_target(t)
+  return {
+    file = t.path,
+    old = { start = t.line, len = t.side == "old" and 1 or 0 },
+    new = { start = t.line, len = t.side == "new" and 1 or 0 },
+  }
+end
+
+---Whether a thread's line falls in a step's function or hunk.
+local function step_has(step, t)
+  local target = step.node or step.hunk
+  local range = target and (t.side == "old" and target.old or target.new)
+  return range ~= nil and target.file == t.path and t.line >= range.start and t.line < range.start + math.max(range.len, 1)
+end
+
+---The threads of a path's steps, in step order and then line order.
+local function path_threads(path)
+  local out, listed = {}, {}
+  for i, step in ipairs(path.steps) do
+    local here = {}
+    for _, t in ipairs(threads.all()) do
+      if threads.placed(t) and not listed[t.id] and step_has(step, t) then
+        listed[t.id] = true
+        table.insert(here, t)
+      end
+    end
+    table.sort(here, function(a, b)
+      return a.line < b.line
+    end)
+    for _, t in ipairs(here) do
+      table.insert(out, { step = i, thread = t })
+    end
+  end
+  return out
+end
+
 local function review_window()
   vim.api.nvim_set_current_tabpage(state.list_tab)
   vim.cmd("silent! only!")
@@ -289,7 +327,8 @@ local function show_target(target, is_node, win, keys, after)
     local current
     local function annotate()
       if current then
-        current.annotate(comments.notes(current, params.old_path, params.new_path))
+        local notes = comments.notes(current, params.old_path, params.new_path)
+        current.annotate(vim.list_extend(notes, threads.notes(params.old_path, params.new_path)))
       end
     end
     local function changed()
@@ -307,6 +346,12 @@ local function show_target(target, is_node, win, keys, after)
     local function add_default()
       comments.add(comments.default_kind(), current, params.old_path, params.new_path, changed)
     end
+    table.insert(all_keys, { "<CR>", function()
+      local here = current and current.line_at_cursor()
+      if here and threads.toggle_at(params.old_path, params.new_path, here.side, here.line) then
+        annotate()
+      end
+    end, "Open or fold the resolved thread on this line" })
     table.insert(all_keys, { "cc", add_default, "Add a comment on this line (kind from vim.g.trail_default_comment_kind)" })
     table.insert(all_keys, { "cc", add_default, "Add a comment on the selected lines", "x" })
     table.insert(all_keys, { "ce", function()
@@ -368,6 +413,7 @@ local function show_target(target, is_node, win, keys, after)
     })
     current = view
     state.shown = { view = view, file = target.file }
+    state.reannotate = annotate
     annotate()
     if target.at_start then
       view.focus(hunk_start(target))
@@ -456,6 +502,39 @@ local function path_context()
     end,
     ---The next hunk of `hunks` after the cursor (or before it, for dir < 0),
     ---when the diff shown is their file; `false` when another file is shown.
+    ---The next thread of the path after the cursor (dir 1) or before it
+    ---(dir -1): its step, a target at its line, and whether it is in the
+    ---diff shown now.
+    next_thread = function(path, step, dir)
+      local shown = state.shown
+      local cursor = shown and shown.view.cursor_row()
+      local function position(item)
+        if item.step ~= step then
+          return item.step < step and -1 or 1
+        end
+        if not (shown and shown.file == item.thread.path) then
+          return dir
+        end
+        local row = shown.view.row_of(item.thread.side, item.thread.line)
+        return row == cursor and 0 or (row < cursor and -1 or 1)
+      end
+      local items = path_threads(path)
+      local first, last = 1, #items
+      if dir < 0 then
+        first, last = last, first
+      end
+      for k = first, last, dir do
+        local item = items[k]
+        if position(item) == dir then
+          local t = item.thread
+          local here = item.step == step and shown ~= nil and shown.file == t.path
+          return { step = item.step, target = thread_target(t), here = here, side = t.side, line = t.line }
+        end
+      end
+    end,
+    focus_line = function(side, line)
+      state.shown.view.focus(side, line)
+    end,
     next_hunk = function(hunks, dir)
       local shown = state.shown
       if not shown or #hunks == 0 or shown.file ~= hunks[1].file then
@@ -527,11 +606,51 @@ local function row_path(item)
   return { title = file, steps = steps }
 end
 
-local function enter(path, step)
+local function enter(path, step, target)
   if #path.steps == 0 then
     return
   end
-  pathview.open(path_context(), path, step or store.position(path.id) or 1)
+  pathview.open(path_context(), path, step or store.position(path.id) or 1, target)
+end
+
+local function open_threads()
+  threads.open_list({
+    title = state.title,
+    window = review_window,
+    home = home,
+    jump = function(t)
+      for _, path in ipairs(all_paths()) do
+        for i, step in ipairs(path.steps) do
+          if step_has(step, t) then
+            return enter(path, i, thread_target(t))
+          end
+        end
+      end
+      vim.notify("trail: that thread is not on a path step", vim.log.levels.INFO)
+    end,
+  })
+end
+
+---Reads the pull request's review threads, and redraws what shows them.
+local function load_threads()
+  if not state.pr_url then
+    return
+  end
+  local loading = state
+  engine.request("review_threads", { repo = state.repo, url = state.pr_url, number = state.pr }, function(err, list)
+    if state ~= loading then
+      return
+    end
+    if err then
+      vim.notify("trail: could not read the pull request's threads: " .. err.message, vim.log.levels.WARN)
+      return
+    end
+    threads.set(list)
+    if state.reannotate then
+      state.reannotate()
+    end
+    M.refresh_home()
+  end)
 end
 
 local verdict_events = { comment = "COMMENT", approve = "APPROVE", ["request changes"] = "REQUEST_CHANGES" }
@@ -577,6 +696,18 @@ local function submit_review(done)
         vim.notify("trail: review submitted: " .. result.url, vim.log.levels.INFO)
         return
       end
+      -- A comment posted inline is a GitHub thread from now on; one that went
+      -- into the overall comment stays here, marked sent.
+      local inline = {}
+      for _, index in ipairs(result.inline_comments or {}) do
+        inline[pending[index + 1]] = true
+      end
+      local all = store.comments()
+      for k = #all, 1, -1 do
+        if inline[all[k]] then
+          table.remove(all, k)
+        end
+      end
       for _, c in ipairs(pending) do
         c.sent = true
       end
@@ -584,6 +715,7 @@ local function submit_review(done)
         store.set_verdict(verdict)
       end
       store.set_submitted({ commit = commit, url = result.url, verdict = verdict })
+      load_threads()
       vim.notify(string.format("trail: %s submitted, %d inline, %d in the overall comment: %s",
         verdict == "draft" and "pending review" or "review", result.inline, result.in_body, result.url), vim.log.levels.INFO)
       done()
@@ -663,7 +795,8 @@ local function build_home(review)
   else
     add(string.format("%s · %s", count(#review.files, "file"), count(#store.comments(), "comment")), nil, { { "Comment", 0, -1 } })
   end
-  add("<CR> or 1-9 enters a path  ·  mr marks it reviewed  ·  S send  ·  ? keys", nil, { { "Comment", 0, -1 } })
+  local hint = "<CR> or 1-9 enters a path  ·  mr marks it reviewed  ·  S send  ·  " .. (state.pr and "T threads  ·  " or "") .. "? keys"
+  add(hint, nil, { { "Comment", 0, -1 } })
   if review.ignored and #review.ignored > 0 then
     add(count(#review.ignored, "file") .. " hidden by vim.g.trail_ignore", nil, { { "Comment", 0, -1 } })
   end
@@ -707,7 +840,7 @@ local function build_home(review)
     local row = {
       number = i <= 9 and tostring(i) or " ",
       title = p.title,
-      changes = count(#p.steps, "change"),
+      changes = count(#p.steps, "change") .. (#path_threads(p) > 0 and " · " .. count(#path_threads(p), "thread") or ""),
       reach = reach,
       progress = string.format("%s %d/%d", done == #p.steps and "✓" or "·", done, #p.steps),
       packages = table.concat(packages, ", "),
@@ -931,6 +1064,7 @@ local function load()
     state.pr_url = pr.url
     state.title = string.format("#%d %s", pr.number, pr.title)
     review_range()
+    load_threads()
   end)
 end
 
@@ -941,6 +1075,7 @@ function M.open(arg)
   end
   local root = vim.fs.root(0, ".git") or vim.fn.getcwd()
   state = { repo = root }
+  threads.set({})
   local pr = arg:match("^#(%d+)$")
   if pr then
     state.pr = tonumber(pr)
@@ -992,6 +1127,13 @@ function M.open(arg)
   end, "Mark the path as reviewed, or unmark it")
   map("gp", M.switch_path, "Switch path")
   map("S", open_send, "Send screen: comments, verdict, copy")
+  map("T", function()
+    if not state.pr then
+      vim.notify("trail: review threads come from a pull request (:Trail #123)", vim.log.levels.INFO)
+      return
+    end
+    open_threads()
+  end, "Review threads of the pull request")
   vim.api.nvim_create_autocmd("CursorMoved", {
     buffer = buf,
     callback = function()
