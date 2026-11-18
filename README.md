@@ -34,7 +34,7 @@ The plugin looks for `engine/target/release/trail`, then `debug`, then `trail` o
 :Trail #123
 ```
 
-`#123` reviews a GitHub pull request: `gh` finds its base and head, both are fetched, and the review runs locally like a branch. The pull request's review threads show under their lines (resolved ones folded to one line), and `T` lists them all, outdated ones included. `P` on the send screen submits it back as one GitHub review: an overall comment and a verdict (comment, approve, request changes, or draft for a pending review) written in a box, plus every comment not sent before, inline where GitHub's diff has the line and listed in the overall comment otherwise.
+`#123`, or the pull request's URL, reviews a GitHub pull request: `gh` finds its base and head, both are fetched, and the review runs locally like a branch. The pull request's review threads show under their lines (resolved ones folded to one line), and `T` lists them all, outdated ones included. `P` on the send screen submits it back as one GitHub review: an overall comment and a verdict (comment, approve, request changes, or draft for a pending review) written in a box, plus every comment not sent before, inline where GitHub's diff has the line and listed in the overall comment otherwise.
 
 The review opens in its own tab, on the paths screen: the paths, the changes no test reaches, the changed test files grouped by package, and hunks in no path. Working out the paths runs in the background and can take a minute on a big change.
 
