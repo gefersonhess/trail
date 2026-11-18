@@ -1033,7 +1033,11 @@ do
     { id = "T3", path = "auth/auth.go", side = "old", line = vim.NIL, original_line = 6, resolved = false, outdated = true,
       diff_hunk = "@@ -5,3 +5,1 @@\n func Login(u string) bool {\n-\tGone()", comments = { comment("dave", "gone?") } },
   }
+  local pr_numbers = {}
   eng.request = function(method, params, cb)
+    if method == "pull_request" then
+      table.insert(pr_numbers, params.number)
+    end
     if method == "review_threads" then
       thread_reads = thread_reads + 1
       return vim.schedule(function()
@@ -1053,7 +1057,7 @@ do
     return real_request(method, params, cb)
   end
   vim.cmd.cd(repo)
-  vim.cmd("Trail #7")
+  vim.cmd("Trail  #7 ")
   local prbuf = vim.api.nvim_get_current_buf()
   check(vim.wait(15000, function()
     return vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
@@ -1155,8 +1159,23 @@ do
     return submitted ~= nil
   end) and #submitted.comments == 0 and submitted.event == "APPROVE", "a second submit leaves out comments already sent")
   vim.wait(200)
+  vim.cmd("Trail https://github.com/owner/repo/pull/7/files")
+  check(vim.wait(5000, function()
+    return #pr_numbers == 2 and pr_numbers[2] == 7
+  end) and vim.wait(5000, function()
+    return (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or ""):match("^trail  #7 Add hashing") ~= nil
+  end), "a pull request's url opens it like #7, and so does #7 with spaces around it: " .. vim.inspect(pr_numbers))
   eng.request = real_request
 end
+
+-- A review that can't be opened says why instead of loading forever.
+vim.cmd("Trail no-such-branch..feature")
+local failed = vim.api.nvim_get_current_buf()
+check(vim.wait(10000, function()
+  local text = table.concat(vim.api.nvim_buf_get_lines(failed, 0, -1, false), "\n")
+  return text:match("^trail: could not open no%-such%-branch%.%.feature\n\n.*no%-such%-branch.*\n\nR tries again") ~= nil
+end), "a failed open shows the error in place of the loading text: "
+  .. table.concat(vim.api.nvim_buf_get_lines(failed, 0, -1, false), " | "))
 
 local stopping = repo .. "-stopping-engine"
 vim.fn.writefile({

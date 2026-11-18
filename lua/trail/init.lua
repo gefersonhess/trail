@@ -1032,6 +1032,21 @@ local function request_impact()
   end)
 end
 
+---Replaces the loading text with what failed, so the tab doesn't look stuck.
+local function show_failure(message)
+  vim.notify("trail: " .. message, vim.log.levels.ERROR)
+  local buf = state.list_buf
+  if state.review or not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  local lines = { "trail: could not open " .. state.title, "" }
+  vim.list_extend(lines, vim.split(message, "\n", { plain = true }))
+  vim.list_extend(lines, { "", "R tries again  ·  q closes" })
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+end
+
 local function review_range()
   store.load(state.repo, state.key)
   -- Paths from before a reload must not be entered while the new ones are worked out.
@@ -1039,8 +1054,7 @@ local function review_range()
   M.refresh_home()
   engine.request("open", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore, ignore_defaults = vim.g.trail_ignore_defaults ~= false }, function(err, result)
     if err then
-      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
-      return
+      return show_failure(err.message)
     end
     state.review = result
     state.impact, state.impact_error = nil, nil
@@ -1057,8 +1071,7 @@ local function load()
   end
   engine.request("pull_request", { repo = state.repo, number = state.pr }, function(err, pr)
     if err then
-      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
-      return
+      return show_failure(err.message)
     end
     state.base, state.head = pr.base, pr.head
     state.pr_url = pr.url
@@ -1069,18 +1082,19 @@ local function load()
 end
 
 function M.open(arg)
-  if not arg or arg == "" then
-    vim.notify("usage: :Trail base..head", vim.log.levels.ERROR)
+  arg = vim.trim(arg or "")
+  if arg == "" then
+    vim.notify("usage: :Trail base..head, :Trail #123 or :Trail <pull request url>", vim.log.levels.ERROR)
     return
   end
   local root = vim.fs.root(0, ".git") or vim.fn.getcwd()
   state = { repo = root }
   threads.set({})
-  local pr = arg:match("^#(%d+)$")
+  local pr = arg:match("^#(%d+)$") or arg:match("^https?://%S+/pull/(%d+)/?%S*$")
   if pr then
     state.pr = tonumber(pr)
     state.key = "pr-" .. pr
-    state.title = arg
+    state.title = "#" .. pr
   else
     state.base, state.head = parse_range(arg)
     state.key = state.base .. ".." .. state.head
