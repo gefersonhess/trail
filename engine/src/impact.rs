@@ -61,7 +61,7 @@ pub struct ImpactNode {
     pub name: String,
     /// Where it lives: the Go package folder or the Rust module path.
     pub package: String,
-    /// The name without its package: `Store.Save`, or `closure in Routes`.
+    /// The name without its package: `Store.Save`.
     pub short: String,
     pub file: String,
     /// 1-based line of the function's name at head.
@@ -122,7 +122,8 @@ impl Sources {
             .find(|s| is_function(s) && s.name_at.0 + 1 == key.1)
     }
 
-    /// The named function around a function literal on `key`'s line.
+    /// The named function around a function literal on `key`'s line, or
+    /// `None` when `key` is a named function or outside any.
     fn enclosing(&mut self, key: &Key) -> Option<Key> {
         if self.function(key).is_some() {
             return None;
@@ -166,20 +167,8 @@ impl Sources {
                 if function.kind == Kind::Method { 2 } else { 1 },
             );
         }
-        match self.enclosing(key) {
-            Some(outer) => {
-                let (name, package, short) = self.names(&outer);
-                (
-                    format!("{name} (func literal)"),
-                    package,
-                    format!("closure in {short}"),
-                )
-            }
-            None => {
-                let at = format!("{}:{}", key.0, key.1);
-                (at.clone(), String::new(), at)
-            }
-        }
+        let at = format!("{}:{}", key.0, key.1);
+        (at.clone(), String::new(), at)
     }
 
     fn is_type(&mut self, key: &Key) -> bool {
@@ -275,6 +264,21 @@ impl Server<'_> {
         }
     }
 
+    /// The function a call hierarchy item counts as: the item itself, or for
+    /// a function literal the named function around it, so a closure is part
+    /// of its function whichever way the language server reports it.
+    fn named(&mut self, key: Key, item: &Value, sources: &mut Sources) -> Result<Key, String> {
+        let Some(outer) = sources.enclosing(&key) else {
+            self.items.insert(key.clone(), item.clone());
+            return Ok(key);
+        };
+        if !self.items.contains_key(&outer) {
+            let at = sources.function(&outer).map_or(0, |s| s.name_at.1);
+            self.prepare(&outer, at, Instant::now())?;
+        }
+        Ok(outer)
+    }
+
     fn locations(result: &Value) -> Vec<(Value, Value)> {
         let list = match result {
             Value::Array(a) => a.clone(),
@@ -318,7 +322,7 @@ impl Calls for Server<'_> {
             else {
                 continue;
             };
-            self.items.insert(caller.clone(), from.clone());
+            let caller = self.named(caller, from, sources)?;
             // The call site's definition is the interface method when the call dispatches through one.
             let mut via = None;
             if let Some(site) = call["fromRanges"].as_array().and_then(|r| r.first()) {
@@ -372,7 +376,7 @@ impl Calls for Server<'_> {
                 continue;
             }
             if !sources.is_abstract(&callee) {
-                self.items.insert(callee.clone(), to.clone());
+                let callee = self.named(callee, to, sources)?;
                 out.push(Link {
                     key: callee,
                     via: None,
@@ -536,22 +540,11 @@ impl Walker<'_> {
         if let Some(links) = cache.get(key) {
             return Ok(links.clone());
         }
-        let mut found = if up {
+        let found = if up {
             self.calls.callers(key, self.sources)?
         } else {
             self.calls.callees(key, self.sources)?
         };
-        // Nothing calls a function literal by name; the walk goes on through the function that holds it.
-        if up
-            && found.is_empty()
-            && let Some(outer) = self.sources.enclosing(key)
-        {
-            found.push(Link {
-                key: outer,
-                via: None,
-                outside: false,
-            });
-        }
         let mut links: Vec<Link> = found.into_iter().filter(|l| &l.key != key).collect();
         links.sort();
         links.dedup();

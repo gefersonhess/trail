@@ -1912,13 +1912,12 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
         [
             vec![
                 "api.Routes",
-                "  api.Routes (func literal)",
-                "    api.handleCreateOrder",
-                "      orders.Service.Create",
-                "        store.Store.Save via orders.Saver.Save",
-                "          store.dedupeKey",
-                "            store.Key",
-                "          store.ErrDuplicate",
+                "  api.handleCreateOrder",
+                "    orders.Service.Create",
+                "      store.Store.Save via orders.Saver.Save",
+                "        store.dedupeKey",
+                "          store.Key",
+                "        store.ErrDuplicate",
             ],
             vec![
                 "cmd/importer.main *",
@@ -1931,13 +1930,7 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
     assert_eq!(
         impact_edges(orders),
         sorted(vec![
-            edge4("api.Routes", "api.Routes (func literal)", "", "lsp"),
-            edge4(
-                "api.Routes (func literal)",
-                "api.handleCreateOrder",
-                "",
-                "lsp"
-            ),
+            edge4("api.Routes", "api.handleCreateOrder", "", "lsp"),
             edge4(
                 "orders.Service.Create",
                 "store.Store.Save",
@@ -1984,9 +1977,13 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
     assert_eq!(short("store.Store.Save"), ("store", "Store.Save"));
     assert_eq!(short("store.dedupeKey"), ("store", "dedupeKey"));
     assert_eq!(short("cmd/importer.main"), ("cmd/importer", "main"));
-    assert_eq!(
-        short("api.Routes (func literal)"),
-        ("api", "closure in Routes")
+    assert!(
+        !orders["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["name"].as_str().unwrap().contains("Routes (")),
+        "a closure is part of the function holding it, not a node of its own"
     );
     let create = impact_node(orders, "orders.Service.Create");
     assert_eq!(
