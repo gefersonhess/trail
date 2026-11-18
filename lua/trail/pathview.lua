@@ -153,6 +153,21 @@ function M.change(dir)
   show_step(target, false, dir > 0 and next_hunks[1] or next_hunks[#next_hunks])
 end
 
+---Moves to the next review thread of the path (dir 1) or the previous one.
+function M.thread(dir)
+  if not valid() then
+    return
+  end
+  local found = view.ctx.next_thread(view.path, view.step, dir)
+  if not found then
+    vim.notify(dir > 0 and "trail: no more threads in this path" or "trail: no threads before this in the path", vim.log.levels.INFO)
+  elseif found.here then
+    view.ctx.focus_line(found.side, found.line)
+  else
+    show_step(found.step, false, found.target)
+  end
+end
+
 ---The path and step being shown, if the path view is open.
 function M.current()
   if valid() then
@@ -168,7 +183,7 @@ end
 
 ---Opens `path` at `step` in the review window: the path's tree on top, the diff below.
 ---@param ctx table callbacks from the plugin: show_target, peek_node, home, window, switch_path, done_steps, on_step, toggle_reviewed
-function M.open(ctx, path, step)
+function M.open(ctx, path, step, target)
   if valid() then
     vim.api.nvim_set_current_tabpage(view.tab)
   else
@@ -236,6 +251,12 @@ function M.open(ctx, path, step)
     map("mr", function()
       view.ctx.toggle_reviewed(view.path)
     end, "Mark the path as reviewed, or unmark it")
+    map("]t", function()
+      M.thread(1)
+    end, "Next review thread in this path")
+    map("[t", function()
+      M.thread(-1)
+    end, "Previous review thread in this path")
     map("]c", function()
       M.change(1)
     end, "Next change in this path")
@@ -260,11 +281,17 @@ function M.open(ctx, path, step)
     { "]c", function()
       M.change(1)
     end, "Next change in this path" },
+    { "]t", function()
+      M.thread(1)
+    end, "Next review thread in this path" },
+    { "[t", function()
+      M.thread(-1)
+    end, "Previous review thread in this path" },
     { "[c", function()
       M.change(-1)
     end, "Previous change in this path" },
   }
-  show_step(step or 1, false)
+  show_step(step or 1, false, target)
 end
 
 return M
