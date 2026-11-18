@@ -1276,7 +1276,7 @@ fn paths_share_callees_between_entry_points_and_survive_cycles() {
 fn fake_gh(dir: &Path, remote: &Path, head: &str) -> PathBuf {
     let script = dir.join("gh");
     let json = format!(
-        r#"{{"baseRefName":"main","headRefOid":"{head}","title":"Add hashing","url":"file://{}/pull/7"}}"#,
+        r#"{{"baseRefName":"main","headRefName":"feature","headRefOid":"{head}","title":"Add hashing","url":"file://{}/pull/7","body":"Hashes passwords.","author":{{"login":"alice"}}}}"#,
         remote.display()
     );
     std::fs::write(
@@ -1323,6 +1323,21 @@ fn pull_requests_are_fetched_and_reviewed_like_branches() {
     let pr = &responses[0]["result"];
     assert_eq!(pr["number"], 7, "{}", responses[0]);
     assert_eq!(pr["title"], "Add hashing");
+    assert_eq!(
+        [
+            &pr["author"],
+            &pr["description"],
+            &pr["base_branch"],
+            &pr["head_branch"]
+        ],
+        [
+            &json!("alice"),
+            &json!("Hashes passwords."),
+            &json!("main"),
+            &json!("feature")
+        ],
+        "the overview gets who opened it, its description and its branches"
+    );
     assert_eq!(pr["head"], head.as_str());
     assert_eq!(pr["base"], rev(&local, "main").as_str());
     assert_eq!(rev(&local, "refs/trail/pull/7/head"), head);

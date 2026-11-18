@@ -13,7 +13,6 @@ local threads = require("trail.threads")
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("trail")
-local ns_preview = vim.api.nvim_create_namespace("trail.preview")
 local state = {}
 
 local function parse_range(arg)
@@ -822,6 +821,11 @@ function M.switch_path()
   end)
 end
 
+local function bar(done, total, width)
+  local filled = total > 0 and math.floor(done / total * width + 0.5) or 0
+  return string.rep("█", filled), string.rep("░", width - filled)
+end
+
 local function build_home(review)
   local lines, items, hls = {}, {}, {}
   local function add(text, item, hl)
@@ -831,24 +835,82 @@ local function build_home(review)
       table.insert(hls, { #lines - 1, h[2], h[3], h[1] })
     end
   end
-  local header = string.format("trail  %s  (%s → %s)", state.title,
-    review.base_commit:sub(1, 7), review.head_commit:sub(1, 7))
-  add(header, nil, { { "Title", 0, #header } })
-  local changed = 0
-  for _, p in ipairs(state.code) do
-    changed = changed + #p.steps
+  local open = state.open or {}
+  state.open = open
+  local function fold(key, label, n)
+    local text = (open[key] and "▾ " or "▸ ") .. label .. (n and string.format(" (%d)", n) or "")
+    add(text, { fold = key }, { { "Title", 0, #text - (n and #tostring(n) + 3 or 0) }, { "Comment", #text - (n and #tostring(n) + 3 or 0), -1 } })
+    return open[key]
   end
-  if state.impact then
-    add(string.format("%s · %s · %s · %s not in any path · %s", count(#state.code, "path"), count(changed, "changed function"),
-      count(#state.tests, "test file"), count(#state.loose.steps, "hunk"), count(#store.comments(), "comment")), nil,
-      { { "Comment", 0, -1 } })
+  -- Folded sections sit together; an open one is set apart.
+  local function gap()
+    if not (lines[#lines] or ""):match("^▸ ") then
+      add("")
+    end
+  end
+
+  local pr = state.pr_info
+  if pr then
+    local title = string.format("#%d %s", pr.number, pr.title)
+    local by = string.format(" · %s → %s", pr.author, pr.base_branch)
+    add(title .. by, nil, { { "Title", 0, #title }, { "Comment", #title, -1 } })
   else
-    add(string.format("%s · %s", count(#review.files, "file"), count(#store.comments(), "comment")), nil, { { "Comment", 0, -1 } })
+    add(state.title, nil, { { "Title", 0, -1 } })
   end
-  local hint = "<CR> or 1-9 enters a path  ·  mr marks it reviewed  ·  S send  ·  " .. (state.pr and "T threads  ·  " or "") .. "? keys"
-  add(hint, nil, { { "Comment", 0, -1 } })
-  if review.ignored and #review.ignored > 0 then
-    add(count(#review.ignored, "file") .. " hidden by vim.g.trail_ignore", nil, { { "Comment", 0, -1 } })
+  local seen = 0
+  for _, h in ipairs(review.hunks) do
+    if store.seen(h.id) then
+      seen = seen + 1
+    end
+  end
+  local filled, empty = bar(seen, #review.hunks, 20)
+  local status = ""
+  if pr then
+    local submitted = store.submitted()
+    status = submitted and " · submitted at " .. submitted.commit:sub(1, 7) or " · not submitted"
+  end
+  local progress_line = string.format("%s%s  %d/%d hunks%s", filled, empty, seen, #review.hunks, status)
+  add(progress_line, nil, { { "TrailAddText", 0, #filled }, { "Comment", #filled, -1 } })
+
+  if pr and pr.description and vim.trim(pr.description) ~= "" then
+    add("")
+    if fold("description", "Description") then
+      for _, l in ipairs(vim.split(vim.trim(pr.description):gsub("\r", ""), "\n", { plain = true })) do
+        add("  " .. l)
+      end
+    end
+  end
+
+  local not_reached = {}
+  for _, p in ipairs(state.code) do
+    vim.list_extend(not_reached, untested(p))
+  end
+  local unresolved = #vim.tbl_filter(function(t)
+    return not t.resolved
+  end, threads.all())
+  local blocking = #vim.tbl_filter(function(c)
+    return c.kind == "blocking" and not c.sent
+  end, store.comments())
+  if unresolved + blocking + #not_reached > 0 then
+    add("")
+    add("Needs attention", nil, { { "Title", 0, -1 } })
+    if unresolved > 0 then
+      local text = "  ● " .. count(unresolved, "unresolved thread")
+      add(text, { attention = "threads" }, { { "TrailThreadAuthor", 2, 5 } })
+    end
+    if blocking > 0 then
+      local text = "  ● " .. count(blocking, "blocking comment")
+      add(text, { attention = "blocking" }, { { "TrailBlocking", 2, 5 } })
+    end
+    if #not_reached > 0 then
+      local text = "  ! " .. count(#not_reached, "untested change")
+      add(text, { fold = "untested" }, { { "WarningMsg", 2, 3 } })
+      if open.untested then
+        for _, name in ipairs(not_reached) do
+          add("      " .. name, { fold = "untested" }, { { "Comment", 0, -1 } })
+        end
+      end
+    end
   end
 
   add("")
@@ -857,165 +919,99 @@ local function build_home(review)
     add("  The impact could not be worked out: " .. state.impact_error, nil, { { "WarningMsg", 0, -1 } })
   elseif not state.impact then
     local waited = state.impact_started and math.floor((vim.uv.now() - state.impact_started) / 1000) or 0
-    add(string.format("  Working out the impact of each change… %ds  (engine log: %s)", waited,
+    add(string.format("  Working out the paths… %ds  (engine log: %s)", waited,
       vim.fn.fnamemodify(engine.log_path, ":~")), nil, { { "Comment", 0, -1 } })
-  end
-  local rows = {}
-  local widths = { 0, 0, 0 }
-  for i, p in ipairs(state.code) do
-    local entries, functions, tested, packages, seen_package = 0, 0, false, {}, {}
-    for _, n in ipairs(p.impact.nodes) do
-      if n.entry then
-        entries = entries + 1
-      end
-      if n.is_test then
-        tested = true
-      else
-        functions = functions + 1
-      end
-    end
-    for _, id in ipairs(p.impact.steps) do
-      for _, n in ipairs(p.impact.nodes) do
-        if n.id == id and not seen_package[n.package] then
-          seen_package[n.package] = true
-          table.insert(packages, n.package)
-        end
-      end
-    end
-    local reach = count(entries, "entry point") .. " · " .. count(functions, "function")
-    if functions <= 1 then
-      reach = tested and "only tests call it" or "nothing calls it"
-    end
-    local done = progress(p)
-    local row = {
-      number = i <= 9 and tostring(i) or " ",
-      title = p.title,
-      changes = count(#p.steps, "change") .. (#path_threads(p) > 0 and " · " .. count(#path_threads(p), "thread") or ""),
-      reach = reach,
-      progress = string.format("%s %d/%d", done == #p.steps and "✓" or "·", done, #p.steps),
-      packages = table.concat(packages, ", "),
-      done = done == #p.steps,
-      path = p,
-    }
-    widths[1] = math.max(widths[1], vim.fn.strdisplaywidth(row.title))
-    widths[2] = math.max(widths[2], vim.fn.strdisplaywidth(row.changes))
-    widths[3] = math.max(widths[3], vim.fn.strdisplaywidth(row.reach))
-    table.insert(rows, row)
-  end
-  local function pad(text, width)
-    return text .. string.rep(" ", width - vim.fn.strdisplaywidth(text))
-  end
-  for _, r in ipairs(rows) do
-    local left = string.format("  %s  %s   ", r.number, pad(r.title, widths[1]))
-    local text = left .. pad(r.changes, widths[2]) .. "   " .. pad(r.reach, widths[3]) .. "   " .. r.progress .. "   " .. r.packages
-    add(text, { path = r.path }, {
-      { "Number", 2, 3 },
-      { "Comment", #left, #text - #r.packages - #r.progress - 3 },
-      { r.done and "TrailAdd" or "Comment", #text - #r.packages - #r.progress - 3, #text - #r.packages - 3 },
-      { "Comment", #text - #r.packages, -1 },
-    })
-  end
-  if state.impact and #state.code == 0 then
+  elseif #state.code == 0 then
     add("  (no changed functions)", nil, { { "Comment", 0, -1 } })
   end
-
-  local not_reached = {}
+  local width = 0
   for _, p in ipairs(state.code) do
-    vim.list_extend(not_reached, untested(p))
+    width = math.max(width, vim.fn.strdisplaywidth(p.title))
   end
-  if #not_reached > 0 then
-    add("")
-    add("No test reaches", nil, { { "Title", 0, 15 } })
-    local text = "  " .. table.concat(not_reached, " · ")
-    add(text, nil, { { "Comment", 0, -1 } })
+  for i, p in ipairs(state.code) do
+    local done = progress(p)
+    local f, e = bar(done, #p.steps, 10)
+    local left = string.format("  %s  %s", i <= 9 and tostring(i) or " ", p.title .. string.rep(" ", width - vim.fn.strdisplaywidth(p.title)))
+    local text = left .. "  " .. f .. e
+    local bar_start = #left + 2
+    text = text .. string.format("  %d/%d", done, #p.steps) .. (done == #p.steps and " ✓" or "")
+    local n = #path_threads(p)
+    if n > 0 then
+      text = text .. "  " .. count(n, "thread")
+    end
+    add(text, { path = p }, {
+      { "Number", 2, 3 },
+      { "TrailAddText", bar_start, bar_start + #f },
+      { "Comment", bar_start + #f, -1 },
+    })
   end
 
   if #state.tests > 0 then
-    add("")
-    add("Test changes", nil, { { "Title", 0, 12 } })
-    -- Go tests group by package (their folder); other languages list each file.
-    local groups, order = {}, {}
-    for _, t in ipairs(state.tests) do
-      local dir = t.title:match("%.go$") and (vim.fs.dirname(t.title) .. "/") or ""
-      if not groups[dir] then
-        groups[dir] = {}
-        table.insert(order, dir)
+    gap()
+    if fold("tests", "Tests", #state.tests) then
+      -- Go tests group by package (their folder); other languages list each file.
+      local groups, order = {}, {}
+      for _, t in ipairs(state.tests) do
+        local dir = t.title:match("%.go$") and (vim.fs.dirname(t.title) .. "/") or ""
+        if not groups[dir] then
+          groups[dir] = {}
+          table.insert(order, dir)
+        end
+        table.insert(groups[dir], t)
       end
-      table.insert(groups[dir], t)
-    end
-    for _, dir in ipairs(order) do
-      local indent = dir == "" and "     " or "       "
-      if dir ~= "" then
-        local header = "   " .. dir
-        add(header .. "  " .. count(#groups[dir], "test file"), nil,
-          { { "Directory", 3, #header }, { "Comment", #header, -1 } })
-      end
-      for _, t in ipairs(groups[dir]) do
-        local name = dir == "" and t.title or t.title:sub(#dir + 1)
-        local text = string.format("%s%s  %s · covers %s  · %d/%d", indent, name, count(#t.test.nodes, "test"),
-          count(#t.test.covers, "function"), progress(t), #t.steps)
-        add(text, { path = t }, { { "Comment", #indent + #name, -1 } })
+      for _, dir in ipairs(order) do
+        local indent = dir == "" and "    " or "      "
+        if dir ~= "" then
+          add("    " .. dir, nil, { { "Directory", 4, -1 } })
+        end
+        for _, t in ipairs(groups[dir]) do
+          local name = dir == "" and t.title or t.title:sub(#dir + 1)
+          local text = string.format("%s%s  covers %s  %d/%d", indent, name, count(#t.test.covers, "function"), progress(t), #t.steps)
+          add(text, { path = t }, { { "Comment", #indent + #name, -1 } })
+        end
       end
     end
   end
 
   if #state.loose.steps > 0 then
-    add("")
-    add("Not in any path", nil, { { "Title", 0, 15 } })
-    -- One line per file, opening at its first hunk.
-    local files, first, seen = {}, {}, {}
-    for i, step in ipairs(state.loose.steps) do
-      local file = step.hunk.file
-      if not first[file] then
-        first[file] = i
-        table.insert(files, file)
-        seen[file] = { hunks = 0, seen = 0 }
+    gap()
+    if fold("loose", "Not in any path", #state.loose.steps) then
+      -- One line per file, opening at its first hunk.
+      local files, first, tally = {}, {}, {}
+      for i, step in ipairs(state.loose.steps) do
+        local file = step.hunk.file
+        if not first[file] then
+          first[file] = i
+          table.insert(files, file)
+          tally[file] = { hunks = 0, seen = 0 }
+        end
+        tally[file].hunks = tally[file].hunks + 1
+        if store.seen(step.hunk.id) then
+          tally[file].seen = tally[file].seen + 1
+        end
       end
-      seen[file].hunks = seen[file].hunks + 1
-      if store.seen(step.hunk.id) then
-        seen[file].seen = seen[file].seen + 1
+      for _, file in ipairs(files) do
+        local n = tally[file]
+        local text = "    " .. file .. "  " .. count(n.hunks, "hunk") .. (n.seen == n.hunks and " ✓" or "")
+        add(text, { path = state.loose, step = first[file] }, { { "Comment", 4 + #file, -1 } })
       end
-    end
-    for _, file in ipairs(files) do
-      local n = seen[file]
-      local text = (n.seen == n.hunks and "  ✓  " or "     ") .. file .. "  " .. count(n.hunks, "hunk")
-      add(text, { path = state.loose, step = first[file] }, { { "Comment", 0, -1 } })
     end
   end
+
+  if review.ignored and #review.ignored > 0 then
+    gap()
+    if fold("hidden", "Hidden", #review.ignored) then
+      for _, file in ipairs(review.ignored) do
+        add("    " .. file, nil, { { "Comment", 0, -1 } })
+      end
+    end
+  end
+
+  add("")
+  add("? keys", nil, { { "Comment", 0, -1 } })
   return lines, items, hls
 end
 
-local function render_preview()
-  local buf = state.list_buf
-  local win = vim.fn.bufwinid(buf)
-  local row = win ~= -1 and vim.api.nvim_win_get_cursor(win)[1] or 0
-  local item = state.items[row] or {}
-  local path = item.path or state.code[1]
-  if path == state.preview_path and state.preview_start then
-    return
-  end
-  state.preview_path = path
-  local lines, hls = {}, {}
-  if path and path.impact then
-    local tree_lines, tree_hls = tree.render(path.impact, { done = M.done_steps(path) })
-    local title = "── " .. path.title .. " "
-    lines = { "", title .. string.rep("─", math.max(0, 60 - vim.fn.strdisplaywidth(title))) }
-    vim.list_extend(lines, tree_lines)
-    table.insert(hls, { 1, 0, -1, "Comment" })
-    for _, h in ipairs(tree_hls) do
-      table.insert(hls, { h[1] + 2, h[2], h[3], h[4] })
-    end
-  end
-  local start = state.preview_start
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, start, -1, false, lines)
-  vim.bo[buf].modifiable = false
-  vim.api.nvim_buf_clear_namespace(buf, ns_preview, 0, -1)
-  for _, h in ipairs(hls) do
-    local line = lines[h[1] + 1]
-    vim.api.nvim_buf_set_extmark(buf, ns_preview, start + h[1], h[2], { end_col = h[3] < 0 and #line or h[3], hl_group = h[4] })
-  end
-end
 
 local function render()
   local buf = state.list_buf
@@ -1030,9 +1026,6 @@ local function render()
     local end_col = h[3] < 0 and #lines[h[1] + 1] or h[3]
     vim.api.nvim_buf_set_extmark(buf, ns, h[1], h[2], { end_col = end_col, hl_group = h[4] })
   end
-  state.preview_start = #lines
-  state.preview_path = nil
-  render_preview()
   pathview.refresh_graph()
 end
 
@@ -1125,6 +1118,7 @@ local function load()
     end
     state.base, state.head = pr.base, pr.head
     state.pr_url = pr.url
+    state.pr_info = pr
     state.title = string.format("#%d %s", pr.number, pr.title)
     review_range()
     load_threads()
@@ -1172,10 +1166,19 @@ function M.open(arg)
   end
   map("<CR>", function()
     local item = state.items and state.items[vim.api.nvim_win_get_cursor(0)[1]]
-    if item and item.path then
+    if not item then
+      return
+    elseif item.fold then
+      state.open[item.fold] = not state.open[item.fold] or nil
+      M.refresh_home()
+    elseif item.attention == "threads" then
+      open_threads()
+    elseif item.attention == "blocking" then
+      open_send()
+    elseif item.path then
       enter(item.path, item.step)
     end
-  end, "Enter the path")
+  end, "Enter the path, or open the line")
   for n = 1, 9 do
     vim.keymap.set("n", tostring(n), function()
       if state.code and state.code[n] then
@@ -1198,14 +1201,6 @@ function M.open(arg)
     end
     open_threads()
   end, "Review threads of the pull request")
-  vim.api.nvim_create_autocmd("CursorMoved", {
-    buffer = buf,
-    callback = function()
-      if state.items and state.preview_start then
-        render_preview()
-      end
-    end,
-  })
   map("R", load, "Refresh")
   map("?", help.show, "Show keys")
   map("q", function()

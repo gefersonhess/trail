@@ -57,16 +57,16 @@ local function line_of(pattern)
   end
 end
 
-check(line_of("^trail  main%.%.feature  %("), "header names the review")
-check(line_of("^1 file hidden by vim%.g%.trail_ignore$"), "ignored files are counted on the paths screen")
-check(not text:match("notes%.md"), "an ignored file is not listed")
-check(line_of("^1 path · 3 changed functions · 1 test file · 1 hunk not in any path · 0 comments$"), "summary line")
-check(line_of("^  1  Login   3 changes   1 entry point · 3 functions   · 0/3   auth$"),
-  "a path is listed by its first change, with its changes, reach, progress and packages")
-check(line_of("^   auth/  1 test file$") and line_of("^       auth_test%.go  1 test · covers 3 functions  · 0/1$"),
-  "Go test files are grouped under their package, each listed with what it covers")
-check(line_of("^     auth/auth%.go  1 hunk$"), "the import hunk is listed as not in any path, by file")
-check(not text:match("No test reaches"), "every change is reached by the test")
+check(lines[1] == "main..feature", "a branch review's header is its range, with nothing about a pull request: " .. lines[1])
+check(lines[2]:find("░", 1, true) == 1 and lines[2]:match("  0/%d+ hunks$"), "a progress bar over every hunk, without a submit status: " .. lines[2])
+check(not text:match("Description") and not text:match("Needs attention"),
+  "no description for a branch, and nothing needs attention when every change is tested")
+check(line_of("^  1  Login  ░░░░░░░░░░  0/3$"), "a path row is its name, a progress bar and done/total")
+check(line_of("^▸ Tests %(1%)$") and line_of("^▸ Not in any path %(1%)$") and line_of("^▸ Hidden %(1%)$"),
+  "the sections below the paths start folded, with their counts")
+check(not text:match("notes%.md") and not text:match("auth_test%.go"), "folded sections list nothing")
+check(lines[#lines] == "? keys", "the only key hint is ? at the bottom")
+check(not text:match("──") and not text:match("VerifyHash"), "there is no preview tree")
 local function home_row(pattern)
   for i, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
     if l:match(pattern) then
@@ -74,13 +74,23 @@ local function home_row(pattern)
     end
   end
 end
-vim.api.nvim_win_set_cursor(0, { line_of("^  1  Login "), 0 })
+for _, section in ipairs({ "Tests", "Not in any path", "Hidden" }) do
+  vim.api.nvim_win_set_cursor(0, { home_row("^▸ " .. vim.pesc(section)), 0 })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+end
+check(home_row("^▾ Tests %(1%)$") and home_row("^    auth/$") and home_row("^      auth_test%.go  covers 3 functions  0/1$"),
+  "<CR> opens Tests: Go test files under their package, with what they cover")
+check(home_row("^    auth/auth%.go  1 hunk$"), "<CR> opens Not in any path, by file")
+check(home_row("^    notes%.md$"), "<CR> opens Hidden, naming the files")
+vim.api.nvim_win_set_cursor(0, { home_row("^▾ Hidden"), 0 })
+vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+check(home_row("^▸ Hidden %(1%)$") and not home_row("notes%.md"), "<CR> folds a section again")
+vim.api.nvim_win_set_cursor(0, { home_row("^  1  Login "), 0 })
 vim.api.nvim_feedkeys("mr", "x", false)
-check(home_row("^  1  Login .*✓ 3/3   auth$"), "mr marks the path as reviewed")
+check(home_row("^  1  Login  ██████████  3/3 ✓$"), "mr marks the path as reviewed")
+check(vim.api.nvim_buf_get_lines(buf, 1, 2, false)[1]:find("█", 1, true) == 1, "the header's bar moves with it")
 vim.api.nvim_feedkeys("mr", "x", false)
-check(home_row("^  1  Login .*· 0/3   auth$"), "mr on a reviewed path unmarks it")
-check(line_of("^── Login ") and line_of("^  ● Login   step 1 · entry · ◇ 1 test   auth$") and line_of("^  └─ ● VerifyHash   step 2$")
-  and line_of("^     └─ ✚ hashOf   step 3$"), "the preview draws the path from its entry point down")
+check(home_row("^  1  Login  ░░░░░░░░░░  0/3$"), "mr on a reviewed path unmarks it")
 check(not text:match("Gone"), "a removed function is not a step: its hunk is part of VerifyHash's")
 check(not text:match("Tidy") and not text:match("Squash"), "reformatted functions are not listed")
 
@@ -566,7 +576,7 @@ check(vim.wait(10000, function()
 end), "choosing a path in gp opens it")
 
 vim.api.nvim_feedkeys("-", "x", false)
-vim.api.nvim_win_set_cursor(0, { line_of("^     auth/auth%.go  1 hunk$"), 0 })
+vim.api.nvim_win_set_cursor(0, { home_row("^    auth/auth%.go  1 hunk"), 0 })
 vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
 check(vim.wait(10000, function()
   return vim.api.nvim_buf_get_name(0):match("^trail://diff/") and vim.api.nvim_get_current_line() == "import ("
@@ -597,7 +607,7 @@ local function home_line(pattern)
     end
   end
 end
-check(home_line("^  1  Login   3 changes   1 entry point · 3 functions   ✓ 3/3   auth$"), "a path whose steps were all seen is marked done: " .. tostring(home_line("^  1  Login")))
+check(home_line("^  1  Login  ██████████  3/3 ✓$"), "a path whose steps were all seen is marked done: " .. tostring(home_line("^  1  Login")))
 vim.fn.delete(state_file)
 -- vim.g.trail_lsp = false keeps the impact walk off the language server.
 local engine_mod = require("trail.engine")
@@ -610,7 +620,7 @@ vim.g.trail_lsp = false
 vim.api.nvim_feedkeys("R", "x", false)
 
 check(vim.wait(10000, function()
-  return home_line("^  1  Login .* · 0/3   auth$") ~= nil
+  return home_line("^  1  Login  .-  0/3$") ~= nil
 end), "progress starts over without saved state")
 check(vim.wait(10000, function()
   return sent.impact ~= nil
@@ -622,14 +632,14 @@ check(vim.wait(10000, function()
   return sent.impact ~= nil
 end) and sent.impact.lsp == true, "the language server is on by default: " .. vim.inspect(sent.impact))
 vim.wait(10000, function()
-  return home_line("^  1  Login .* · 0/3   auth$") ~= nil
+  return home_line("^  1  Login  .-  0/3$") ~= nil
 end)
 engine_mod.request = real_request
 vim.api.nvim_feedkeys("1", "x", false)
 check(wait_diff_line("func Login(user string) bool {"), "a path without a saved step starts at step 1")
 vim.api.nvim_feedkeys("-", "x", false)
-local partial = home_line("^  1  Login .* · (%d)/3   auth$")
-local done = partial and tonumber(partial:match("· (%d)/3"))
+local partial = home_line("^  1  Login  .-  (%d)/3$")
+local done = partial and tonumber(partial:match("  (%d)/3$"))
 check(done and done >= 1 and done < 3, "only steps whose hunks were on screen count as done: " .. tostring(partial))
 vim.api.nvim_feedkeys("1", "x", false)
 vim.wait(10000, function()
@@ -651,7 +661,7 @@ vim.api.nvim_feedkeys("-", "x", false)
 vim.fn.writefile({ vim.json.encode({ version = 1, seen = vim.empty_dict(), positions = { ["go:auth.Login"] = 3 }, comments = {} }) }, state_file)
 vim.api.nvim_feedkeys("R", "x", false)
 vim.wait(10000, function()
-  return home_line("^  1  Login .* · 0/3   auth$") ~= nil
+  return home_line("^  1  Login  .-  0/3$") ~= nil
 end)
 vim.api.nvim_feedkeys("1", "x", false)
 check(vim.wait(10000, function()
@@ -659,8 +669,8 @@ check(vim.wait(10000, function()
     and vim.api.nvim_get_current_line() == "func hashOf(h string) string { return strings.ToLower(h) }"
 end), "the saved step is resumed from the state file")
 vim.api.nvim_feedkeys("-", "x", false)
-local jumped = home_line("^  1  Login .* · (%d)/3   auth$")
-local jumped_done = jumped and tonumber(jumped:match("· (%d)/3"))
+local jumped = home_line("^  1  Login  .-  (%d)/3$")
+local jumped_done = jumped and tonumber(jumped:match("  (%d)/3$"))
 check(jumped_done and jumped_done < 3, "hunks jumped over above the screen do not count as seen: " .. tostring(jumped))
 
 -- Comments and the send screen.
@@ -815,9 +825,8 @@ vim.fn.writefile({ vim.json.encode(list) }, state_file)
 vim.api.nvim_feedkeys("-", "x", false)
 vim.api.nvim_feedkeys("R", "x", false)
 vim.wait(15000, function()
-  return home_line("2 comments$") ~= nil and home_line("^  1  Login ") ~= nil
+  return home_line("^  1  Login ") ~= nil
 end)
-check(home_line("· 2 comments$"), "the paths screen counts comments")
 vim.api.nvim_feedkeys("1", "x", false)
 vim.wait(10000, function()
   return vim.api.nvim_buf_get_name(0):match("^trail://diff/") ~= nil and vim.api.nvim_get_current_buf() ~= cbuf
@@ -869,7 +878,7 @@ local head_sha = vim.trim(vim.system({ "git", "-C", repo, "rev-parse", "feature"
 local gh = repo .. "-gh"
 vim.fn.writefile({
   "#!/bin/sh",
-  string.format([[echo '{"baseRefName":"main","headRefOid":"%s","title":"Add hashing","url":"file://%s/pull/7"}']], head_sha, remote),
+  string.format([[echo '{"baseRefName":"main","headRefName":"feature","headRefOid":"%s","title":"Add hashing","url":"file://%s/pull/7","body":"","author":{"login":"alice"}}']], head_sha, remote),
 }, gh)
 vim.fn.setfperm(gh, "rwxr-xr-x")
 vim.env.TRAIL_GH = gh
@@ -877,13 +886,13 @@ require("trail.engine").stop()
 vim.cmd("Trail #7")
 local prbuf = vim.api.nvim_get_current_buf()
 check(vim.wait(10000, function()
-  return vim.api.nvim_buf_get_lines(prbuf, 0, 1, false)[1]:match("^trail  #7 Add hashing  %(") ~= nil
+  return vim.api.nvim_buf_get_lines(prbuf, 0, 1, false)[1] == "#7 Add hashing · alice → main"
 end), "a pull request opens with its title: " .. vim.inspect(vim.api.nvim_buf_get_lines(prbuf, 0, 1, false)))
 check(vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
-  return l:match("^  1  Login   3 changes")
+  return l:match("^  1  Login  .-  0/3$")
 end) or vim.wait(15000, function()
   return vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
-    return l:match("^  1  Login   3 changes")
+    return l:match("^  1  Login  .-  0/3$")
   end)
 end), "the pull request is reviewed like a branch")
 check(require("trail.state").path():match("/trail/pr%-7%.json$"), "its review state is kept per pull request number")
@@ -912,13 +921,15 @@ local function tline(pattern)
   end)
 end
 check(vim.wait(15000, function()
-  return tline("^  1  Store   1 change   1 entry point · 2 functions   · 0/1   store$") ~= nil
+  return tline("^  1  Store  ░░░░░░░░░░  0/1$") ~= nil
 end), "a changed type gets a path: " .. table.concat(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false), "\n"))
-check(tline("^  ◆ Run   entry ") and tline("^  └─ ● Store   step 1$"), "the path starts at the unchanged code using the type")
 vim.api.nvim_feedkeys("1", "x", false)
 check(vim.wait(10000, function()
   return vim.api.nvim_buf_get_name(0):match("^trail://diff/store/store%.go$") and vim.api.nvim_get_current_line() == "type Store struct {"
 end), "the type's step opens its diff: " .. vim.api.nvim_buf_get_name(0))
+local type_tree = table.concat(vim.api.nvim_buf_get_lines((graph_buf()), 0, -1, false), "\n")
+check(type_tree:match("\n◆ Run   entry ") or type_tree:match("\n  ◆ Run   entry "), "the path starts at the unchanged code using the type: " .. type_tree)
+check(type_tree:match("└─ ● Store   step 1"), "and reaches the type")
 local _, twin = graph_buf()
 vim.api.nvim_set_current_win(twin)
 for i, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
@@ -962,8 +973,8 @@ check(vim.wait(15000, function()
   end)
 end), "the folds review loads: " .. table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), "\n"))
 check(vim.iter(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false)):any(function(l)
-  return l:match("^  2  Lone   1 change   only tests call it%s+· 0/1   a$")
-end), "a change only tests call says so: " .. table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), "\n"))
+  return l:match("^  2  Lone  ░░░░░░░░░░  0/1$")
+end), "a change only tests call gets its own path: " .. table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), "\n"))
 vim.api.nvim_feedkeys("1", "x", false)
 vim.wait(10000, function()
   return vim.api.nvim_buf_get_name(0):match("^trail://diff/") ~= nil
@@ -1059,7 +1070,8 @@ do
       end)
     elseif method == "pull_request" then
       return vim.schedule(function()
-        cb(nil, { number = 7, title = "Add hashing", url = "https://github.com/owner/repo/pull/7", base = base_sha, head = head_sha })
+        cb(nil, { number = 7, title = "Add hashing", url = "https://github.com/owner/repo/pull/7", base = base_sha, head = head_sha,
+          author = "alice", description = "Hashes passwords.\r\nSecond line.", base_branch = "main", head_branch = "feature" })
       end)
     elseif method == "submit_review" then
       submitted = params
@@ -1080,9 +1092,43 @@ do
   end), "the pull request review opens")
   check(vim.wait(5000, function()
     return vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
-      return l:match("^  1  Login +3 changes · 3 threads ")
+      return l:match("^  1  Login  ░░░░░░░░░░  0/3  3 threads$")
     end)
   end), "a path row counts the threads on its functions, outdated ones aside")
+  local function prlines()
+    return vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)
+  end
+  local function pr_row(pattern)
+    for k, l in ipairs(prlines()) do
+      if l:match(pattern) then
+        return k
+      end
+    end
+  end
+  check(prlines()[1] == "#7 Add hashing · alice → main" and prlines()[2]:find("░", 1, true) == 1
+    and prlines()[2]:match("  0/%d+ hunks · not submitted$"),
+    "a pull request's header names it, its author and base, and whether it was submitted: " .. table.concat(prlines(), " | "))
+  check(pr_row("^▸ Description$") and not pr_row("Hashes passwords"), "the description starts folded")
+  vim.api.nvim_win_set_cursor(0, { pr_row("^▸ Description$"), 0 })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+  check(pr_row("^  Hashes passwords%.$") and pr_row("^  Second line%.$"), "<CR> opens the description")
+  check(pr_row("^Needs attention$") and pr_row("^  ● 3 unresolved threads$"),
+    "Needs attention counts the unresolved threads, outdated ones included")
+  vim.api.nvim_win_set_cursor(0, { pr_row("^  ● 3 unresolved threads$"), 0 })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+  check(vim.api.nvim_buf_get_name(0):match("trail://threads$"), "<CR> on the unresolved threads opens the thread list")
+  vim.api.nvim_feedkeys("-", "x", false)
+  local astore = require("trail.state")
+  table.insert(astore.comments(), { id = "b", kind = "blocking", body = "stop", file = "auth/auth.go", side = "new", line = 9,
+    text = "\treturn VerifyHash(user)" })
+  require("trail").refresh_home()
+  check(pr_row("^  ● 1 blocking comment$"), "Needs attention counts your blocking comments")
+  vim.api.nvim_win_set_cursor(0, { pr_row("^  ● 1 blocking comment$"), 0 })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+  check(vim.api.nvim_buf_get_name(0):match("trail://send$"), "<CR> on the blocking comments opens the send screen")
+  table.remove(astore.comments())
+  astore.save()
+  vim.api.nvim_feedkeys("-", "x", false)
   check(thread_reads == 1, "the threads are read once when the pull request opens")
 
   vim.api.nvim_feedkeys("T", "x", false)
@@ -1218,7 +1264,7 @@ do
   check(vim.wait(5000, function()
     return #pr_numbers == 2 and pr_numbers[2] == 7
   end) and vim.wait(5000, function()
-    return (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or ""):match("^trail  #7 Add hashing") ~= nil
+    return (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or ""):match("^#7 Add hashing · alice → main$") ~= nil
   end), "a pull request's url opens it like #7, and so does #7 with spaces around it: " .. vim.inspect(pr_numbers))
   eng.request = real_request
 end
@@ -1260,7 +1306,7 @@ local function stop_line(pattern)
   end)
 end
 check(vim.wait(5000, function()
-  return stop_line("^  Working out the impact of each change… %d+s") ~= nil
+  return stop_line("^  Working out the paths… %d+s") ~= nil
 end), "while waiting, the screen shows how long it has been: " .. table.concat(vim.api.nvim_buf_get_lines(sbuf2, 0, -1, false), "\n"))
 check(stop_line("engine log: " .. vim.pesc(vim.fn.fnamemodify(log_path, ":~"))), "and where the engine's log is")
 check(vim.wait(10000, function()
