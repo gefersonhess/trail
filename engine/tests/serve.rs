@@ -2007,6 +2007,48 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
 }
 
 #[test]
+fn impact_with_lsp_off_never_starts_the_language_server() {
+    let repo = impact_repo();
+    let tools = Repo::new();
+    let started = tools.path().join("started");
+    let gopls = tools.path().join("gopls");
+    std::fs::write(
+        &gopls,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nexec gopls \"$@\"\n",
+            started.display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&gopls)
+        .status()
+        .unwrap();
+
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "impact",
+            "params": { "repo": repo.path(), "base": "main", "head": "feature", "lsp": false },
+        })],
+        &[("TRAIL_GOPLS", gopls.to_str().unwrap())],
+    );
+
+    let paths = responses[0]["result"]["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 3, "{}", responses[0]);
+    assert!(!started.exists(), "the language server was started");
+    assert!(
+        impact_edges(&paths[0])
+            .iter()
+            .all(|(_, _, _, source)| source == "name_match"),
+        "calls are matched by name: {:?}",
+        impact_edges(&paths[0])
+    );
+}
+
+#[test]
 fn without_a_language_server_impact_matches_calls_by_name() {
     let repo = impact_repo();
 

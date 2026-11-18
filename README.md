@@ -103,6 +103,7 @@ Send screen
 | `vim.g.trail_default_comment_kind` | `"blocking"` | Kind `cc` starts with |
 | `vim.g.trail_ignore` | `{}` | Gitignore-style patterns for files to leave out |
 | `vim.g.trail_ignore_defaults` | `true` | Hide `go.sum`, `Cargo.lock`, generated Go files and the root `vendor/` and `target/` |
+| `vim.g.trail_lsp` | `true` | `false` to skip `gopls` and `rust-analyzer` and match calls by name (marked `?`) |
 | `vim.g.trail_engine` | | Path to the engine binary |
 
 Environment: `TRAIL_GOPLS`, `TRAIL_RUST_ANALYZER`, `TRAIL_DIFFT` and `TRAIL_GH` override the programs used; `TRAIL_LSP_TIMEOUT` (60 s), `TRAIL_IMPACT_LIMIT` (2000 functions) and `TRAIL_IMPACT_TIMEOUT` (120 s) cap the analysis.

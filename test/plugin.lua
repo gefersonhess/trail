@@ -591,11 +591,32 @@ local function home_line(pattern)
 end
 check(home_line("^  1  Login   3 changes   1 entry point · 3 functions   ✓ 3/3   auth$"), "a path whose steps were all seen is marked done: " .. tostring(home_line("^  1  Login")))
 vim.fn.delete(state_file)
+-- vim.g.trail_lsp = false keeps the impact walk off the language server.
+local engine_mod = require("trail.engine")
+local real_request, sent = engine_mod.request, {}
+engine_mod.request = function(method, params, cb)
+  sent[method] = params
+  return real_request(method, params, cb)
+end
+vim.g.trail_lsp = false
 vim.api.nvim_feedkeys("R", "x", false)
 
 check(vim.wait(10000, function()
   return home_line("^  1  Login .* · 0/3   auth$") ~= nil
 end), "progress starts over without saved state")
+check(vim.wait(10000, function()
+  return sent.impact ~= nil
+end) and sent.impact.lsp == false, "vim.g.trail_lsp = false is sent with impact: " .. vim.inspect(sent.impact))
+vim.g.trail_lsp = nil
+sent = {}
+vim.api.nvim_feedkeys("R", "x", false)
+check(vim.wait(10000, function()
+  return sent.impact ~= nil
+end) and sent.impact.lsp == true, "the language server is on by default: " .. vim.inspect(sent.impact))
+vim.wait(10000, function()
+  return home_line("^  1  Login .* · 0/3   auth$") ~= nil
+end)
+engine_mod.request = real_request
 vim.api.nvim_feedkeys("1", "x", false)
 check(wait_diff_line("func Login(user string) bool {"), "a path without a saved step starts at step 1")
 vim.api.nvim_feedkeys("-", "x", false)
