@@ -98,7 +98,7 @@ Derived data, recomputable from git and the code at any time:
 - `tests`: test file and the nodes it covers.
 - `unassigned`: hunks in no path and not in tests.
 
-`impact` is a separate, slower method that walks from each changed function up to the entry points and down through what it calls, unchanged code included, and returns one path per group of changes that reach each other: its nodes (with `entry` and `is_test`), its edges (with `via` for calls through an interface or trait), `trees` laying the path out from each entry point down (rows with depth, `via`, and `join` where a row was already shown), the changed functions as steps in that order, and `truncated` when the node or time limit (`TRAIL_IMPACT_LIMIT`, `TRAIL_IMPACT_TIMEOUT`) cut it short.
+`impact` is a separate, slower method that walks from each changed function up to the entry points and down through what it calls, unchanged code included, and returns one path per group of changes that reach each other: its nodes (with `entry` and `is_test`), its edges (with `via` for calls through an interface or trait), `trees` laying the path out from each entry point down (rows with depth, `via`, and `join` where a row was already shown), the changed functions as steps in that order, and `truncated` when the node or time limit (`TRAIL_IMPACT_LIMIT`, `TRAIL_IMPACT_TIMEOUT`) cut it short. It uses the language server unless `lsp` is `false`; `open` uses it only when `lsp` is `true`.
 
 ### Review state
 

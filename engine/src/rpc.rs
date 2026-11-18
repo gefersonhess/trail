@@ -27,8 +27,9 @@ struct OpenParams {
     repo: PathBuf,
     base: String,
     head: String,
-    #[serde(default)]
-    lsp: bool,
+    /// Ask the language server: off by default for `open`, whose name-matched
+    /// calls are enough for the plugin, on by default for `impact`.
+    lsp: Option<bool>,
     #[serde(default)]
     ignore: Vec<String>,
     #[serde(default = "enabled")]
@@ -182,13 +183,11 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 message: e.to_string(),
             })?;
             let ignore = diff::Ignore::new(&p.ignore, p.ignore_defaults);
-            let review =
-                review::open(&p.repo, &p.base, &p.head, p.lsp, &ignore).map_err(|message| {
-                    RpcError {
-                        code: GIT_ERROR,
-                        message,
-                    }
-                })?;
+            let review = review::open(&p.repo, &p.base, &p.head, p.lsp.unwrap_or(false), &ignore)
+                .map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
             log(&format!(
                 "open: {} files, {} hunks, {} nodes, {} edges",
                 review.files.len(),
@@ -222,12 +221,10 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 message: e.to_string(),
             })?;
             let ignore = diff::Ignore::new(&p.ignore, p.ignore_defaults);
-            let impact =
-                impact::compute(&p.repo, &p.base, &p.head, &ignore).map_err(|message| {
-                    RpcError {
-                        code: GIT_ERROR,
-                        message,
-                    }
+            let impact = impact::compute(&p.repo, &p.base, &p.head, p.lsp.unwrap_or(true), &ignore)
+                .map_err(|message| RpcError {
+                    code: GIT_ERROR,
+                    message,
                 })?;
             log(&format!("impact: {} paths", impact.paths.len()));
             Ok(serde_json::to_value(impact).expect("impact serializes"))

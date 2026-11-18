@@ -450,6 +450,14 @@ struct Names {
 }
 
 impl Names {
+    fn new(language: &str, deadline: Instant) -> Self {
+        Names {
+            pattern: if language == "rust" { "*.rs" } else { "*.go" },
+            containing: HashMap::new(),
+            deadline,
+        }
+    }
+
     fn files(&mut self, word: &str, sources: &Sources) -> Result<Vec<String>, String> {
         if !self.containing.contains_key(word) {
             // Each search reads the whole tree, so one function can take long on a big repository.
@@ -632,12 +640,13 @@ struct Walked {
 }
 
 /// Walks every changed function of one language, with its language server
-/// when one answers, else by name.
+/// when `lsp` is set and one answers, else by name.
 fn walk_language(
     repo: &Path,
     head_commit: &str,
     language: &'static str,
     changed: &HashMap<Key, Changed>,
+    lsp: bool,
     limit: usize,
     deadline: Instant,
 ) -> Result<Walked, String> {
@@ -715,6 +724,11 @@ fn walk_language(
         })
     };
 
+    if !lsp {
+        log(&format!("impact: {language}: language server turned off"));
+        let mut names = Names::new(language, deadline);
+        return run(&mut names, "name_match");
+    }
     let served = worktree::checkout(repo, head_commit).and_then(|checkout| {
         lsp::with_client(language, &checkout.path, head_commit, |client| {
             let mut server = Server {
@@ -761,11 +775,7 @@ fn walk_language(
         log(&format!(
             "impact: {language} language server unavailable, matching by name: {e}"
         ));
-        let mut names = Names {
-            pattern: if language == "rust" { "*.rs" } else { "*.go" },
-            containing: HashMap::new(),
-            deadline,
-        };
+        let mut names = Names::new(language, deadline);
         run(&mut names, "name_match")
     })
 }
@@ -789,6 +799,7 @@ pub fn compute(
     repo: &Path,
     base: &str,
     head: &str,
+    lsp: bool,
     ignore: &diff::Ignore,
 ) -> Result<Impact, String> {
     let review = review::open(repo, base, head, false, ignore)?;
@@ -861,6 +872,7 @@ pub fn compute(
             &review.head_commit,
             language,
             &changed,
+            lsp,
             limit,
             deadline,
         )?;

@@ -879,7 +879,14 @@ local function request_impact()
     end
     M.refresh_home()
   end))
-  engine.request("impact", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore, ignore_defaults = vim.g.trail_ignore_defaults ~= false }, function(err, result)
+  engine.request("impact", {
+    repo = state.repo,
+    base = state.base,
+    head = state.head,
+    lsp = vim.g.trail_lsp ~= false,
+    ignore = vim.g.trail_ignore,
+    ignore_defaults = vim.g.trail_ignore_defaults ~= false,
+  }, function(err, result)
     if state.review ~= review then
       return
     end
