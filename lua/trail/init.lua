@@ -695,6 +695,27 @@ load_threads = function()
       return
     end
     threads.set(list)
+    -- A comment sent before trail handed sent comments over to GitHub is
+    -- still here; once its thread is read, the thread stands for it.
+    local all, dropped = store.comments(), false
+    local function clean(text)
+      return vim.trim((text:gsub("\r", "")))
+    end
+    for k = #all, 1, -1 do
+      local c = all[k]
+      local posted = c.sent and string.format("**%s:** %s", c.kind, clean(c.body))
+      if posted and vim.iter(list):any(function(t)
+        return t.path == c.file and vim.iter(t.comments):any(function(tc)
+          return clean(tc.body) == posted
+        end)
+      end) then
+        table.remove(all, k)
+        dropped = true
+      end
+    end
+    if dropped then
+      store.save()
+    end
     if state.reannotate then
       state.reannotate()
     end
@@ -1095,7 +1116,12 @@ local function review_range()
   -- Paths from before a reload must not be entered while the new ones are worked out.
   state.impact, state.impact_error = nil, nil
   M.refresh_home()
+  -- An answer for a review the user has since left must not land in the new one.
+  local opening = state
   engine.request("open", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore, ignore_defaults = vim.g.trail_ignore_defaults ~= false }, function(err, result)
+    if state ~= opening then
+      return
+    end
     if err then
       return show_failure(err.message)
     end
@@ -1112,7 +1138,11 @@ local function load()
   if not state.pr then
     return review_range()
   end
+  local loading = state
   engine.request("pull_request", { repo = state.repo, number = state.pr }, function(err, pr)
+    if state ~= loading then
+      return
+    end
     if err then
       return show_failure(err.message)
     end

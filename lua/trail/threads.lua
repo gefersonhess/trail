@@ -1,3 +1,4 @@
+local comments = require("trail.comments")
 local help = require("trail.help")
 
 local M = {}
@@ -44,7 +45,9 @@ local function in_file(t, old_path, new_path)
 end
 
 local function first_line(text)
-  return (vim.split(text, "\n", { plain = true })[1] or "")
+  local kind, rest = comments.split_kind(text)
+  local line = vim.split(rest:gsub("\r", ""), "\n", { plain = true })[1] or ""
+  return (kind and kind .. ": " or "") .. line
 end
 
 ---Virtual-line notes for the threads on the file shown.
@@ -73,8 +76,13 @@ function M.notes(old_path, new_path)
             { c.author, "TrailThreadAuthor" },
             { " · " .. (c.created_at or ""):sub(1, 10), "TrailThread" },
           })
-          for _, body_line in ipairs(vim.split(c.body, "\n", { plain = true })) do
-            table.insert(rows, { { "  " .. body_line, "Normal" } })
+          local kind, rest = comments.split_kind(c.body)
+          for k, body_line in ipairs(comments.wrap(rest)) do
+            if k == 1 and kind then
+              table.insert(rows, { { "  ", "Normal" }, { kind, comments.highlight(kind) }, { "  " .. body_line, "Normal" } })
+            else
+              table.insert(rows, { { (kind and string.rep(" ", #kind + 2) or "") .. "  " .. body_line, "Normal" } })
+            end
           end
         end
       end

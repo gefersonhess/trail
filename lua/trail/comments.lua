@@ -38,6 +38,38 @@ function M.block_highlight(kind)
   return M.highlight(kind) .. "Block"
 end
 
+local WRAP = 80
+
+---A comment's text as lines to draw: without the carriage returns GitHub
+---sends, and wrapped at word boundaries to WRAP columns.
+function M.wrap(text)
+  local out = {}
+  for _, paragraph in ipairs(vim.split(text:gsub("\r", ""), "\n", { plain = true })) do
+    local line = ""
+    for word in paragraph:gmatch("%S+") do
+      if line ~= "" and vim.fn.strdisplaywidth(line .. " " .. word) > WRAP then
+        table.insert(out, line)
+        line = word
+      else
+        line = line == "" and word or line .. " " .. word
+      end
+    end
+    local indent = paragraph:match("^%s*")
+    table.insert(out, (line ~= "" and indent or "") .. line)
+  end
+  return out
+end
+
+---Splits the `**nit:** ` prefix trail puts on comments it submits: the kind
+---(nil when there is none) and the rest of the text.
+function M.split_kind(body)
+  local kind, rest = body:match("^%*%*(%a+):%*%*%s*(.*)$")
+  if kind and vim.tbl_contains(M.kinds, kind) then
+    return kind, rest
+  end
+  return nil, body
+end
+
 ---The kind `cc` starts with: `vim.g.trail_default_comment_kind`, or blocking.
 function M.default_kind()
   local wanted = vim.g.trail_default_comment_kind
@@ -94,7 +126,7 @@ function M.notes(view, old_path, new_path)
         local virt = {}
         local label = c.kind .. (c.last and string.format(" %d-%d", c.line, c.last) or "")
         local hl, block = M.highlight(c.kind), M.block_highlight(c.kind)
-        local body = vim.split(c.body, "\n", { plain = true })
+        local body = M.wrap(c.body)
         local width = 0
         for _, body_line in ipairs(body) do
           width = math.max(width, vim.fn.strdisplaywidth(body_line))
