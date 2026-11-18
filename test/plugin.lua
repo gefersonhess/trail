@@ -1193,20 +1193,40 @@ do
   local function notes_text(text)
     return table.concat(notes_on(vim.api.nvim_get_current_buf(), text) or {}, "\n")
   end
-  check(notes_text("\treturn hashOf(h) == h"):match("alice · 2026%-11%-17.*why compare%?.*bob · 2026%-11%-17.*it guards"),
-    "a thread shows under its line with each comment's author and date: " .. notes_text("\treturn hashOf(h) == h"))
-  local guarded = notes_text("\treturn hashOf(h) == h")
-  check(guarded:match("question  it guards") and guarded:match("really") and not guarded:match("\r") and not guarded:match("%*%*"),
-    "a comment's kind prefix shows as a tag, without markdown or carriage returns: " .. guarded)
+  local function popup_open()
+    vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+    local win = vim.api.nvim_get_current_win()
+    local config = vim.api.nvim_win_get_config(win)
+    local text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false), "\n")
+    return config.relative ~= "" and win, text, vim.inspect(config.title)
+  end
+  local function press(lhs)
+    vim.fn.maparg(lhs, "n", false, true).callback()
+  end
+  check(notes_text("\treturn hashOf(h) == h"):match("^┃ ● alice: why compare%?  · 2 comments  <CR> opens%s*$"),
+    "a thread takes one line in the diff: " .. notes_text("\treturn hashOf(h) == h"))
+  local pwin, ptext, ptitle = popup_open()
+  check(pwin and ptitle:match("● auth/auth%.go:13"), "<CR> on a thread's line opens it in a popup: " .. ptitle)
+  check(ptext:match("alice · 2026%-11%-17 *\n +why compare%? *\n *\n +bob · 2026%-11%-17 *\n +question  it guards *\n +really"),
+    "the popup shows each comment's author, date and text: " .. ptext)
+  check(not ptext:match("\r") and not ptext:match("%*%*"), "with the kind as a tag, and no markdown or carriage returns")
+  press("r")
+  check(not vim.api.nvim_win_is_valid(pwin) and vim.inspect(vim.api.nvim_win_get_config(0).title):match("reply"),
+    "r in the popup closes it and opens the reply box")
+  press("q")
+  check(vim.api.nvim_buf_get_name(0):match("^trail://diff/") and #updates == 3, "cancelling the reply posts nothing")
+  pwin = popup_open()
+  press("q")
+  check(pwin and not vim.api.nvim_win_is_valid(pwin) and vim.api.nvim_buf_get_name(0):match("^trail://diff/"),
+    "q closes the popup and returns to the diff")
   vim.api.nvim_feedkeys("]t", "x", false)
   check(wait_diff_line("func hashOf(h string) string { return strings.ToLower(h) }") and current_step_line():match("hashOf"),
     "]t goes to the next thread, in the next step")
   local hash_line = "func hashOf(h string) string { return strings.ToLower(h) }"
-  check(notes_text(hash_line):match("✓ resolved · carol: lowercase ok%?  <CR> opens"), "a resolved thread takes one line: " .. notes_text(hash_line))
-  vim.api.nvim_feedkeys("\r", "x", false)
-  check(notes_text(hash_line):match("<CR> folds") and notes_text(hash_line):match("carol · 2026"), "<CR> opens a resolved thread")
-  vim.api.nvim_feedkeys("\r", "x", false)
-  check(notes_text(hash_line):match("<CR> opens"), "<CR> folds it again")
+  check(notes_text(hash_line):match("✓ resolved · carol: lowercase ok%?  <CR> opens"), "a resolved thread takes one line too: " .. notes_text(hash_line))
+  pwin, ptext, ptitle = popup_open()
+  check(pwin and ptitle:match("✓ resolved") and ptext:match("carol · 2026"), "<CR> opens a resolved thread the same way")
+  press("<Esc>")
   vim.api.nvim_feedkeys("]t", "x", false)
   vim.wait(300)
   check(vim.api.nvim_get_current_line() == hash_line, "]t stops at the last thread of the path")
@@ -1214,10 +1234,15 @@ do
   check(wait_diff_line("\treturn hashOf(h) == h"), "[t goes back to the previous thread")
   vim.api.nvim_feedkeys("[t", "x", false)
   check(wait_diff_line("\treturn VerifyHash(user)") and current_step_line():match("Login"), "[t continues into the step before")
-  local long = notes_on(vim.api.nvim_get_current_buf(), "\treturn VerifyHash(user)") or {}
-  check(#long >= 4 and vim.iter(long):all(function(l)
+  local summary = notes_text("\treturn VerifyHash(user)")
+  check(not summary:match("\n") and summary:match("…") and vim.fn.strdisplaywidth(summary) < 100,
+    "a long comment is cut short on its line: " .. summary)
+  pwin, ptext = popup_open()
+  local plines = vim.split(ptext, "\n")
+  check(pwin and #plines >= 4 and vim.iter(plines):all(function(l)
     return vim.fn.strdisplaywidth(vim.trim(l)) <= 84
-  end), "a long comment wraps at 80 columns: " .. vim.inspect(long))
+  end), "and wraps at 80 columns in the popup: " .. ptext)
+  press("q")
   vim.api.nvim_feedkeys("-", "x", false)
   check(vim.wait(3000, function()
     return vim.api.nvim_get_current_buf() == prbuf

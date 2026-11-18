@@ -36,7 +36,7 @@ local screens = {
     } },
     { "View", {
       { "t", "side by side" }, { "o", "whole file" }, { "K", "peek function" }, { "gd", "open in Neovim" },
-      { "<CR>", "open resolved thread" },
+      { "<CR>", "open thread" },
     } },
   },
   send = {

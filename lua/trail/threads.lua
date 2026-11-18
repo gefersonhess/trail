@@ -4,7 +4,6 @@ local help = require("trail.help")
 local M = {}
 
 local list = {}
-local opened = {}
 local ns = vim.api.nvim_create_namespace("trail.threads")
 local screen
 
@@ -50,64 +49,104 @@ local function first_line(text)
   return (kind and kind .. ": " or "") .. line
 end
 
----Virtual-line notes for the threads on the file shown.
+---A thread's comments as rows of { text, highlight } chunks: each author and
+---date, then the text wrapped, with the kind as a tag.
+local function rows_of(t)
+  local rows = {}
+  for i, c in ipairs(t.comments) do
+    if i > 1 then
+      table.insert(rows, { { "", "Normal" } })
+    end
+    table.insert(rows, { { c.author, "TrailThreadAuthor" }, { " · " .. (c.created_at or ""):sub(1, 10), "TrailThread" } })
+    local kind, rest = comments.split_kind(c.body)
+    for k, body_line in ipairs(comments.wrap(rest)) do
+      if k == 1 and kind then
+        table.insert(rows, { { "  ", "Normal" }, { kind, comments.highlight(kind) }, { "  " .. body_line, "Normal" } })
+      else
+        table.insert(rows, { { (kind and string.rep(" ", #kind + 2) or "") .. "  " .. body_line, "Normal" } })
+      end
+    end
+  end
+  return rows
+end
+
+---One line per thread under its line in the diff; <CR> opens the whole
+---thread in a popup.
 function M.notes(old_path, new_path)
   local notes = {}
   for _, t in ipairs(list) do
     if in_file(t, old_path, new_path) then
-      local rows = {}
+      local first = t.comments[1] or { author = "?", body = "" }
+      local summary = first_line(first.body)
+      if vim.fn.strdisplaywidth(summary) > 60 then
+        summary = vim.fn.strcharpart(summary, 0, 59) .. "…"
+      end
+      local more = #t.comments > 1 and string.format("  · %d comments", #t.comments) or ""
       local block = "TrailThreadBlock"
-      if t.resolved and not opened[t.id] then
-        local first = t.comments[1] or { author = "?", body = "" }
-        local more = #t.comments > 1 and string.format("  (%d comments)", #t.comments) or ""
-        table.insert(rows, {
-          { "✓ resolved", "TrailThreadResolved" },
-          { " · " .. first.author .. ": " .. first_line(first.body) .. more .. "  <CR> opens", "TrailThread" },
-        })
-      else
-        if t.resolved then
-          table.insert(rows, { { "✓ resolved", "TrailThreadResolved" }, { "  <CR> folds", "TrailThread" } })
-        end
-        for i, c in ipairs(t.comments) do
-          if i > 1 then
-            table.insert(rows, { { "", "TrailThread" } })
-          end
-          table.insert(rows, {
-            { c.author, "TrailThreadAuthor" },
-            { " · " .. (c.created_at or ""):sub(1, 10), "TrailThread" },
-          })
-          local kind, rest = comments.split_kind(c.body)
-          for k, body_line in ipairs(comments.wrap(rest)) do
-            if k == 1 and kind then
-              table.insert(rows, { { "  ", "Normal" }, { kind, comments.highlight(kind) }, { "  " .. body_line, "Normal" } })
-            else
-              table.insert(rows, { { (kind and string.rep(" ", #kind + 2) or "") .. "  " .. body_line, "Normal" } })
-            end
-          end
-        end
-      end
-      local width = 0
-      for _, row in ipairs(rows) do
-        local w = 0
-        for _, chunk in ipairs(row) do
-          w = w + vim.fn.strdisplaywidth(chunk[1])
-        end
-        row.width = w
-        width = math.max(width, w)
-      end
-      local virt = {}
-      for _, row in ipairs(rows) do
-        local line = { { "┃ ", { "TrailThread", block } } }
-        for _, chunk in ipairs(row) do
-          table.insert(line, { chunk[1], { chunk[2], block } })
-        end
-        table.insert(line, { string.rep(" ", width - row.width + 2), block })
-        table.insert(virt, line)
-      end
-      table.insert(notes, { side = t.side, line = t.line, lines = virt })
+      local mark = t.resolved and { "✓ resolved", "TrailThreadResolved" } or { "●", "TrailThreadAuthor" }
+      table.insert(notes, { side = t.side, line = t.line, lines = { {
+        { "┃ ", { "TrailThread", block } },
+        { mark[1], { mark[2], block } },
+        { (t.resolved and " · " or " ") .. first.author .. ": ", { "TrailThread", block } },
+        { summary, { "Normal", block } },
+        { more .. "  <CR> opens ", { "TrailThread", block } },
+      } } })
     end
   end
   return notes
+end
+
+---Opens a thread in a popup under the cursor: every comment in full, `r`
+---to reply, `q` or <Esc> to close.
+function M.show(t, reply)
+  local rows = rows_of(t)
+  local lines, hls, width = {}, {}, 0
+  for _, row in ipairs(rows) do
+    local text, col = " ", 1
+    for _, chunk in ipairs(row) do
+      table.insert(hls, { #lines, col, col + #chunk[1], chunk[2] })
+      text = text .. chunk[1]
+      col = col + #chunk[1]
+    end
+    table.insert(lines, text .. " ")
+    width = math.max(width, vim.fn.strdisplaywidth(text) + 1)
+  end
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+  for _, h in ipairs(hls) do
+    vim.api.nvim_buf_set_extmark(buf, ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
+  end
+  local where = string.format(" %s %s:%d ", t.resolved and "✓ resolved ·" or "●", t.path, t.line ~= vim.NIL and t.line or t.original_line)
+  local win = vim.api.nvim_open_win(buf, true, {
+    -- Below the thread's own line, which stays in sight.
+    relative = "cursor",
+    row = 2,
+    col = 0,
+    width = math.min(math.max(width, vim.fn.strdisplaywidth(where) + 2), vim.o.columns - 4),
+    height = math.min(#lines, math.max(5, vim.o.lines - 8)),
+    style = "minimal",
+    border = "rounded",
+    title = { { where, t.resolved and "TrailThreadResolved" or "TrailThreadAuthor" } },
+    title_pos = "left",
+    footer = " r reply  q close ",
+    footer_pos = "left",
+  })
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+  for _, key in ipairs({ "q", "<Esc>" }) do
+    vim.keymap.set("n", key, close, { buffer = buf, nowait = true })
+  end
+  vim.keymap.set("n", "r", function()
+    close()
+    reply(t)
+  end, { buffer = buf, nowait = true })
+  vim.api.nvim_create_autocmd("WinLeave", { buffer = buf, once = true, callback = close })
+  return win
 end
 
 ---The thread on a line of the file shown, if any.
@@ -119,16 +158,6 @@ function M.at(old_path, new_path, side, line)
   end
 end
 
----Opens or folds the resolved thread on a line; returns whether there was one.
-function M.toggle_at(old_path, new_path, side, line)
-  for _, t in ipairs(list) do
-    if t.resolved and in_file(t, old_path, new_path) and t.side == side and t.line == line then
-      opened[t.id] = not opened[t.id] or nil
-      return true
-    end
-  end
-  return false
-end
 
 local function render()
   local ctx = screen.ctx
