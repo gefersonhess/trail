@@ -1044,9 +1044,9 @@ do
   end
   local pr_threads = {
     { id = "T4", path = "auth/auth.go", side = "new", line = 9, resolved = false, outdated = false, diff_hunk = "",
-      comments = { comment("alice", "start here") } },
+      comments = { comment("alice", "start here: " .. string.rep("every word of this note should wrap ", 6)) } },
     { id = "T1", path = "auth/auth.go", side = "new", line = 13, resolved = false, outdated = false, diff_hunk = "",
-      comments = { comment("alice", "why compare?"), comment("bob", "it guards") } },
+      comments = { comment("alice", "why compare?"), comment("bob", "**question:** it guards\r\nreally") } },
     { id = "T2", path = "auth/auth.go", side = "new", line = 16, resolved = true, outdated = false, diff_hunk = "",
       comments = { comment("carol", "lowercase ok?") } },
     { id = "T3", path = "auth/auth.go", side = "old", line = vim.NIL, original_line = 6, resolved = false, outdated = true,
@@ -1195,6 +1195,9 @@ do
   end
   check(notes_text("\treturn hashOf(h) == h"):match("alice · 2026%-11%-17.*why compare%?.*bob · 2026%-11%-17.*it guards"),
     "a thread shows under its line with each comment's author and date: " .. notes_text("\treturn hashOf(h) == h"))
+  local guarded = notes_text("\treturn hashOf(h) == h")
+  check(guarded:match("question  it guards") and guarded:match("really") and not guarded:match("\r") and not guarded:match("%*%*"),
+    "a comment's kind prefix shows as a tag, without markdown or carriage returns: " .. guarded)
   vim.api.nvim_feedkeys("]t", "x", false)
   check(wait_diff_line("func hashOf(h string) string { return strings.ToLower(h) }") and current_step_line():match("hashOf"),
     "]t goes to the next thread, in the next step")
@@ -1211,6 +1214,10 @@ do
   check(wait_diff_line("\treturn hashOf(h) == h"), "[t goes back to the previous thread")
   vim.api.nvim_feedkeys("[t", "x", false)
   check(wait_diff_line("\treturn VerifyHash(user)") and current_step_line():match("Login"), "[t continues into the step before")
+  local long = notes_on(vim.api.nvim_get_current_buf(), "\treturn VerifyHash(user)") or {}
+  check(#long >= 4 and vim.iter(long):all(function(l)
+    return vim.fn.strdisplaywidth(vim.trim(l)) <= 84
+  end), "a long comment wraps at 80 columns: " .. vim.inspect(long))
   vim.api.nvim_feedkeys("-", "x", false)
   check(vim.wait(3000, function()
     return vim.api.nvim_get_current_buf() == prbuf
@@ -1260,9 +1267,25 @@ do
     return submitted ~= nil
   end) and #submitted.comments == 0 and submitted.event == "APPROVE", "a second submit leaves out comments already sent")
   vim.wait(200)
+  local dstore = require("trail.state")
+  table.insert(dstore.comments(), { id = "old", kind = "question", body = "it guards\nreally", file = "auth/auth.go", side = "new",
+    line = 13, text = "\treturn hashOf(h) == h", sent = true })
+  table.insert(dstore.comments(), { id = "unsent", kind = "question", body = "it guards\nreally", file = "auth/auth.go", side = "new",
+    line = 13, text = "\treturn hashOf(h) == h" })
+  dstore.save()
+  vim.cmd.tabnext()
+  vim.cmd("Trail #7")
+  check(vim.wait(5000, function()
+    return not vim.iter(require("trail.state").comments()):any(function(c)
+      return c.id == "old"
+    end)
+  end), "a sent comment GitHub already has as a thread comment is dropped once threads load")
+  check(vim.iter(require("trail.state").comments()):any(function(c)
+    return c.id == "unsent"
+  end), "an unsent comment with the same text stays")
   vim.cmd("Trail https://github.com/owner/repo/pull/7/files")
   check(vim.wait(5000, function()
-    return #pr_numbers == 2 and pr_numbers[2] == 7
+    return #pr_numbers == 3 and pr_numbers[3] == 7
   end) and vim.wait(5000, function()
     return (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or ""):match("^#7 Add hashing · alice → main$") ~= nil
   end), "a pull request's url opens it like #7, and so does #7 with spaces around it: " .. vim.inspect(pr_numbers))
