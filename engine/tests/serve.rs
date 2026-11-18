@@ -2923,3 +2923,39 @@ fn a_thread_gets_a_reply_and_is_resolved_or_reopened_on_the_pull_request_s_host(
         "GitHub's error comes back: {response}"
     );
 }
+
+#[test]
+fn open_pull_requests_are_listed_with_those_asking_for_your_review_first() {
+    let tools = Repo::new();
+    let script = tools.path().join("gh");
+    let all = r#"[{"number":3,"title":"Fix docs","author":{"login":"bob"},"headRefName":"docs","isDraft":false},{"number":7,"title":"Add hashing","author":{"login":"alice"},"headRefName":"hashing","isDraft":true},{"number":9,"title":"Old","author":null,"headRefName":"old","isDraft":false}]"#;
+    let mine = r#"[{"number":7,"title":"Add hashing","author":{"login":"alice"},"headRefName":"hashing","isDraft":true}]"#;
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  'pr list --state open --limit 100 --json number,title,author,headRefName,isDraft --search review-requested:@me') echo '{mine}' ;;\n  'pr list --state open --limit 100 --json number,title,author,headRefName,isDraft') echo '{all}' ;;\n  *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&script)
+        .status()
+        .unwrap();
+    let responses = serve_with_env(
+        &[
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "pull_requests", "params": { "repo": tools.path() } }),
+        ],
+        &[("TRAIL_GH", script.to_str().unwrap())],
+    );
+    assert_eq!(
+        responses[0]["result"],
+        json!([
+            { "number": 7, "title": "Add hashing", "author": "alice", "head_ref_name": "hashing", "is_draft": true, "review_requested": true },
+            { "number": 3, "title": "Fix docs", "author": "bob", "head_ref_name": "docs", "is_draft": false, "review_requested": false },
+            { "number": 9, "title": "Old", "author": "ghost", "head_ref_name": "old", "is_draft": false, "review_requested": false },
+        ]),
+        "{}",
+        responses[0]
+    );
+}
