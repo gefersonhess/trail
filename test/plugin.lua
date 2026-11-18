@@ -105,7 +105,11 @@ end
 
 local floating, keys, closed = help_lines()
 check(floating, "? opens a floating window in the list")
-check(keys:match("<CR>%s+Enter the path") and keys:match("R%s+Refresh") and keys:match("q%s+Quit trail") and keys:match("%?%s+Show keys"), "list keys are listed: " .. keys)
+check(keys:match("^ Open\n") and keys:match("\n Review\n") and keys:match("\n Screen\n"),
+  "the paths screen's keys are grouped: " .. keys)
+check(keys:match("<CR>%s+open the line") and keys:match("1%-9%s+enter path") and keys:match("R%s+refresh") and keys:match("q%s+quit"),
+  "with short labels, and the path numbers as one range: " .. keys)
+check(not keys:match("%?%s"), "? does not list itself")
 check(closed and vim.api.nvim_get_current_buf() == buf, "<Esc> closes the keys window and returns to the list")
 check(text:match("%? keys"), "list header hints at ?")
 
@@ -223,9 +227,13 @@ check(vim.bo[ubuf].syntax == "off" and not vim.treesitter.highlighter.active[ubu
 check(vim.wo[uwin].winbar:match("%? keys"), "diff winbar hints at ?")
 local dfloating, dkeys, dclosed = help_lines()
 check(dfloating and dclosed, "? opens and closes a keys window in the diff")
-for _, pattern in ipairs({ "%- q%s+Back to the paths screen", "%]s%s+Next step", "%[s%s+Previous step", "gp%s+Switch path", "%[h%s+Previous change", "%]h%s+Next change", "o%s+Show or fold unchanged code", "t%s+Toggle unified and side%-by%-side" }) do
+for _, pattern in ipairs({ "^ Move\n", "\n Review\n", "\n View\n", "%]s %[s%s+step", "%]c %[c%s+change", "%]h %[h%s+hunk",
+  "%]t %[t%s+thread", "%- q%s+back to paths", "cb cq cn%s+as kind", "ce cd%s+edit / delete", "t%s+side by side",
+  "o%s+whole file", "gd%s+open in Neovim" }) do
   check(dkeys:match(pattern), "diff keys list " .. pattern .. ": " .. dkeys)
 end
+check(dkeys:match("\n   %S.-   %S"), "two columns when there is room: " .. dkeys)
+check(not dkeys:match("Other"), "every diff key has a group and a label")
 check(vim.api.nvim_get_current_win() == uwin, "focus returns to the diff")
 local old_login, new_login = row_with(ubuf, "func Login(u string) bool {"), row_with(ubuf, "func Login(user string) bool {")
 check(old_login and new_login and old_login < new_login, "old lines come before new lines")
@@ -250,7 +258,7 @@ end
 check(reviewed(uwin, old_login) and reviewed(uwin, new_login), "a hunk seen by scrolling is marked in the gutter")
 check(not reviewed(uwin, urow), "a line outside any hunk is not marked")
 check(tree_line("● Login "):match("^✓"), "the seen step is done in the tree")
-check(dkeys:match("mh%s+Mark the hunk under the cursor as reviewed"), "diff keys list mh: " .. dkeys)
+check(dkeys:match("mh%s+mark hunk"), "diff keys list mh: " .. dkeys)
 vim.api.nvim_win_set_cursor(uwin, { new_login, 0 })
 vim.api.nvim_feedkeys("mh", "x", false)
 check(not reviewed(uwin, old_login) and not reviewed(uwin, new_login), "mh unmarks a reviewed hunk, all its rows")

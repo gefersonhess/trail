@@ -54,6 +54,7 @@ What was decided while building trail, and why. `design.md` describes how trail 
   - A tab per definition (#7): tabs piled up and jumps still depended on the user's config.
 
   The separate Neovim runs without `$NVIM`, so plugins that hand files to a parent Neovim leave the review alone. It also maps `<Esc>` in the terminal buffer, so a global "leave terminal mode" mapping doesn't swallow it, and skips swap files. Removed lines still open read-only in a float, since there is no file to edit.
+- **`?` shows a screen's keys grouped, paired and short (#60):** a flat list sorted by key split pairs like `]c` and `[c` apart and read badly. Each screen has a short table of groups (Move, Review, View…) and labels; keys sharing a group and label share a line (`]s [s  step`, `cb cq cn  as kind`), in two columns when there is room. The popup still starts from the keys actually mapped on the buffer, so it never lists one that isn't there, and a mapped key missing from the table shows under Other with its description rather than disappearing.
 - **One review tab:** the paths screen, a path and the send screen take turns in a single tab. Going back cancels any diff still loading for that window.
 
 ## Engine
