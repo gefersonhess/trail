@@ -291,6 +291,8 @@ local function toggle_seen(ids)
   return not reviewed
 end
 
+local reply_to, load_threads
+
 local function show_target(target, is_node, win, keys, after)
   local review = state.review
   -- Context nodes can live in files the change does not touch.
@@ -346,6 +348,15 @@ local function show_target(target, is_node, win, keys, after)
     local function add_default()
       comments.add(comments.default_kind(), current, params.old_path, params.new_path, changed)
     end
+    table.insert(all_keys, { "r", function()
+      local here = current and current.line_at_cursor()
+      local t = here and threads.at(params.old_path, params.new_path, here.side, here.line)
+      if t then
+        reply_to(t)
+      else
+        vim.notify("trail: no review thread on this line", vim.log.levels.INFO)
+      end
+    end, "Reply to the review thread on this line, or resolve or reopen it" })
     table.insert(all_keys, { "<CR>", function()
       local here = current and current.line_at_cursor()
       if here and threads.toggle_at(params.old_path, params.new_path, here.side, here.line) then
@@ -613,8 +624,47 @@ local function enter(path, step, target)
   pathview.open(path_context(), path, step or store.position(path.id) or 1, target)
 end
 
+---Replies to a review thread, or resolves or reopens it, in the comment box:
+---<Tab> picks the action, and any text written is posted as a reply.
+reply_to = function(t)
+  local kinds = t.resolved and { "reply", "reopen" } or { "reply", "resolve" }
+  compose.open({
+    kind = "reply",
+    kinds = kinds,
+    highlight = function(action)
+      return action == "resolve" and "TrailAddText" or action == "reopen" and "WarningMsg" or "TrailThreadAuthor"
+    end,
+    footer = " <C-s> post to GitHub  <Tab> " .. kinds[2] .. " too  q cancel ",
+  }, function(body, action)
+    local change = action ~= "reply" and action or nil
+    if body == "" and not change then
+      return
+    end
+    local replying = state
+    engine.request("update_thread", {
+      repo = state.repo,
+      url = state.pr_url,
+      number = state.pr,
+      thread = t.id,
+      body = body,
+      state = change,
+    }, function(err)
+      if err then
+        vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+        return
+      end
+      local done = body ~= "" and (change and "replied and " .. change .. "d" or "replied") or change .. "d"
+      vim.notify(string.format("trail: %s the thread on %s:%d", done, t.path, t.line ~= vim.NIL and t.line or t.original_line), vim.log.levels.INFO)
+      if state == replying then
+        load_threads()
+      end
+    end)
+  end)
+end
+
 local function open_threads()
   threads.open_list({
+    reply = reply_to,
     title = state.title,
     window = review_window,
     home = home,
@@ -632,7 +682,7 @@ local function open_threads()
 end
 
 ---Reads the pull request's review threads, and redraws what shows them.
-local function load_threads()
+load_threads = function()
   if not state.pr_url then
     return
   end

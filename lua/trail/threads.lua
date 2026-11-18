@@ -102,6 +102,15 @@ function M.notes(old_path, new_path)
   return notes
 end
 
+---The thread on a line of the file shown, if any.
+function M.at(old_path, new_path, side, line)
+  for _, t in ipairs(list) do
+    if in_file(t, old_path, new_path) and t.side == side and t.line == line then
+      return t
+    end
+  end
+end
+
 ---Opens or folds the resolved thread on a line; returns whether there was one.
 function M.toggle_at(old_path, new_path, side, line)
   for _, t in ipairs(list) do
@@ -125,7 +134,7 @@ local function render()
   end
   local title = "Review threads of " .. ctx.title
   add(title, nil, { { "Title", 0, #title } })
-  add("<CR> goes to a thread  ·  ]t [t move between threads inside a path  ·  - back", nil, { { "Comment", 0, -1 } })
+  add("<CR> goes to a thread  ·  r replies  ·  ]t [t move between threads inside a path  ·  - back", nil, { { "Comment", 0, -1 } })
   local by_file, order = {}, {}
   for _, t in ipairs(list) do
     if not by_file[t.path] then
@@ -180,7 +189,7 @@ local function render()
 end
 
 ---Opens the list of every review thread, outdated ones included.
----@param ctx { title: string, window: fun(): integer, home: fun(), jump: fun(thread: table) }
+---@param ctx { title: string, window: fun(): integer, home: fun(), jump: fun(thread: table), reply: fun(thread: table) }
 function M.open_list(ctx)
   if not (screen and vim.api.nvim_buf_is_valid(screen.buf)) then
     local buf = vim.api.nvim_create_buf(false, true)
@@ -203,6 +212,12 @@ function M.open_list(ctx)
       end
       screen.ctx.jump(t)
     end, "Go to the thread")
+    map("r", function()
+      local t = screen.items[vim.api.nvim_win_get_cursor(0)[1]]
+      if t then
+        screen.ctx.reply(t)
+      end
+    end, "Reply to the thread, or resolve or reopen it")
     map("-", function()
       screen.ctx.home()
     end, "Back to the paths screen")
