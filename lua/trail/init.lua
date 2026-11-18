@@ -358,10 +358,11 @@ local function show_target(target, is_node, win, keys, after)
     end, "Reply to the review thread on this line, or resolve or reopen it" })
     table.insert(all_keys, { "<CR>", function()
       local here = current and current.line_at_cursor()
-      if here and threads.toggle_at(params.old_path, params.new_path, here.side, here.line) then
-        annotate()
+      local t = here and threads.at(params.old_path, params.new_path, here.side, here.line)
+      if t then
+        threads.show(t, reply_to)
       end
-    end, "Open or fold the resolved thread on this line" })
+    end, "Open the review thread on this line" })
     table.insert(all_keys, { "cc", add_default, "Add a comment on this line (kind from vim.g.trail_default_comment_kind)" })
     table.insert(all_keys, { "cc", add_default, "Add a comment on the selected lines", "x" })
     table.insert(all_keys, { "ce", function()

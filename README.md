@@ -34,7 +34,7 @@ The plugin looks for `engine/target/release/trail`, then `debug`, then `trail` o
 :Trail #123
 ```
 
-`#123`, or the pull request's URL, reviews a GitHub pull request: `gh` finds its base and head, both are fetched, and the review runs locally like a branch. The pull request's review threads show under their lines (resolved ones folded to one line), and `T` lists them all, outdated ones included. `P` on the send screen submits it back as one GitHub review: an overall comment and a verdict (comment, approve, request changes, or draft for a pending review) written in a box, plus every comment not sent before, inline where GitHub's diff has the line and listed in the overall comment otherwise.
+`#123`, or the pull request's URL, reviews a GitHub pull request: `gh` finds its base and head, both are fetched, and the review runs locally like a branch. The pull request's review threads show as one line under their lines, `<CR>` opens one in a popup, and `T` lists them all, outdated ones included. `P` on the send screen submits it back as one GitHub review: an overall comment and a verdict (comment, approve, request changes, or draft for a pending review) written in a box, plus every comment not sent before, inline where GitHub's diff has the line and listed in the overall comment otherwise.
 
 The review opens in its own tab, on the overview: the pull request's title, author and description (folded), a progress bar over every hunk, what needs your attention (unresolved threads, your blocking comments, changes no test reaches), and the paths with their progress. The changed test files, hunks in no path and hidden files are folded below; `<CR>` opens any folded line. Working out the paths runs in the background and can take a minute on a big change.
 
@@ -64,7 +64,7 @@ Inside a path (tree on top, diff below)
 | `]c` `[c` | Next / previous change of this path, across steps |
 | `]h` `[h` | Next / previous hunk in the file shown |
 | `]t` `[t` | Next / previous review thread of this path |
-| `<CR>` in the diff | Open or fold the resolved thread on the line |
+| `<CR>` in the diff | Open the review thread on the line in a popup |
 | `r` | Reply to the review thread on the line (also in the `T` list); `<Tab>` resolves or reopens it too |
 | `<CR>` in the tree | Open a fold, show a step or function |
 | `a` / `c` in the tree | Show every function on the way / fold back to the changes |
