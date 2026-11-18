@@ -1033,8 +1033,14 @@ do
     { id = "T3", path = "auth/auth.go", side = "old", line = vim.NIL, original_line = 6, resolved = false, outdated = true,
       diff_hunk = "@@ -5,3 +5,1 @@\n func Login(u string) bool {\n-\tGone()", comments = { comment("dave", "gone?") } },
   }
+  local updates = {}
   eng.request = function(method, params, cb)
-    if method == "review_threads" then
+    if method == "update_thread" then
+      table.insert(updates, params)
+      return vim.schedule(function()
+        cb(nil, {})
+      end)
+    elseif method == "review_threads" then
       thread_reads = thread_reads + 1
       return vim.schedule(function()
         cb(nil, pr_threads)
@@ -1074,16 +1080,57 @@ do
     and ttext:match("\n +~6  outdated  dave  gone%?") and ttext:match("\n +16  ✓ +carol  lowercase ok%?")
     and ttext:match("\n +13  ● +alice  why compare%?  · 2 comments") and ttext:match("%-\tGone%(%)"),
     "T lists every thread, outdated ones with their old code: " .. ttext)
-  local trow
+  local trow, outdated_row
   for k, l in ipairs(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false)) do
     if l:match("why compare") then
       trow = k
+    elseif l:match("gone%?") then
+      outdated_row = k
     end
   end
+  local function write_reply(lines, tabs)
+    local box = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(box, 0, -1, false, lines)
+    for _ = 1, tabs do
+      vim.fn.maparg("<Tab>", "n", false, true).callback()
+    end
+    vim.fn.maparg("<C-s>", "n", false, true).callback()
+  end
+  vim.api.nvim_win_set_cursor(0, { outdated_row, 0 })
+  vim.api.nvim_feedkeys("r", "x", false)
+  check(vim.inspect(vim.api.nvim_win_get_config(0).title):match("reply"), "r in the list opens the box on reply")
+  write_reply({ "Still needed, see Tidy." }, 0)
+  check(vim.wait(3000, function()
+    return #updates == 1
+  end) and updates[1].thread == "T3" and updates[1].body == "Still needed, see Tidy." and updates[1].state == nil
+    and updates[1].url == "https://github.com/owner/repo/pull/7" and updates[1].number == 7,
+    "an outdated thread can be replied to from the list: " .. vim.inspect(updates))
+  check(vim.wait(3000, function()
+    return thread_reads == 2
+  end), "the threads are read again after a reply")
+  thread_reads = 1
   vim.api.nvim_win_set_cursor(0, { trow, 0 })
   vim.api.nvim_feedkeys("\r", "x", false)
   check(wait_diff_line("\treturn hashOf(h) == h") and current_step_line():match("VerifyHash"),
     "<CR> on a thread opens its step at its line")
+  vim.api.nvim_feedkeys("r", "x", false)
+  write_reply({ "Fair, it guards.", "Resolving." }, 1)
+  check(vim.wait(3000, function()
+    return #updates == 2
+  end) and updates[2].thread == "T1" and updates[2].body == "Fair, it guards.\nResolving." and updates[2].state == "resolve",
+    "r on a thread's line replies, and <Tab> resolves it too: " .. vim.inspect(updates[2]))
+  check(vim.api.nvim_buf_get_name(0):match("^trail://diff/"), "the diff has the focus again after replying")
+  vim.api.nvim_feedkeys("r", "x", false)
+  write_reply({}, 1)
+  check(vim.wait(3000, function()
+    return #updates == 3
+  end) and updates[3].body == "" and updates[3].state == "resolve", "resolving needs no text")
+  vim.api.nvim_feedkeys("r", "x", false)
+  write_reply({}, 0)
+  vim.wait(300)
+  check(#updates == 3, "an empty reply posts nothing")
+  vim.wait(300)
+  thread_reads = 1
   local dbuf = vim.api.nvim_get_current_buf()
   local function notes_text(text)
     return table.concat(notes_on(vim.api.nvim_get_current_buf(), text) or {}, "\n")
