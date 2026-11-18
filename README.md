@@ -38,7 +38,7 @@ The plugin looks for `engine/target/release/trail`, then `debug`, then `trail` o
 
 The review opens in its own tab, on the paths screen: the paths, the changes no test reaches, the changed test files grouped by package, and hunks in no path. Working out the paths runs in the background and can take a minute on a big change.
 
-Progress is per function: a hunk is seen once its last line has been on screen, and a function is done when all its hunks are seen, in every path that has it. Review state (seen hunks, positions, comments, verdict) lives in `.git/trail/<review>.json` and survives new commits, because hunk ids hash their content and comments find their line again by its text.
+Progress is per function: a hunk is seen once its last line has been on screen, or when you mark it with `mh`, and a function is done when all its hunks are seen, in every path that has it. Reviewed hunks show a `▎` between the gutter and the code. Review state (seen hunks, positions, comments, verdict) lives in `.git/trail/<review>.json` and survives new commits, because hunk ids hash their content and comments find their line again by its text.
 
 Press `?` anywhere for the keys that work there.
 
@@ -69,6 +69,7 @@ Inside a path (tree on top, diff below)
 | `K` | Show the function's code in a popup |
 | `gd` | Open the definition in a separate Neovim with your config |
 | `mr` | Mark the path as reviewed |
+| `mh` | Mark the hunk under the cursor (or the selected hunks) as reviewed, or unmark it |
 | `-` | Back to the paths screen |
 
 Comments, in a diff
@@ -98,6 +99,7 @@ Send screen
 | --- | --- | --- |
 | `vim.g.trail_layout` | `"unified"` | `"side_by_side"` to start side by side |
 | `vim.g.trail_fold_unchanged` | `true` | `false` to start with whole files |
+| `vim.g.trail_seen_on_scroll` | `true` | `false` to mark hunks as seen only by hand (`mh`, `mr`) |
 | `vim.g.trail_default_comment_kind` | `"blocking"` | Kind `cc` starts with |
 | `vim.g.trail_ignore` | `{}` | Gitignore-style patterns for files to leave out |
 | `vim.g.trail_ignore_defaults` | `true` | Hide `go.sum`, `Cargo.lock`, generated Go files and the root `vendor/` and `target/` |
@@ -105,7 +107,7 @@ Send screen
 
 Environment: `TRAIL_GOPLS`, `TRAIL_RUST_ANALYZER`, `TRAIL_DIFFT` and `TRAIL_GH` override the programs used; `TRAIL_LSP_TIMEOUT` (60 s), `TRAIL_IMPACT_LIMIT` (2000 functions) and `TRAIL_IMPACT_TIMEOUT` (120 s) cap the analysis.
 
-Highlight groups: `TrailAdd`, `TrailDelete` (markers), `TrailAddText`, `TrailDeleteText` (changed tokens), `TrailContext` (unchanged text), `TrailFiller`, `TrailBlocking`, `TrailQuestion`, `TrailNit` and their `…Block` backgrounds for saved comments.
+Highlight groups: `TrailAdd`, `TrailDelete` (markers), `TrailAddText`, `TrailDeleteText` (changed tokens), `TrailContext` (unchanged text), `TrailReviewed` (the gutter mark on reviewed hunks), `TrailFiller`, `TrailBlocking`, `TrailQuestion`, `TrailNit` and their `…Block` backgrounds for saved comments.
 
 ## Development
 

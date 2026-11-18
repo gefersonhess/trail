@@ -141,8 +141,16 @@ local function has_mark(b, row, pred)
     return pred(m[4], m[3])
   end)
 end
-local function gutter(win, row)
+local function raw_gutter(win, row)
   return vim.api.nvim_eval_statusline(vim.wo[win].statuscolumn, { winid = win, use_statuscol_lnum = row }).str
+end
+---The gutter's numbers and marker, without the reviewed-hunk column.
+local function gutter(win, row)
+  return (raw_gutter(win, row):gsub("▎$", " "))
+end
+---Whether the gutter marks the row as part of a reviewed hunk.
+local function reviewed(win, row)
+  return raw_gutter(win, row):match("▎$") ~= nil
 end
 
 local function has_span(b, row, hl, from, to)
@@ -215,6 +223,70 @@ check(old_login and gutter(uwin, old_login):match("^%s*5%s+%- $"), "removed line
 check(new_login and gutter(uwin, new_login):match("^%s+8 %+ $"), "added line has new number and +, got " .. gutter(uwin, new_login or 1))
 check(has_span(ubuf, old_login, "TrailDeleteText", 11, 12), "removed token u is highlighted")
 check(has_span(ubuf, new_login, "TrailAddText", 11, 15), "added token user is highlighted")
+
+-- mh marks the hunk under the cursor, or the selected hunks, as reviewed.
+local function tree_line(pattern)
+  for _, l in ipairs(vim.api.nvim_buf_get_lines((graph_buf()), 0, -1, false)) do
+    if l:match(pattern) then
+      return l
+    end
+  end
+end
+-- Headless Neovim fires no CursorMoved for keys fed in tests; a real session does.
+local function moved(keys)
+  vim.api.nvim_feedkeys(keys, "x", false)
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = ubuf })
+end
+check(reviewed(uwin, old_login) and reviewed(uwin, new_login), "a hunk seen by scrolling is marked in the gutter")
+check(not reviewed(uwin, urow), "a line outside any hunk is not marked")
+check(tree_line("● Login "):match("^✓"), "the seen step is done in the tree")
+check(dkeys:match("mh%s+Mark the hunk under the cursor as reviewed"), "diff keys list mh: " .. dkeys)
+vim.api.nvim_win_set_cursor(uwin, { new_login, 0 })
+vim.api.nvim_feedkeys("mh", "x", false)
+check(not reviewed(uwin, old_login) and not reviewed(uwin, new_login), "mh unmarks a reviewed hunk, all its rows")
+check(not tree_line("● Login "):match("^✓"), "the step is no longer done once its hunk is unmarked")
+moved("k")
+check(not reviewed(uwin, new_login), "moving the cursor does not mark a hunk unmarked by hand again")
+vim.api.nvim_feedkeys("mh", "x", false)
+check(reviewed(uwin, old_login) and reviewed(uwin, new_login) and tree_line("● Login "):match("^✓"), "mh marks the hunk again")
+vim.api.nvim_win_set_cursor(uwin, { urow, 0 })
+vim.api.nvim_feedkeys("mh", "x", false)
+check(reviewed(uwin, new_login), "mh on a line outside any hunk changes nothing")
+
+-- Selecting from Login's hunk down to VerifyHash's covers both.
+local verify_row = row_with(ubuf, '\treturn hashOf(h) == h')
+check(verify_row and reviewed(uwin, verify_row), "VerifyHash's hunk was seen by scrolling")
+vim.api.nvim_win_set_cursor(uwin, { new_login, 0 })
+vim.api.nvim_feedkeys("V" .. (verify_row - new_login) .. "jmh", "x", false)
+check(vim.fn.mode() == "n", "mh leaves visual mode")
+check(not reviewed(uwin, new_login) and not reviewed(uwin, verify_row) and not reviewed(uwin, old_login),
+  "mh on a selection unmarks every hunk in it")
+vim.api.nvim_win_set_cursor(uwin, { new_login, 0 })
+vim.api.nvim_feedkeys("V" .. (verify_row - new_login) .. "jmh", "x", false)
+check(reviewed(uwin, new_login) and reviewed(uwin, verify_row), "mh on a selection marks them again")
+vim.api.nvim_win_set_cursor(uwin, { new_login, 0 })
+vim.api.nvim_feedkeys("Vjmh", "x", false)
+check(not reviewed(uwin, new_login) and reviewed(uwin, verify_row), "a selection marks or unmarks only the hunks it touches")
+
+-- A hunk unmarked by hand counts as seen again once it has left the screen
+-- and come back, unless scrolling is told not to mark hunks.
+vim.api.nvim_feedkeys("o", "x", false)
+moved("G")
+check(vim.fn.line("w0") > new_login, "the end of the file scrolls Login out of view")
+moved("gg")
+check(reviewed(uwin, new_login), "scrolling back marks a hand-unmarked hunk once it has left the screen")
+vim.g.trail_seen_on_scroll = false
+vim.api.nvim_win_set_cursor(uwin, { new_login, 0 })
+vim.api.nvim_feedkeys("mh", "x", false)
+moved("G")
+moved("gg")
+check(not reviewed(uwin, new_login), "vim.g.trail_seen_on_scroll = false leaves hunks to be marked by hand")
+vim.api.nvim_win_set_cursor(uwin, { new_login, 0 })
+vim.api.nvim_feedkeys("mh", "x", false)
+check(reviewed(uwin, new_login), "mh marks hunks with scrolling turned off")
+vim.g.trail_seen_on_scroll = nil
+vim.api.nvim_feedkeys("o", "x", false)
+vim.api.nvim_win_set_cursor(uwin, { urow, 0 })
 local function peek_on(row, word)
   vim.api.nvim_win_set_cursor(0, { row, vim.api.nvim_get_current_line():len() > 0 and 0 or 0 })
   local col = vim.api.nvim_buf_get_lines(0, row - 1, row, false)[1]:find(word, 1, true)

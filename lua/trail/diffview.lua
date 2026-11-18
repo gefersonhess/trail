@@ -33,6 +33,7 @@ local function set_highlights()
   local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
   local fallback = vim.o.background == "light" and 0x24292f or 0xc9d1d9
   vim.api.nvim_set_hl(0, "TrailContext", { fg = normal.fg or fallback, default = true })
+  vim.api.nvim_set_hl(0, "TrailReviewed", { link = "Comment", default = true })
 end
 set_highlights()
 vim.api.nvim_create_autocmd("ColorScheme", { callback = set_highlights })
@@ -58,10 +59,15 @@ function M.statuscolumn()
     return g and g.unified and "            " or "       "
   end
   local mark = e.mark and string.format("%%#%s#%s%%*", e.mark == "+" and "TrailAdd" or "TrailDelete", e.mark) or " "
-  if g.unified then
-    return string.format("%4s %4s %s ", e.old or "", e.new or "", mark)
+  -- The column between the gutter and the code marks rows of reviewed hunks.
+  local reviewed = " "
+  if g.seen and g.hunks[vim.v.lnum] and vim.iter(g.hunks[vim.v.lnum]):any(g.seen) then
+    reviewed = "%#TrailReviewed#▎%*"
   end
-  return string.format("%4d %s ", e.old or e.new, mark)
+  if g.unified then
+    return string.format("%4s %4s %s%s", e.old or "", e.new or "", mark, reviewed)
+  end
+  return string.format("%4d %s%s", e.old or e.new, mark, reviewed)
 end
 
 local function by_line(changes)
@@ -330,15 +336,22 @@ function M.show(diff, opts)
     return "new", 1
   end
 
-  local hunk_ends = {}
+  -- The hunks on each row. Side-by-side panes share rows, so one map serves both.
+  local hunk_ends, hunks_at = {}, {}
   for _, p in ipairs(panes) do
     for _, h in ipairs(opts.hunks or {}) do
       local last
       for row, e in pairs(p.view.gutter) do
         local in_old = e.old and h.old.len > 0 and e.old >= h.old.start and e.old < h.old.start + h.old.len
         local in_new = e.new and h.new.len > 0 and e.new >= h.new.start and e.new < h.new.start + h.new.len
-        if (in_old or in_new) and (not last or row > last) then
-          last = row
+        if in_old or in_new then
+          hunks_at[row] = hunks_at[row] or {}
+          if not vim.list_contains(hunks_at[row], h.id) then
+            table.insert(hunks_at[row], h.id)
+          end
+          if not last or row > last then
+            last = row
+          end
         end
       end
       if last then
@@ -346,8 +359,13 @@ function M.show(diff, opts)
       end
     end
   end
+  for _, p in ipairs(panes) do
+    gutters[p.buf].hunks = hunks_at
+    gutters[p.buf].seen = opts.is_seen
+  end
 
-  ---Reports hunks whose last line is on screen, so the caller can count them as seen.
+  ---Reports hunks whose last line is on screen, so the caller can count them
+  ---as seen; an empty list when there are none.
   local function report_seen()
     if not opts.on_seen then
       return
@@ -363,9 +381,7 @@ function M.show(diff, opts)
         end
       end
     end
-    if #seen > 0 then
-      opts.on_seen(seen)
-    end
+    opts.on_seen(seen)
   end
   for _, p in ipairs(panes) do
     vim.api.nvim_create_autocmd({ "CursorMoved", "WinScrolled" }, {
@@ -478,6 +494,44 @@ function M.show(diff, opts)
     return side == "old" and diff.old_lines or diff.new_lines
   end
 
+  ---Redraws the gutter, after hunks were marked or unmarked as reviewed.
+  function view.redraw_marks()
+    for _, p in ipairs(panes) do
+      if vim.api.nvim_win_is_valid(p.win) and vim.api.nvim_win_get_buf(p.win) == p.buf then
+        vim.api.nvim__redraw({ win = p.win, statuscolumn = true })
+      end
+    end
+  end
+
+  ---The hunks on the cursor's row, or on any row of the visual selection.
+  local function hunks_under_cursor(visual)
+    local from, to = vim.fn.line("."), vim.fn.line(".")
+    if visual then
+      from, to = math.min(vim.fn.line("v"), to), math.max(vim.fn.line("v"), to)
+    end
+    local ids = {}
+    for row = from, to do
+      for _, id in ipairs(hunks_at[row] or {}) do
+        if not vim.list_contains(ids, id) then
+          table.insert(ids, id)
+        end
+      end
+    end
+    return ids
+  end
+
+  local function toggle_reviewed(visual)
+    local ids = hunks_under_cursor(visual)
+    if visual then
+      vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
+    end
+    if #ids == 0 then
+      vim.notify(visual and "trail: no hunk in the selection" or "trail: no hunk under the cursor", vim.log.levels.INFO)
+    elseif opts.on_toggle_seen then
+      opts.on_toggle_seen(ids)
+    end
+  end
+
   local function jump(dir)
     local p = pane_of(vim.api.nvim_get_current_win())
     local cur = vim.api.nvim_win_get_cursor(p.win)[1]
@@ -532,6 +586,12 @@ function M.show(diff, opts)
     map("[h", function()
       jump(-1)
     end, "Previous change")
+    map("mh", function()
+      toggle_reviewed(false)
+    end, "Mark the hunk under the cursor as reviewed, or unmark it")
+    map("mh", function()
+      toggle_reviewed(true)
+    end, "Mark the selected hunks as reviewed, or unmark them", "x")
     map("t", toggle, "Toggle unified and side-by-side")
     map("o", toggle_folds, "Show or fold unchanged code")
     map("?", help.show, "Show keys")
