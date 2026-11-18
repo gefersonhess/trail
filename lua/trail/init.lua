@@ -387,7 +387,7 @@ end
 ---Shows a function from an impact tree in the peek popup.
 local function peek_node(node)
   local language = node.file:match("%.go$") and "go" or (node.file:match("%.rs$") and "rust" or nil)
-  local short = node.short:gsub("^closure in ", "")
+  local short = node.short
   local name = short:match("([%w_]+)$")
   local qualifier = short:match("^([%w_]+)[%.:]")
   engine.request("peek", {
