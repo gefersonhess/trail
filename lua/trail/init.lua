@@ -225,6 +225,34 @@ local function hunk_start(h)
   return "new", math.max(h.new.start, 1)
 end
 
+---Redraws everything that shows which hunks are seen.
+local function seen_changed()
+  pathview.refresh_graph()
+  M.refresh_home()
+  if state.shown then
+    state.shown.view.redraw_marks()
+  end
+end
+
+---Marks hunks as seen, or clears them when they all are already. Hunks
+---cleared by hand are not marked again by scrolling until they have left
+---the screen.
+---@return boolean whether they were marked
+local function toggle_seen(ids)
+  state.unmarked = state.unmarked or {}
+  local reviewed = vim.iter(ids):all(store.seen)
+  for _, id in ipairs(ids) do
+    state.unmarked[id] = reviewed or nil
+  end
+  if reviewed then
+    store.unmark_seen(ids)
+  else
+    store.mark_seen(ids)
+  end
+  seen_changed()
+  return not reviewed
+end
+
 local function show_target(target, is_node, win, keys, after)
   local review = state.review
   -- Context nodes can live in files the change does not touch.
@@ -298,14 +326,33 @@ local function show_target(target, is_node, win, keys, after)
       hunks = vim.tbl_filter(function(h)
         return h.file == target.file
       end, review.hunks),
+      is_seen = store.seen,
       on_seen = function(ids)
         if quiet then
           return
         end
-        if store.mark_seen(ids) then
-          pathview.refresh_graph()
-          M.refresh_home()
+        -- A hunk unmarked by hand stays unmarked until it has left the screen.
+        local unmarked, on_screen = state.unmarked or {}, {}
+        for _, id in ipairs(ids) do
+          on_screen[id] = true
         end
+        for id in pairs(unmarked) do
+          if not on_screen[id] then
+            unmarked[id] = nil
+          end
+        end
+        if vim.g.trail_seen_on_scroll == false then
+          return
+        end
+        ids = vim.tbl_filter(function(id)
+          return not unmarked[id]
+        end, ids)
+        if store.mark_seen(ids) then
+          seen_changed()
+        end
+      end,
+      on_toggle_seen = function(ids)
+        toggle_seen(ids)
       end,
       old_path = params.old_path,
       new_path = params.new_path,
@@ -463,15 +510,8 @@ toggle_reviewed = function(path)
   if #ids == 0 then
     return
   end
-  local reviewed = vim.iter(ids):all(store.seen)
-  if reviewed then
-    store.unmark_seen(ids)
-  else
-    store.mark_seen(ids)
-  end
-  pathview.refresh_graph()
-  M.refresh_home()
-  vim.notify(string.format("trail: %s %s", reviewed and "unmarked" or "marked as reviewed:", path.title), vim.log.levels.INFO)
+  local marked = toggle_seen(ids)
+  vim.notify(string.format("trail: %s %s", marked and "marked as reviewed:" or "unmarked", path.title), vim.log.levels.INFO)
 end
 
 ---The path a row of the paths screen stands for; a file under "Not in any

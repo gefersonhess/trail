@@ -36,7 +36,7 @@ Two levels, like a file explorer.
 
 - Paths can be visited in any order.
 - Progress is tracked per node, not per path. A node reviewed in one path shows as done in every path that contains it.
-- A step is done only after all of its hunks have been scrolled past.
+- A step is done only after all of its hunks have been scrolled past or marked by hand (`mh` on a hunk, `mr` on a path).
 - Each path remembers its step and scroll position.
 - A path switcher opens from anywhere.
 
