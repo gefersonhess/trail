@@ -13,15 +13,23 @@ pub struct PullRequest {
     url: String,
     base: String,
     head: String,
+    author: String,
+    description: String,
+    base_branch: String,
+    head_branch: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct View {
     base_ref_name: String,
+    head_ref_name: String,
     head_ref_oid: String,
     title: String,
     url: String,
+    body: String,
+    #[serde(deserialize_with = "login")]
+    author: String,
 }
 
 /// Finds a GitHub pull request's base branch and head with `gh`, fetches both
@@ -37,7 +45,7 @@ pub fn fetch(repo: &Path, number: u32) -> Result<PullRequest, String> {
             "view",
             &number.to_string(),
             "--json",
-            "baseRefName,headRefOid,title,url",
+            "baseRefName,headRefName,headRefOid,title,url,body,author",
         ])
         .output()
         .map_err(|e| format!("running {gh}: {e}"))?;
@@ -83,6 +91,10 @@ pub fn fetch(repo: &Path, number: u32) -> Result<PullRequest, String> {
         url: view.url,
         base: git::commit(repo, &base_ref)?,
         head,
+        author: view.author,
+        description: view.body,
+        base_branch: view.base_ref_name,
+        head_branch: view.head_ref_name,
     })
 }
 
