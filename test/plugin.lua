@@ -1058,7 +1058,14 @@ do
     if method == "pull_request" then
       table.insert(pr_numbers, params.number)
     end
-    if method == "update_thread" then
+    if method == "pull_requests" then
+      return vim.schedule(function()
+        cb(nil, {
+          { number = 7, title = "Add hashing", author = "alice", head_ref_name = "feature", is_draft = false, review_requested = true },
+          { number = 3, title = "Fix docs", author = "bob", head_ref_name = "docs", is_draft = true, review_requested = false },
+        })
+      end)
+    elseif method == "update_thread" then
       table.insert(updates, params)
       return vim.schedule(function()
         cb(nil, {})
@@ -1314,6 +1321,24 @@ do
   end) and vim.wait(5000, function()
     return (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or ""):match("^#7 Add hashing · alice → main$") ~= nil
   end), "a pull request's url opens it like #7, and so does #7 with spaces around it: " .. vim.inspect(pr_numbers))
+  local real_select, offered = vim.ui.select, nil
+  vim.ui.select = function(items, opts, on_choice)
+    offered = { prompt = opts.prompt, items = vim.tbl_map(opts.format_item, items) }
+    on_choice(items[1])
+  end
+  vim.cmd("Trail")
+  check(vim.wait(5000, function()
+    return offered ~= nil
+  end) and offered.prompt == "Pull request to review"
+    and offered.items[1] == "#7  Add hashing  · alice · feature · review requested"
+    and offered.items[2] == "#3  Fix docs  · bob · docs · draft",
+    ":Trail alone offers the open pull requests, those asking for your review first: " .. vim.inspect(offered))
+  check(vim.wait(5000, function()
+    return #pr_numbers == 4 and pr_numbers[4] == 7
+  end) and vim.wait(5000, function()
+    return (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or "") == "#7 Add hashing · alice → main"
+  end), "picking one opens it")
+  vim.ui.select = real_select
   eng.request = real_request
 end
 

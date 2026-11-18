@@ -1156,13 +1156,39 @@ local function load()
   end)
 end
 
+---Lists the repository's open pull requests, those asking for your review
+---first, and opens the one picked.
+local function pick_pull_request(root)
+  vim.notify("trail: listing open pull requests…", vim.log.levels.INFO)
+  engine.request("pull_requests", { repo = root }, function(err, list)
+    if err then
+      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+      return
+    end
+    if #list == 0 then
+      vim.notify("trail: no open pull requests", vim.log.levels.INFO)
+      return
+    end
+    vim.ui.select(list, {
+      prompt = "Pull request to review",
+      format_item = function(pr)
+        return string.format("#%d  %s  · %s · %s%s%s", pr.number, pr.title, pr.author, pr.head_ref_name,
+          pr.is_draft and " · draft" or "", pr.review_requested and " · review requested" or "")
+      end,
+    }, function(choice)
+      if choice then
+        M.open("#" .. choice.number)
+      end
+    end)
+  end)
+end
+
 function M.open(arg)
   arg = vim.trim(arg or "")
-  if arg == "" then
-    vim.notify("usage: :Trail base..head, :Trail #123 or :Trail <pull request url>", vim.log.levels.ERROR)
-    return
-  end
   local root = vim.fs.root(0, ".git") or vim.fn.getcwd()
+  if arg == "" then
+    return pick_pull_request(root)
+  end
   state = { repo = root }
   threads.set({})
   local pr = arg:match("^#(%d+)$") or arg:match("^https?://%S+/pull/(%d+)/?%S*$")

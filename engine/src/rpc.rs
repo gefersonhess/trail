@@ -72,6 +72,11 @@ struct PullRequestParams {
 }
 
 #[derive(Deserialize)]
+struct PullRequestsParams {
+    repo: PathBuf,
+}
+
+#[derive(Deserialize)]
 struct ReviewThreadsParams {
     repo: PathBuf,
     url: String,
@@ -276,6 +281,17 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 message,
             })?;
             Ok(serde_json::to_value(checkout).expect("checkout serializes"))
+        }
+        "pull_requests" => {
+            let p: PullRequestsParams = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            let list = pull_request::list(&p.repo).map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
+            Ok(serde_json::to_value(list).expect("pull requests serialize"))
         }
         "pull_request" => {
             let p: PullRequestParams = serde_json::from_value(params).map_err(|e| RpcError {

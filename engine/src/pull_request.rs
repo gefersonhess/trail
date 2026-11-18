@@ -560,3 +560,65 @@ pub fn update_thread(
     ));
     Ok(())
 }
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
+pub struct Listed {
+    number: u32,
+    title: String,
+    #[serde(deserialize_with = "login")]
+    author: String,
+    head_ref_name: String,
+    is_draft: bool,
+    #[serde(default)]
+    review_requested: bool,
+}
+
+/// Runs `gh pr list` in the repository with extra arguments, returning the
+/// pull requests it prints.
+fn gh_list(repo: &Path, extra: &[&str]) -> Result<Vec<Listed>, String> {
+    let gh = gh_command();
+    let mut args = vec![
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        "100",
+        "--json",
+        "number,title,author,headRefName,isDraft",
+    ];
+    args.extend_from_slice(extra);
+    let out = Command::new(&gh)
+        .current_dir(repo)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("running {gh}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{gh} pr list: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("reading {gh} output: {e}"))
+}
+
+/// The repository's open pull requests, those asking for your review first.
+pub fn list(repo: &Path) -> Result<Vec<Listed>, String> {
+    let mut all = gh_list(repo, &[])?;
+    let requested: std::collections::HashSet<u32> =
+        gh_list(repo, &["--search", "review-requested:@me"])?
+            .into_iter()
+            .map(|pr| pr.number)
+            .collect();
+    for pr in &mut all {
+        pr.review_requested = requested.contains(&pr.number);
+    }
+    all.sort_by_key(|pr| !pr.review_requested);
+    log(&format!(
+        "listed {} open pull requests, {} asking for your review",
+        all.len(),
+        requested.len()
+    ));
+    Ok(all)
+}
