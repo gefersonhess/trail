@@ -57,56 +57,78 @@ function M.graph(impact)
   return g
 end
 
----The route through `id`: up through the callers `prefer.up` names (the
----first otherwise) to an entry point, and down through the callees
----`prefer.down` names to the last change. Returns the ids and where `id` is.
-function M.through(g, id, prefer)
-  prefer = prefer or {}
-  local up, seen = {}, { [id] = true }
-  local at = id
-  while g.parents[at] do
-    local p = prefer.up and prefer.up[at]
-    p = (p and vim.tbl_contains(g.parents[at], p)) and p or g.parents[at][1]
-    if seen[p] then
-      break
-    end
-    seen[p] = true
-    table.insert(up, 1, p)
-    at = p
+---The path's routes, in the order `]s` walks its steps: one chain from an
+---entry point down to each change with nothing changed below it. Another
+---entry point that only reaches changes already on a route is not a route of
+---its own; one with changes of its own ends at the first change it joins.
+function M.routes(g)
+  if g.routes then
+    return g.routes
   end
-  local route = vim.list_extend(up, { id })
-  local index = #route
-  at = id
-  while g.children[at] do
-    local c = prefer.down and prefer.down[at]
-    c = (c and vim.tbl_contains(g.children[at], c)) and c or g.children[at][1]
-    if seen[c] then
-      break
+  local routes, visited = {}, {}
+  local function walk(id, chain)
+    visited[id] = true
+    chain = vim.list_extend(vim.list_extend({}, chain), { id })
+    local before, join = #routes, nil
+    for _, c in ipairs(g.children[id] or {}) do
+      if not visited[c] then
+        walk(c, chain)
+      elseif not join then
+        join = c
+      end
     end
-    seen[c] = true
-    table.insert(route, c)
-    at = c
+    local own = vim.iter(chain):any(function(c)
+      return g.step_of[c] ~= nil
+    end)
+    if #routes == before and own then
+      table.insert(routes, { ids = join and vim.list_extend(chain, { join }) or chain, joins = join ~= nil })
+    end
   end
-  return route, index
+  for _, entry in ipairs(g.entries) do
+    if not visited[entry] then
+      walk(entry, {})
+    end
+  end
+  g.routes = routes
+  return routes
 end
 
----The path's main route: from its first entry point down through the first
----change below each.
-function M.main(g)
-  local first = g.entries[1]
-  if not first then
-    return {}, 0
+---Where `id` is on route `r`, or nil.
+function M.index(route, id)
+  for i, v in ipairs(route.ids) do
+    if v == id then
+      return i
+    end
   end
-  return M.through(g, first)
 end
 
-local prefers = {}
+---The route to show `id` on: `keep` when it holds `id`, otherwise the first
+---that does, preferring one it doesn't merely join.
+function M.find(g, id, keep)
+  local routes = M.routes(g)
+  if keep and routes[keep] and M.index(routes[keep], id) then
+    return keep
+  end
+  local joined
+  for r, route in ipairs(routes) do
+    local i = M.index(route, id)
+    if i and not (route.joins and i == #route.ids) then
+      return r
+    end
+    joined = joined or (i and r)
+  end
+  return joined
+end
 
----The callers and callees picked along a path's routes, kept while the review
----is open, so the paths screen draws the route the path view shows.
-function M.prefer(path_id)
-  prefers[path_id] = prefers[path_id] or { up = {}, down = {} }
-  return prefers[path_id]
+local current = {}
+
+---The route last shown for a path, kept while the review is open, so the
+---paths screen draws the route the path view shows.
+function M.current(path_id, r)
+  if r then
+    current[path_id] = r
+  end
+  return current[path_id]
 end
 
 local SEP = " ── "
@@ -116,7 +138,7 @@ local SEP = " ── "
 ---there is: a route wider than that shows the stations around
 ---`opts.anchor` (the current one, or the first), counting the hidden ones at
 ---each end.
----@return string line, table[] highlights { from, to, group }, table<integer, integer> col of each shown station
+---@return string line, table[] highlights { from, to, group }, table<integer, integer[]> byte range of each shown station
 function M.draw(g, route, opts)
   local labels = {}
   for i, id in ipairs(route) do
@@ -177,7 +199,7 @@ function M.draw(g, route, opts)
       put(SEP, "Comment")
     end
     local id, label = route[i], labels[i]
-    cols[i] = #line
+    local from = #line
     if id == opts.current then
       put(label.mark .. label.name, "TrailCurrentStep")
     elseif g.step_of[id] then
@@ -186,6 +208,7 @@ function M.draw(g, route, opts)
     else
       put(label.name, "Comment")
     end
+    cols[i] = { from, #line }
   end
   if last < #route then
     put(string.format("  %d ›", #route - last), "Comment")

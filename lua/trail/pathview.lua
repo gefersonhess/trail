@@ -74,8 +74,8 @@ local function count(n, word)
 end
 
 ---The route through the function shown: the stations from an entry point to
----the last change below, the one shown highlighted, and under it how many
----other callers and callees it has.
+---the last change below, the one shown highlighted, and under it which of
+---the path's routes it is and what else calls the function shown.
 local function render_route()
   local path = view.path
   local g = route.graph(path.impact)
@@ -85,7 +85,11 @@ local function render_route()
     here = node and node.id or g.entries[1]
   end
   view.station = here
-  local ids, index = route.through(g, here, route.prefer(path.id))
+  local routes = route.routes(g)
+  local number = route.find(g, here, route.current(path.id)) or 1
+  route.current(path.id, number)
+  local ids = routes[number].ids
+  local index = route.index(routes[number], here)
   view.route, view.route_index = ids, index
   local done = view.ctx.done_steps(path)
   local width = vim.api.nvim_win_get_width(view.tree_win)
@@ -99,20 +103,22 @@ local function render_route()
     end,
   })
   line = " " .. line
-  local hints = {}
-  local callers, callees = #(g.parents[here] or {}), #(g.children[here] or {})
-  if callers > 1 then
-    table.insert(hints, "k " .. count(callers - 1, "more caller"))
-  end
-  if callees > 1 then
-    table.insert(hints, "j " .. count(callees - 1, "more callee"))
+  local hints = { #routes > 1 and string.format("route %d of %d", number, #routes) or nil }
+  local others = vim.tbl_filter(function(p)
+    return p ~= ids[index - 1]
+  end, g.parents[here] or {})
+  if #others > 0 then
+    local names = vim.tbl_map(function(p)
+      return g.nodes[p].short
+    end, vim.list_slice(others, 1, 3))
+    table.insert(hints, "also called from " .. table.concat(names, ", ") .. (#others > 3 and string.format(" +%d", #others - 3) or ""))
   end
   local hint = table.concat(hints, " · ")
   local step = string.format("step %d of %d", view.step, #path.steps)
   if vim.fn.strdisplaywidth(hint .. step) + 4 > width then
     step = ""
   end
-  local at = vim.fn.strdisplaywidth(line:sub(1, cols[index] + 1))
+  local at = vim.fn.strdisplaywidth(line:sub(1, cols[index][1] + 1))
   local room = width - vim.fn.strdisplaywidth(step) - 2
   at = math.max(0, math.min(at, room - vim.fn.strdisplaywidth(hint) - 2))
   local second = string.rep(" ", at) .. hint
@@ -128,7 +134,14 @@ local function render_route()
   vim.api.nvim_buf_set_extmark(buf, ns, 1, 0, { end_col = #second, hl_group = "Comment" })
   view.item_of_row = {}
   vim.api.nvim_win_set_height(view.tree_win, 2)
-  vim.api.nvim_win_set_cursor(view.tree_win, { 1, cols[index] + 1 })
+  view.stations = {}
+  for i, c in pairs(cols) do
+    table.insert(view.stations, { id = ids[i], from = c[1] + 1, to = c[2] + 1 })
+  end
+  table.sort(view.stations, function(x, y)
+    return x.from < y.from
+  end)
+  vim.api.nvim_win_set_cursor(view.tree_win, { 1, cols[index][1] + 1 })
 end
 
 local function render_tree(keep_cursor)
@@ -208,12 +221,12 @@ local function show_step(i, focus_tree, hunk)
 end
 
 ---Shows an unchanged function from the tree in the diff window, in its file.
-local function show_function(node, stay)
+local function show_function(node)
   view.station = node.id
   render_tree(true)
   view.ctx.show_target({ file = node.file, new = { start = node.line, len = 1 } }, true, view.diff_win, view.keys,
     function()
-      if not stay and vim.api.nvim_win_is_valid(view.tree_win) then
+      if vim.api.nvim_win_is_valid(view.tree_win) then
         vim.api.nvim_set_current_win(view.tree_win)
       end
     end)
@@ -221,67 +234,13 @@ end
 
 ---Shows the station `id` of the route: its step, or its function when it is
 ---an unchanged entry point.
-local function show_station(id, stay)
+local function show_station(id)
   local i = step_of_node(view.path, id)
   if i then
-    show_step(i, not stay)
+    show_step(i, true)
   else
-    show_function(route.graph(view.path.impact).nodes[id], stay)
+    show_function(route.graph(view.path.impact).nodes[id])
   end
-end
-
----Moves along the route: to the caller above (-1) or the callee below (1).
----From the diff (`stay`), focus stays there.
-function M.move(delta, stay)
-  if not valid() or not view.route then
-    return
-  end
-  local id = view.route[view.route_index + delta]
-  if not id then
-    vim.notify(delta > 0 and "trail: last change on this route" or "trail: entry point of this route", vim.log.levels.INFO)
-    return
-  end
-  show_station(id, stay)
-end
-
----Lists the other callers (`"up"`) or callees (`"down"`) of the station
----shown. Picking a caller changes the route above it; picking a callee
----moves to it.
-function M.branch(dir)
-  if not valid() or not view.route then
-    return
-  end
-  local path = view.path
-  local g = route.graph(path.impact)
-  local here = view.station
-  local ids = (dir == "up" and g.parents or g.children)[here]
-  if not ids then
-    vim.notify(dir == "up" and "trail: nothing above reaches this" or "trail: no change below this", vim.log.levels.INFO)
-    return
-  end
-  local done = view.ctx.done_steps(path)
-  local on_route = view.route[view.route_index + (dir == "up" and -1 or 1)]
-  view.ctx.pick(ids, {
-    prompt = dir == "up" and "Reached from" or "Calls",
-    current = on_route,
-    format = function(id)
-      local i = step_of_node(path, id)
-      local mark = i and (done[i] and "● " or "○ ") or "  "
-      return mark .. g.nodes[id].short
-    end,
-  }, function(id)
-    if not id or not valid() then
-      return
-    end
-    local prefer = route.prefer(path.id)
-    if dir == "up" then
-      prefer.up[here] = id
-      render_tree()
-    else
-      prefer.down[here] = id
-      show_station(id)
-    end
-  end)
 end
 
 vim.api.nvim_create_autocmd("WinResized", {
@@ -421,28 +380,6 @@ function M.open(ctx, path, step, target)
     local function map(lhs, fn, desc)
       vim.keymap.set("n", lhs, fn, { buffer = buf, desc = desc, nowait = true })
     end
-    ---A key that moves along the route, and is Vim's own in the tree.
-    local function route_map(lhs, fn, desc)
-      map(lhs, function()
-        if routed(view.path) then
-          fn()
-        else
-          vim.cmd.normal({ args = { vim.v.count1 .. lhs }, bang = true })
-        end
-      end, desc)
-    end
-    route_map("h", function()
-      M.move(-1)
-    end, "Caller above on the route")
-    route_map("l", function()
-      M.move(1)
-    end, "Callee below on the route")
-    route_map("k", function()
-      M.branch("up")
-    end, "Other callers: pick the route above")
-    route_map("j", function()
-      M.branch("down")
-    end, "Other callees: move to one")
     map("gt", function()
       vim.g.trail_graph = routed(view.path) and "tree" or "route"
       M.place()
@@ -455,6 +392,15 @@ function M.open(ctx, path, step, target)
       return view.item_of_row[vim.api.nvim_win_get_cursor(0)[1]] or {}
     end
     map("<CR>", function()
+      if routed(view.path) then
+        local col, under = vim.api.nvim_win_get_cursor(0)[2], nil
+        for _, station in ipairs(view.stations or {}) do
+          if not under or station.from <= col then
+            under = station
+          end
+        end
+        return under and show_station(under.id)
+      end
       local it = item()
       if it.fold then
         local expanded = expanded_by_path[view.path.id] or {}
@@ -482,6 +428,12 @@ function M.open(ctx, path, step, target)
         view.ctx.peek_node(it.node)
       end
     end, "Show this function's code")
+    map("]s", function()
+      M.step(1)
+    end, "Next step")
+    map("[s", function()
+      M.step(-1)
+    end, "Previous step")
     map("n", function()
       M.step(1)
     end, "Next step")
@@ -530,12 +482,6 @@ function M.open(ctx, path, step, target)
     end, "Previous step" },
     { "gp", ctx.switch_path, "Switch path" },
     { "<C-p>", ctx.find, "Find a changed function" },
-    { "]r", function()
-      M.move(1, true)
-    end, "Callee below on the route" },
-    { "[r", function()
-      M.move(-1, true)
-    end, "Caller above on the route" },
     { "mr", function()
       ctx.toggle_reviewed(view.path)
     end, "Mark the path as reviewed, or unmark it" },
