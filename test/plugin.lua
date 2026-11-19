@@ -1617,6 +1617,13 @@ vim.api.nvim_feedkeys("t", "x", false)
 tree_win = vim.fn.bufwinid("trail://path")
 check(vim.api.nvim_win_get_height(tree_win) == 3 and vim.api.nvim_win_get_height(the_pane()) == 6,
   "and in side by side the heights set there: " .. vim.api.nvim_win_get_height(tree_win) .. ", " .. vim.api.nvim_win_get_height(the_pane()))
+vim.api.nvim_win_close(the_pane(), true)
+local halves = vim.api.nvim_win_get_width(win_of("^trail://head/"))
+athreads.show(athreads.all()[1], function() end)
+check(vim.api.nvim_win_get_height(tree_win) == 3 and the_pane() and vim.api.nvim_win_get_height(the_pane()) == 6
+  and math.abs(vim.api.nvim_win_get_width(win_of("^trail://head/")) - halves) <= 1,
+  "opening the pane leaves the other windows as they were: tree " .. vim.api.nvim_win_get_height(tree_win)
+  .. ", pane " .. (the_pane() and vim.api.nvim_win_get_height(the_pane()) or "none"))
 vim.api.nvim_set_current_win(win_of("^trail://head/"))
 vim.api.nvim_feedkeys("t", "x", false)
 diff_win = win_of("^trail://diff/")

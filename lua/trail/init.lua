@@ -297,11 +297,7 @@ local function arrange()
   if not vim.g.trail_app then
     return
   end
-  pane.place()
-  pathview.place()
-  -- Moving the tree across the top takes rows from the pane, so its size comes last.
-  pane.resize()
-  vim.cmd.wincmd("=")
+  pane.arrange()
 end
 
 local function show_target(target, is_node, win, keys, after)
