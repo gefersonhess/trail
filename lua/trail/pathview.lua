@@ -208,12 +208,12 @@ local function show_step(i, focus_tree, hunk)
 end
 
 ---Shows an unchanged function from the tree in the diff window, in its file.
-local function show_function(node)
+local function show_function(node, stay)
   view.station = node.id
   render_tree(true)
   view.ctx.show_target({ file = node.file, new = { start = node.line, len = 1 } }, true, view.diff_win, view.keys,
     function()
-      if vim.api.nvim_win_is_valid(view.tree_win) then
+      if not stay and vim.api.nvim_win_is_valid(view.tree_win) then
         vim.api.nvim_set_current_win(view.tree_win)
       end
     end)
@@ -221,17 +221,18 @@ end
 
 ---Shows the station `id` of the route: its step, or its function when it is
 ---an unchanged entry point.
-local function show_station(id)
+local function show_station(id, stay)
   local i = step_of_node(view.path, id)
   if i then
-    show_step(i, true)
+    show_step(i, not stay)
   else
-    show_function(route.graph(view.path.impact).nodes[id])
+    show_function(route.graph(view.path.impact).nodes[id], stay)
   end
 end
 
 ---Moves along the route: to the caller above (-1) or the callee below (1).
-function M.move(delta)
+---From the diff (`stay`), focus stays there.
+function M.move(delta, stay)
   if not valid() or not view.route then
     return
   end
@@ -240,7 +241,7 @@ function M.move(delta)
     vim.notify(delta > 0 and "trail: last change on this route" or "trail: entry point of this route", vim.log.levels.INFO)
     return
   end
-  show_station(id)
+  show_station(id, stay)
 end
 
 ---Lists the other callers (`"up"`) or callees (`"down"`) of the station
@@ -529,6 +530,12 @@ function M.open(ctx, path, step, target)
     end, "Previous step" },
     { "gp", ctx.switch_path, "Switch path" },
     { "<C-p>", ctx.find, "Find a changed function" },
+    { "]r", function()
+      M.move(1, true)
+    end, "Callee below on the route" },
+    { "[r", function()
+      M.move(-1, true)
+    end, "Caller above on the route" },
     { "mr", function()
       ctx.toggle_reviewed(view.path)
     end, "Mark the path as reviewed, or unmark it" },

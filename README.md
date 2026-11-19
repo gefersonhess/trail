@@ -78,6 +78,7 @@ Inside a path (route on top, diff below)
 | Key | Action |
 | --- | --- |
 | `h` `l` in the route | Move to the caller above / the callee below on the route |
+| `[r` `]r` in the diff | The same, staying in the diff |
 | `k` / `j` in the route | Pick another caller (changes the route above) / another callee (moves to it) |
 | `gt` | Swap the route for the path's tree, and back |
 | `<C-p>` | Find a changed function by name and open it |

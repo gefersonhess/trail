@@ -1070,6 +1070,19 @@ do
     return route_lines()[1] == " Entry ── ▶ Work"
   end), "l moves back down to the change")
 
+  local route_diff = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match("^trail://diff/")
+  end)
+  vim.api.nvim_set_current_win(route_diff)
+  vim.api.nvim_feedkeys("[r", "x", false)
+  check(vim.wait(10000, function()
+    return route_lines()[1] == " ▶ Entry ── ● Work" and diff_top():match("func Entry%(%) {") ~= nil
+  end) and vim.api.nvim_get_current_win() == route_diff, "[r in the diff moves up the route and stays in the diff")
+  vim.api.nvim_feedkeys("]r", "x", false)
+  check(vim.wait(10000, function()
+    return route_lines()[1] == " Entry ── ▶ Work"
+  end) and vim.api.nvim_get_current_win() == route_diff, "]r in the diff moves back down")
+
   local real_select = vim.ui.select
   local offered
   vim.ui.select = function(items, opts, on_choice)

@@ -51,7 +51,8 @@ local screens = {
     { "Move", vim.list_extend({
       { "]s", "step" }, { "[s", "step" }, { "]c", "change" }, { "[c", "change" },
       { "]h", "hunk" }, { "[h", "hunk" }, { "]t", "thread" }, { "[t", "thread" }, { "gp", "switch path" },
-      { "]]", "into the call" }, { "[[", "back from it" }, { "<C-P>", "find function" },
+      { "]]", "into the call" }, { "[[", "back from it" }, { "]r", "route" }, { "[r", "route" },
+      { "<C-P>", "find function" },
     }, back) },
     { "Review", {
       { "cc", "comment" }, { "cb", "as kind" }, { "cq", "as kind" }, { "cn", "as kind" },
@@ -80,7 +81,7 @@ local hints = {
   home = "⏎ open  1-9 path  r resume  ^p find  C commits  S send  T threads  ? keys",
   commits = "⏎ this commit  V⏎ a run  a all  - back  ? keys",
   tree = "h l route  j k other calls  gt tree  ^p find  ? keys",
-  diff = "]s step  ]c change  ]] call  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
+  diff = "]s step  ]r route  ]c change  ]] call  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
   send = "P submit  y copy  v verdict  ? keys",
   threads = "⏎ go  r reply  ? keys",
   comment = "<C-s> save  <C-y> post now  ⇥ kind  q cancel",
