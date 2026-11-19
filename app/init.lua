@@ -54,7 +54,7 @@ vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "CursorMoved" }, {
 })
 vim.api.nvim_create_autocmd("CursorMoved", {
   group = group,
-  pattern = "trail://diff/*",
+  pattern = { "trail://diff/*", "trail://base/*", "trail://head/*" },
   callback = function()
     require("trail").follow_thread()
   end,
