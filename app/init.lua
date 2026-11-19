@@ -70,7 +70,9 @@ local function derived()
 end
 
 local app = require("trail.app")
-local theme, why = app.user_theme(root .. "/app/theme_probe.lua", 3000)
+local probe = root .. "/app/theme_probe.lua"
+local theme, why = app.user_theme(probe, 3000)
+local shown = theme and vim.json.encode(theme)
 if theme then
   app.apply(theme)
   derived()
@@ -78,6 +80,26 @@ else
   own_theme()
   vim.notify("trail: using its own colors, " .. why, vim.log.levels.WARN)
 end
+
+-- A theme switched while the app was in the background shows when it comes back.
+local reading = false
+vim.api.nvim_create_autocmd("FocusGained", {
+  callback = function()
+    if reading then
+      return
+    end
+    reading = true
+    app.user_theme(probe, 3000, function(again)
+      reading = false
+      local seen = again and vim.json.encode(again)
+      if seen and seen ~= shown then
+        shown = seen
+        app.apply(again)
+        derived()
+      end
+    end)
+  end,
+})
 
 vim.cmd.runtime("plugin/trail.lua")
 
