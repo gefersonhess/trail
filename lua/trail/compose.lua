@@ -62,7 +62,10 @@ function M.open(opts, on_confirm)
   local function close()
     if in_pane then
       pane.release()
-      if vim.api.nvim_win_is_valid(from) then
+      -- Written from the pane, it hands the focus back to the review.
+      if from == pane.win() or not vim.api.nvim_win_is_valid(from) then
+        pane.back()
+      else
         vim.api.nvim_set_current_win(from)
       end
     elseif vim.api.nvim_win_is_valid(win) then

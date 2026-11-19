@@ -272,7 +272,9 @@ show_spot = function(spot)
     if vim.api.nvim_win_is_valid(win) then
       vim.api.nvim_win_close(win, true)
     end
+    pane.back()
   end)
+  map("<Esc>", pane.back)
   map("s", function()
     local c = target()
     if c then
