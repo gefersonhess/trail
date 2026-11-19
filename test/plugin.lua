@@ -1591,8 +1591,8 @@ vim.fn.writefile({ 'vim.cmd.colorscheme("blue")', 'vim.api.nvim_set_hl(0, "Norma
   configs .. "/mine/init.lua")
 vim.fn.mkdir(configs .. "/broken", "p")
 vim.fn.writefile({ "os.exit(1)" }, configs .. "/broken/init.lua")
-local function app_colors(user_appname)
-  return vim.system({ vim.v.progpath, "--headless", "-u", root .. "/app/init.lua",
+local function app_colors(user_appname, before)
+  return vim.system({ vim.v.progpath, "--headless", "-u", root .. "/app/init.lua", before or "+lua _ = 1",
     "+lua io.stdout:write(string.format('%s|%06x|%s|%s', vim.g.colors_name, vim.api.nvim_get_hl(0, { name = 'Normal' }).bg or 0, vim.api.nvim_get_hl(0, { name = 'TrailModeNORMAL' }).bg and 'mode' or 'none', vim.fn.execute('messages'):gsub('\\n', ' '))); vim.cmd('qa!')" },
     { cwd = repo, text = true, env = { NVIM_APPNAME = "trail-test", TRAIL_USER_APPNAME = user_appname, XDG_CONFIG_HOME = configs,
       XDG_CACHE_HOME = repo .. "-appcache", TRAIL_ARGS = "main..feature", TRAIL_GOPLS = repo .. "-no-gopls" } }):wait(30000).stdout
@@ -1608,6 +1608,21 @@ vim.fn.writefile({ 'vim.cmd.colorscheme("blue")', 'vim.api.nvim_create_autocmd("
   configs .. "/noisy/init.lua")
 local noisy = app_colors("noisy")
 check(noisy:match("^blue|"), "colors written by a Neovim that then exits with an error still count: " .. noisy)
+vim.fn.mkdir(configs .. "/later", "p")
+vim.fn.writefile({ 'vim.defer_fn(function() vim.cmd.colorscheme("blue") end, 50)' }, configs .. "/later/init.lua")
+local later = app_colors("later")
+check(later:match("^blue|"), "a colorscheme the user's config applies a little after startup counts: " .. later)
+vim.fn.mkdir(configs .. "/ui", "p")
+vim.fn.writefile({ 'vim.api.nvim_create_autocmd("UIEnter", { callback = function() vim.cmd.colorscheme("blue") end })' },
+  configs .. "/ui/init.lua")
+local on_ui = app_colors("ui")
+check(on_ui:match("^blue|"), "so does one applied once the screen opens, as with LazyVim's VeryLazy: " .. on_ui)
+vim.fn.mkdir(configs .. "/switch", "p")
+vim.fn.writefile({ "blue" }, configs .. "/scheme")
+vim.fn.writefile({ 'vim.cmd.colorscheme(vim.fn.readfile("' .. configs .. '/scheme")[1])' }, configs .. "/switch/init.lua")
+local switched = app_colors("switch", "+lua vim.fn.writefile({ 'evening' }, '" .. configs .. "/scheme'); "
+  .. "vim.api.nvim_exec_autocmds('FocusGained', {}); vim.wait(5000, function() return vim.g.colors_name == 'evening' end)")
+check(switched:match("^evening|"), "regaining focus picks up a theme switched meanwhile: " .. switched)
 vim.fn.delete(configs, "rf")
 
 vim.fn.delete(repo, "rf")

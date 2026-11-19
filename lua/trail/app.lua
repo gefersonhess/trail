@@ -12,14 +12,7 @@ function M.user_nvim(args)
   return vim.list_extend(cmd, args)
 end
 
----The user's colors: their Neovim is started headless, and once its config
----has run it writes out every highlight group. What it wrote counts even if
----it then exits with an error. Without colors, the second value says why.
----@return { name: string?, background: string, groups: table<string, table> }?, string?
-function M.user_theme(probe, timeout)
-  local out = vim.fn.tempname()
-  local done = vim.system(M.user_nvim({ "--headless", "-n", "-i", "NONE", "--cmd", "luafile " .. vim.fn.fnameescape(probe) }),
-    { env = { TRAIL_THEME_OUT = out }, stdin = false, text = true }):wait(timeout)
+local function result(done, out, timeout)
   local ok, theme = pcall(function()
     return vim.json.decode(table.concat(vim.fn.readfile(out), "\n"))
   end)
@@ -37,6 +30,25 @@ function M.user_theme(probe, timeout)
   return nil, "your Neovim wrote no colors" .. (said ~= "" and ": " .. said or "")
 end
 
+---The user's colors: their Neovim is started headless, and once its config
+---has run it writes out every highlight group. What it wrote counts even if
+---it then exits with an error. Without colors, the second value says why.
+---With `on_done`, runs in the background and passes them to it instead.
+---@return { name: string?, background: string, groups: table<string, table> }?, string?
+function M.user_theme(probe, timeout, on_done)
+  local out = vim.fn.tempname()
+  local cmd = M.user_nvim({ "--headless", "-n", "-i", "NONE", "--cmd", "luafile " .. vim.fn.fnameescape(probe) })
+  local opts = { env = { TRAIL_THEME_OUT = out }, stdin = false, text = true, timeout = timeout }
+  if not on_done then
+    return result(vim.system(cmd, opts):wait(), out, timeout)
+  end
+  vim.system(cmd, opts, function(done)
+    vim.schedule(function()
+      on_done(result(done, out, timeout))
+    end)
+  end)
+end
+
 ---Replaces every highlight group with the user's.
 function M.apply(theme)
   vim.cmd("highlight clear")
@@ -45,6 +57,7 @@ function M.apply(theme)
     pcall(vim.api.nvim_set_hl, 0, name, spec)
   end
   vim.g.colors_name = theme.name
+  vim.api.nvim_exec_autocmds("ColorScheme", { pattern = theme.name or "" })
 end
 
 return M
