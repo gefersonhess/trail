@@ -96,8 +96,71 @@ function M.notes(old_path, new_path)
   return notes
 end
 
+local pane = {}
+local show_in_pane
+
+---Whether the trail app's thread pane is open.
+function M.pane_open()
+  return pane.win ~= nil and vim.api.nvim_win_is_valid(pane.win)
+end
+
+---Moves the thread pane to the right of a unified diff, or across the bottom
+---of a side-by-side one, which needs the width.
+function M.place()
+  if not M.pane_open() then
+    return
+  end
+  local below = require("trail.diffview").side_by_side()
+  vim.api.nvim_win_call(pane.win, function()
+    vim.cmd.wincmd(below and "J" or "L")
+  end)
+  local wo = vim.wo[pane.win]
+  wo.winfixwidth, wo.winfixheight = not below, below
+  if below then
+    vim.api.nvim_win_set_height(pane.win, 10)
+  else
+    vim.api.nvim_win_set_width(pane.win, math.min(46, math.floor(vim.o.columns * 0.3)))
+  end
+end
+
+---The trail app shows a thread in a pane beside the review, opened once and
+---reused, with the focus left where it was.
+show_in_pane = function(t, buf, where, reply)
+  local back = vim.api.nvim_get_current_win()
+  if M.pane_open() then
+    vim.api.nvim_set_current_win(pane.win)
+  else
+    vim.cmd("botright vsplit")
+    pane.win = vim.api.nvim_get_current_win()
+    local wo = vim.wo[pane.win][0]
+    wo.number, wo.relativenumber, wo.signcolumn, wo.statuscolumn = false, false, "no", ""
+    wo.wrap, wo.linebreak, wo.cursorline = true, true, false
+    M.place()
+  end
+  vim.api.nvim_win_set_buf(pane.win, buf)
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", " r reply · q close" })
+  vim.bo[buf].modifiable = false
+  vim.api.nvim_buf_set_extmark(buf, ns, vim.api.nvim_buf_line_count(buf) - 1, 0, { end_col = 18, hl_group = "TrailThread" })
+  local hl = t.resolved and "TrailThreadResolved" or "TrailThreadAuthor"
+  vim.wo[pane.win].winbar = "%#" .. hl .. "#" .. where:gsub("%%", "%%%%")
+  local win = pane.win
+  vim.keymap.set("n", "q", function()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "r", function()
+    reply(t)
+  end, { buffer = buf, nowait = true })
+  if vim.api.nvim_win_is_valid(back) then
+    vim.api.nvim_set_current_win(back)
+  end
+  return pane.win
+end
+
 ---Opens a thread in a popup under the cursor: every comment in full, `r`
----to reply, `q` or <Esc> to close.
+---to reply, `q` or <Esc> to close. In the trail app it opens in the pane.
 function M.show(t, reply)
   local rows = rows_of(t)
   local lines, hls, width = {}, {}, 0
@@ -112,6 +175,7 @@ function M.show(t, reply)
     width = math.max(width, vim.fn.strdisplaywidth(text) + 1)
   end
   local buf = vim.api.nvim_create_buf(false, true)
+  vim.b[buf].trail_screen = "thread"
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.bo[buf].bufhidden = "wipe"
@@ -119,6 +183,9 @@ function M.show(t, reply)
     vim.api.nvim_buf_set_extmark(buf, ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
   end
   local where = string.format(" %s %s:%d ", t.resolved and "✓ resolved ·" or "●", t.path, t.line ~= vim.NIL and t.line or t.original_line)
+  if vim.g.trail_app then
+    return show_in_pane(t, buf, where, reply)
+  end
   local win = vim.api.nvim_open_win(buf, true, {
     -- Below the thread's own line, which stays in sight.
     relative = "cursor",

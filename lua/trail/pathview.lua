@@ -10,8 +10,17 @@ local function valid()
   return view and vim.api.nvim_win_is_valid(view.tree_win) and vim.api.nvim_win_get_buf(view.tree_win) == view.tree_buf
 end
 
+---Whether the tree sits on the left of the diff (`vim.g.trail_tree = "left"`)
+---rather than above it. Side by side needs the width, so the tree goes on top.
+local function tree_on_left()
+  return vim.g.trail_tree == "left" and not require("trail.diffview").side_by_side()
+end
+
+local TREE_WIDTH = 38
+
 local function tree_height(lines)
-  return math.max(1, math.min(lines, math.floor(vim.o.lines / 3)))
+  local most = vim.g.trail_tree == "left" and 8 or math.floor(vim.o.lines / 3)
+  return math.max(1, math.min(lines, most))
 end
 
 ---A path with no impact tree (a test file, or hunks in no path) as a list of its steps.
@@ -78,7 +87,9 @@ local function render_tree(keep_cursor)
   for _, h in ipairs(hls) do
     vim.api.nvim_buf_set_extmark(buf, ns, h[1] + 1, h[2], { end_col = h[3], hl_group = h[4] })
   end
-  vim.api.nvim_win_set_height(view.tree_win, tree_height(#lines))
+  if not tree_on_left() then
+    vim.api.nvim_win_set_height(view.tree_win, tree_height(#lines))
+  end
   if cursor then
     pcall(vim.api.nvim_win_set_cursor, view.tree_win, cursor)
     return
@@ -175,13 +186,39 @@ function M.current()
   end
 end
 
+---Moves the tree to where the layout wants it: the left of a unified diff,
+---or across the top of a side-by-side one.
+function M.place()
+  if not valid() or vim.g.trail_tree ~= "left" then
+    return
+  end
+  local left = tree_on_left()
+  vim.api.nvim_win_call(view.tree_win, function()
+    vim.cmd.wincmd(left and "H" or "K")
+  end)
+  local wo = vim.wo[view.tree_win]
+  wo.winfixwidth, wo.winfixheight = left, not left
+  if left then
+    vim.api.nvim_win_set_width(view.tree_win, TREE_WIDTH)
+  else
+    local lines = vim.api.nvim_buf_line_count(view.tree_buf)
+    vim.api.nvim_win_set_height(view.tree_win, tree_height(lines))
+    if lines <= tree_height(lines) then
+      vim.api.nvim_win_call(view.tree_win, function()
+        vim.fn.winrestview({ topline = 1 })
+      end)
+    end
+  end
+end
+
 function M.refresh_graph()
   if valid() then
     render_tree(true)
   end
 end
 
----Opens `path` at `step` in the review window: the path's tree on top, the diff below.
+---Opens `path` at `step` in the review window: the path's tree on top (or on
+---the left), the diff beside it.
 ---@param ctx table callbacks from the plugin: show_target, peek_node, home, window, switch_path, done_steps, on_step, toggle_reviewed
 function M.open(ctx, path, step, target)
   if valid() then
@@ -191,11 +228,17 @@ function M.open(ctx, path, step, target)
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].bufhidden = "wipe"
     vim.api.nvim_buf_set_name(buf, "trail://path")
-    vim.cmd("aboveleft split")
+    vim.cmd(tree_on_left() and "topleft vsplit" or "aboveleft split")
     local tree_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(tree_win, buf)
     local wo = vim.wo[tree_win][0]
-    wo.winfixheight, wo.number, wo.relativenumber, wo.wrap, wo.cursorline = true, false, false, false, true
+    if tree_on_left() then
+      vim.api.nvim_win_set_width(tree_win, TREE_WIDTH)
+      wo.winfixwidth = true
+    else
+      wo.winfixheight = true
+    end
+    wo.number, wo.relativenumber, wo.wrap, wo.cursorline = false, false, false, true
     wo.signcolumn, wo.foldcolumn, wo.statuscolumn = "no", "0", ""
     view = { tab = vim.api.nvim_get_current_tabpage(), tree_win = tree_win, tree_buf = buf, diff_win = diff_win }
 

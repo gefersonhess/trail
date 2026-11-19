@@ -10,6 +10,7 @@ local WIDTH, HEIGHT = 64, 6
 function M.open(opts, on_confirm)
   local kind = opts.kind
   local buf = vim.api.nvim_create_buf(false, true)
+  vim.b[buf].trail_screen = "comment"
   vim.bo[buf].bufhidden = "wipe"
   local lines = opts.body and vim.split(opts.body, "\n", { plain = true }) or { "" }
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)

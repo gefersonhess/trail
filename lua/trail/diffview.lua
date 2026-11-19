@@ -42,6 +42,10 @@ local function layout()
   return chosen_layout or vim.g.trail_layout or "unified"
 end
 
+function M.side_by_side()
+  return layout() ~= "unified"
+end
+
 local function fold_unchanged()
   if chosen_folding ~= nil then
     return chosen_folding
@@ -244,7 +248,7 @@ local function setup_window(win, title, folds, unified, bind)
   wo.wrap, wo.number, wo.relativenumber, wo.list = false, false, false, false
   wo.signcolumn, wo.foldcolumn = "no", "0"
   wo.statuscolumn = "%!v:lua.require'trail.diffview'.statuscolumn()"
-  wo.winbar = title:gsub("%%", "%%%%") .. "%=%#Comment#? keys %*"
+  wo.winbar = title:gsub("%%", "%%%%") .. " %=%#Comment#? keys %*"
   wo.scrollbind, wo.cursorbind = bind, bind
   wo.foldmethod, wo.foldenable, wo.foldlevel = "manual", true, 0
   apply_folds(win, folds)

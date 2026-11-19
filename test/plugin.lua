@@ -1391,6 +1391,127 @@ end), "the engine's output goes to the log file")
 vim.g.trail_engine = nil
 vim.fn.delete(stopping)
 
+-- The trail app: the tree on the left, a tabline of screens, a status line
+-- with the mode and keys, and threads in a pane on the right.
+vim.g.trail_app, vim.g.trail_tree = true, "left"
+vim.cmd.cd(repo)
+vim.cmd("Trail main..feature")
+local app = require("trail")
+local abuf = vim.api.nvim_get_current_buf()
+check(vim.wait(15000, function()
+  return vim.iter(vim.api.nvim_buf_get_lines(abuf, 0, -1, false)):any(function(l)
+    return l:match("^  1  Login ")
+  end)
+end), "the app opens the review")
+check(#vim.api.nvim_list_tabpages() == 1, "the app keeps a single tab")
+local function evaluated(expr, opts)
+  return vim.api.nvim_eval_statusline(expr, opts or {}).str
+end
+local tabline = evaluated(app.tabline(), { use_tabline = true })
+check(tabline:match("^ trail  Overview  Paths  Send ") and tabline:match("main%.%.feature $"),
+  "the tabline names the screens and the review: " .. tabline)
+local function selected_tab()
+  local hl = vim.api.nvim_eval_statusline(app.tabline(), { use_tabline = true, highlights = true })
+  for k, h in ipairs(hl.highlights) do
+    if h.group == "TabLineSel" then
+      local stop = hl.highlights[k + 1] and hl.highlights[k + 1].start or #hl.str
+      return vim.trim(hl.str:sub(h.start + 1, stop))
+    end
+  end
+end
+check(selected_tab() == "Overview", "the overview's tab is marked: " .. tostring(selected_tab()))
+local status = evaluated(app.statusline(), { maxwidth = 200 })
+check(status:match("^ NORMAL  overview") and status:match("⏎ open  1%-9 path  S send"), "the status line shows the mode and the screen's keys: " .. status)
+vim.api.nvim_feedkeys("1", "x", false)
+check(vim.wait(10000, function()
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/")
+end), "a path opens from the app's overview")
+local tree_win = vim.fn.bufwinid("trail://path")
+local diff_win = vim.api.nvim_get_current_win()
+check(tree_win ~= -1 and vim.api.nvim_win_get_position(tree_win)[2] == 0
+  and vim.api.nvim_win_get_width(tree_win) == 38 and vim.api.nvim_win_get_position(diff_win)[2] > 38
+  and vim.api.nvim_win_get_position(tree_win)[1] == vim.api.nvim_win_get_position(diff_win)[1],
+  "the tree sits on the left of the diff, at a fixed width")
+check(selected_tab() == "Login" and evaluated(app.tabline(), { use_tabline = true }):match("step 1/3  [█░]+ %d/3 $"),
+  "inside a path the tabline marks it and shows the step and progress: " .. evaluated(app.tabline(), { use_tabline = true }))
+local dstatus = evaluated(app.statusline(), { maxwidth = 200 })
+check(dstatus:match("^ NORMAL  auth/auth%.go") and dstatus:match("%]c change"), "in the diff the status line names the file and the diff's keys: " .. dstatus)
+local narrow = evaluated(app.statusline(), { maxwidth = 40 })
+check(narrow:match("^ NORMAL  auth/auth%.go"), "a narrow status line cuts the keys, not the mode and file: " .. narrow)
+local athreads = require("trail.threads")
+athreads.set({ { id = "A", path = "auth/auth.go", side = "new", line = 9, resolved = false, outdated = false, diff_hunk = "",
+  comments = { { author = "bob", body = "why?", created_at = "2026-11-18T10:00:00Z", url = "u" } } } })
+athreads.show(athreads.all()[1], function() end)
+local pane = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+  return vim.wo[w].winbar:match("auth/auth%.go:9") ~= nil
+end)
+check(pane and vim.api.nvim_win_get_position(pane)[2] > vim.api.nvim_win_get_position(diff_win)[2]
+  and vim.api.nvim_get_current_win() == diff_win, "a thread opens in a pane on the right, and the focus stays in the diff")
+check(pane and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pane), 0, -1, false), "\n"):match("bob · 2026%-11%-18.*why%?.*r reply · q close"),
+  "the pane shows the thread and its keys")
+vim.api.nvim_set_current_win(pane)
+check(evaluated(app.statusline(), { maxwidth = 200 }):match("^ NORMAL  thread .*r reply  q close"), "in the pane the status line shows its keys")
+vim.api.nvim_set_current_win(diff_win)
+require("trail.compose").open({ kind = "nit", kinds = { "nit" }, highlight = function() return "Comment" end }, function() end)
+check(evaluated(app.statusline(), { maxwidth = 200 }):match("^ %u+  comment .*<C%-s> save"), "in the comment box it shows the box's keys: "
+  .. evaluated(app.statusline(), { maxwidth = 200 }))
+vim.cmd.stopinsert()
+vim.fn.maparg("q", "n", false, true).callback()
+athreads.show(athreads.all()[1], function() end)
+check(#vim.tbl_filter(function(w)
+  return vim.wo[w].winbar:match("auth/auth%.go:9") ~= nil
+end, vim.api.nvim_tabpage_list_wins(0)) == 1, "showing another thread reuses the pane")
+local function win_of(name_pattern)
+  return vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match(name_pattern) ~= nil
+  end)
+end
+local function the_pane()
+  return vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.wo[w].winbar:match("auth/auth%.go:9") ~= nil
+  end)
+end
+vim.api.nvim_set_current_win(diff_win)
+vim.api.nvim_feedkeys("t", "x", false)
+local base_win, head_win = win_of("^trail://base/"), win_of("^trail://head/")
+tree_win = vim.fn.bufwinid("trail://path")
+local full = vim.o.columns
+check(base_win and head_win and vim.api.nvim_win_get_position(tree_win)[1] < vim.api.nvim_win_get_position(base_win)[1]
+  and vim.api.nvim_win_get_width(tree_win) == full
+  and vim.api.nvim_win_get_height(tree_win) == math.min(8, vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(tree_win))),
+  "side by side puts the tree across the top at a fixed height")
+check(vim.fn.line("w0", tree_win) == 1, "a tree that fits shows from its header")
+check(the_pane() and vim.api.nvim_win_get_width(the_pane()) == full
+  and vim.api.nvim_win_get_position(the_pane())[1] > vim.api.nvim_win_get_position(head_win)[1],
+  "side by side puts the thread pane across the bottom")
+check(math.abs(vim.api.nvim_win_get_width(base_win) - vim.api.nvim_win_get_width(head_win)) <= 1
+  and vim.api.nvim_win_get_width(base_win) >= math.floor(full / 2) - 1, "the two halves share the full width")
+local head_title = evaluated((vim.wo[head_win].winbar:gsub("%%=.*", "")), { winid = head_win, maxwidth = 1000 })
+local head_bar = evaluated(vim.wo[head_win].winbar, { winid = head_win, maxwidth = vim.fn.strdisplaywidth(head_title) + 7 })
+check(not head_bar:match("%S%? keys"), "a narrow title keeps a gap before its keys: " .. head_bar)
+vim.api.nvim_set_current_win(head_win)
+check(evaluated(app.statusline(), { maxwidth = 200 }):match("^ NORMAL  auth/auth%.go .*%]c change"),
+  "in side by side the status line names the file and the diff's keys: " .. evaluated(app.statusline(), { maxwidth = 200 }))
+vim.api.nvim_feedkeys("t", "x", false)
+diff_win = win_of("^trail://diff/")
+tree_win = vim.fn.bufwinid("trail://path")
+check(vim.api.nvim_win_get_position(tree_win)[2] == 0 and vim.api.nvim_win_get_width(tree_win) == 38
+  and vim.api.nvim_win_get_position(tree_win)[1] == vim.api.nvim_win_get_position(diff_win)[1],
+  "back in unified the tree returns to the left")
+check(the_pane() and vim.api.nvim_win_get_position(the_pane())[2] > vim.api.nvim_win_get_position(diff_win)[2]
+  and vim.api.nvim_win_get_position(the_pane())[1] == vim.api.nvim_win_get_position(diff_win)[1],
+  "and the thread pane to the right")
+athreads.set({})
+vim.g.trail_app, vim.g.trail_tree = nil, nil
+
+-- The bundled startup file the trail command runs.
+local started = vim.system({ vim.v.progpath, "--headless", "-u", root .. "/app/init.lua",
+  "+lua vim.defer_fn(function() io.stdout:write(vim.api.nvim_eval_statusline(vim.o.tabline, { use_tabline = true }).str .. '|' .. (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or '') .. '|' .. tostring(vim.g.trail_app) .. '|' .. vim.o.laststatus .. '\\n'); vim.cmd('qa!') end, 8000)" },
+  { cwd = repo, text = true, env = { NVIM_APPNAME = "trail-test", TRAIL_ARGS = "main..feature", XDG_CACHE_HOME = repo .. "-appcache",
+    TRAIL_GOPLS = repo .. "-no-gopls" } }):wait(30000)
+check(started.stdout:match("^ trail  Overview  Paths  Send .*main%.%.feature |main%.%.feature|true|3"),
+  "app/init.lua opens the review from TRAIL_ARGS with trail's own settings: " .. vim.inspect(started))
+
 vim.fn.delete(repo, "rf")
 if failures > 0 then
   io.stderr:write(failures .. " failures\n")

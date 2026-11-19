@@ -2959,3 +2959,52 @@ fn open_pull_requests_are_listed_with_those_asking_for_your_review_first() {
         responses[0]
     );
 }
+
+#[test]
+fn the_trail_command_starts_neovim_with_trail_s_own_config() {
+    let tools = Repo::new();
+    let script = tools.path().join("nvim");
+    let out = tools.path().join("calls");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n{{ printf 'args:'; for a in \"$@\"; do printf ' [%s]' \"$a\"; done; echo; echo \"appname:$NVIM_APPNAME\"; echo \"target:$TRAIL_ARGS\"; echo \"user:$TRAIL_USER_APPNAME\"; }} > \"{}\"\n",
+            out.display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&script)
+        .status()
+        .unwrap();
+    let run = |args: &[&str], appname: Option<&str>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_trail"));
+        cmd.args(args)
+            .env("TRAIL_NVIM", &script)
+            .env("TRAIL_APP_INIT", "/somewhere/app/init.lua")
+            .env_remove("NVIM_APPNAME")
+            .env_remove("TRAIL_ARGS");
+        if let Some(name) = appname {
+            cmd.env("NVIM_APPNAME", name);
+        }
+        assert!(cmd.status().unwrap().success());
+        std::fs::read_to_string(&out).unwrap()
+    };
+
+    assert_eq!(
+        run(&["#1241"], None),
+        "args: [-u] [/somewhere/app/init.lua]\nappname:trail\ntarget:#1241\nuser:\n",
+        "the app runs Neovim with trail's startup file, under its own NVIM_APPNAME"
+    );
+    assert_eq!(
+        run(&[], Some("work")),
+        "args: [-u] [/somewhere/app/init.lua]\nappname:trail\ntarget:\nuser:work\n",
+        "with no target it opens the picker, and remembers the user's own NVIM_APPNAME for gd"
+    );
+    assert_eq!(
+        run(&["--my-config", "main..feature"], None),
+        "args: [+Trail main..feature]\nappname:\ntarget:\nuser:\n",
+        "--my-config runs the user's Neovim with :Trail"
+    );
+}

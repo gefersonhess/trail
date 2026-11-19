@@ -292,6 +292,15 @@ end
 
 local reply_to, load_threads
 
+local function arrange()
+  if not vim.g.trail_app then
+    return
+  end
+  threads.place()
+  pathview.place()
+  vim.cmd.wincmd("=")
+end
+
 local function show_target(target, is_node, win, keys, after)
   local review = state.review
   -- Context nodes can live in files the change does not touch.
@@ -375,8 +384,9 @@ local function show_target(target, is_node, win, keys, after)
       win = win,
       keys = all_keys,
       on_redraw = function(again)
+        arrange()
         current = again
-        state.shown = { view = again, file = target.file }
+        state.shown = { view = again, file = target.file, old_path = params.old_path, new_path = params.new_path }
         annotate()
       end,
       hunks = vim.tbl_filter(function(h)
@@ -422,8 +432,9 @@ local function show_target(target, is_node, win, keys, after)
         end)
       end,
     })
+    arrange()
     current = view
-    state.shown = { view = view, file = target.file }
+    state.shown = { view = view, file = target.file, old_path = params.old_path, new_path = params.new_path }
     state.reannotate = annotate
     annotate()
     if target.at_start then
@@ -1204,6 +1215,11 @@ function M.open(arg)
 
   vim.cmd("tabnew")
   state.list_tab = vim.api.nvim_get_current_tabpage()
+  if vim.g.trail_app then
+    -- The app shows one review: the empty tab it started in, or the review
+    -- opened before this one, goes.
+    vim.cmd("silent! tabonly")
+  end
   local buf = vim.api.nvim_get_current_buf()
   state.list_buf = buf
   vim.bo[buf].buftype = "nofile"
@@ -1261,6 +1277,10 @@ function M.open(arg)
   map("R", load, "Refresh")
   map("?", help.show, "Show keys")
   map("q", function()
+    if vim.g.trail_app then
+      vim.cmd("qa")
+      return
+    end
     vim.api.nvim_set_current_tabpage(state.list_tab)
     if #vim.api.nvim_list_tabpages() > 1 then
       vim.cmd("tabclose")
@@ -1269,6 +1289,81 @@ function M.open(arg)
   end, "Quit trail")
 
   load()
+end
+
+local modes = { n = "NORMAL", i = "INSERT", v = "VISUAL", V = "V-LINE", ["\22"] = "V-BLOCK", c = "COMMAND", R = "REPLACE", t = "TERMINAL" }
+
+local function escape(text)
+  return (text:gsub("%%", "%%%%"))
+end
+
+---The trail app's tabline: the screens, the current one marked, and inside a
+---path its step and progress.
+function M.tabline()
+  local path, step = pathview.current()
+  local screen = "home"
+  if path then
+    screen = "path"
+  elseif state.list_tab and vim.api.nvim_tabpage_is_valid(state.list_tab) then
+    screen = help.screen(vim.api.nvim_win_get_buf(vim.api.nvim_tabpage_get_win(state.list_tab)))
+  end
+  local tabs = {
+    { "Overview", screen == "home" },
+    { path and path.title or "Paths", screen == "path" },
+  }
+  if state.pr then
+    local open = #vim.tbl_filter(function(t)
+      return not t.resolved
+    end, threads.all())
+    table.insert(tabs, { "Threads" .. (open > 0 and " " .. open or ""), screen == "threads" })
+  end
+  table.insert(tabs, { "Send", screen == "send" })
+  local out = "%#TrailTabBrand# trail "
+  for _, tab in ipairs(tabs) do
+    out = out .. (tab[2] and "%#TabLineSel#" or "%#TabLine#") .. " " .. escape(tab[1]) .. " "
+  end
+  out = out .. "%#TabLineFill#%="
+  if path then
+    local done = progress(path)
+    local filled = math.floor(done / math.max(#path.steps, 1) * 10 + 0.5)
+    out = out .. string.format("%%#TabLine# step %d/%d  %%#TrailAddText#%s%%#TabLine#%s %d/%d ", step, #path.steps,
+      string.rep("█", filled), string.rep("░", 10 - filled), done, #path.steps)
+  elseif state.title then
+    out = out .. "%#TabLine# " .. escape(state.title) .. " "
+  end
+  return out
+end
+
+---The trail app's status line: the mode, where the cursor is, and the
+---screen's main keys.
+function M.statusline()
+  local mode = modes[vim.api.nvim_get_mode().mode:sub(1, 1)] or "NORMAL"
+  local buf = vim.api.nvim_get_current_buf()
+  local screen = help.screen(buf)
+  local where = ({
+    home = "overview",
+    tree = "path",
+    send = "send",
+    threads = "threads",
+    comment = "comment",
+    thread = "thread",
+  })[screen] or vim.api.nvim_buf_get_name(buf):gsub("^trail://%a+/", "")
+  -- %< cuts the key hints first when the window is narrow.
+  return "%#TrailMode" .. mode:gsub("-", "") .. "# " .. mode .. " %#StatusLine# " .. escape(where)
+    .. "%=%<" .. escape(help.hints(buf) or "") .. " "
+end
+
+---In the trail app the thread pane follows the cursor onto the next thread.
+function M.follow_thread()
+  local shown = state.shown
+  if not (threads.pane_open() and shown and vim.api.nvim_buf_get_name(0):match("^trail://diff/")) then
+    return
+  end
+  local here = shown.view.line_at_cursor()
+  local t = here and threads.at(shown.old_path, shown.new_path, here.side, here.line)
+  if t then
+    threads.show(t, reply_to)
+  end
 end
 
 return M

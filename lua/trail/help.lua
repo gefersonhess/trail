@@ -50,18 +50,43 @@ local screens = {
   },
 }
 
-local function screen_of(buf)
-  local name = vim.api.nvim_buf_get_name(buf)
-  if name:match("^trail://diff/") then
-    return screens.diff
-  elseif name:match("^trail://path$") then
-    return screens.tree
-  elseif name:match("^trail://send$") then
-    return screens.send
-  elseif name:match("^trail://threads$") then
-    return screens.threads
+---The few keys the trail app's status line shows for each screen.
+local hints = {
+  home = "⏎ open  1-9 path  S send  T threads  ? keys",
+  tree = "⏎ open  n p step  ]c change  ]t thread  ? keys",
+  diff = "]s step  ]c change  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
+  send = "P submit  y copy  v verdict  ? keys",
+  threads = "⏎ go  r reply  ? keys",
+  comment = "<C-s> save  ⇥ kind  q cancel",
+  thread = "r reply  q close",
+}
+
+---Which screen a buffer is: home, tree, diff, send, threads, or the comment
+---box or thread pane.
+function M.screen(buf)
+  if vim.b[buf].trail_screen then
+    return vim.b[buf].trail_screen
   end
-  return screens.home
+  local name = vim.api.nvim_buf_get_name(buf)
+  local kind = name:match("^trail://(%a+)/")
+  if kind == "diff" or kind == "base" or kind == "head" then
+    return "diff"
+  elseif name:match("^trail://path$") then
+    return "tree"
+  elseif name:match("^trail://send$") then
+    return "send"
+  elseif name:match("^trail://threads$") then
+    return "threads"
+  end
+  return "home"
+end
+
+local function screen_of(buf)
+  return screens[M.screen(buf)] or screens.home
+end
+
+function M.hints(buf)
+  return hints[M.screen(buf)]
 end
 
 ---"1 2 3 4 5 6 7 8 9" reads as "1-9".
