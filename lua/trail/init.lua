@@ -5,7 +5,7 @@ local peek = require("trail.peek")
 local tree = require("trail.tree")
 local pane = require("trail.pane")
 local pathview = require("trail.pathview")
-local route = require("trail.route")
+local lanes = require("trail.lanes")
 local finder = require("trail.finder")
 local store = require("trail.state")
 local calls = require("trail.calls")
@@ -168,6 +168,18 @@ local function path_threads(path)
     end
   end
   return out
+end
+
+---How many review threads each changed function of a path has.
+local function thread_counts(path)
+  local counts = {}
+  for _, item in ipairs(path_threads(path)) do
+    local node = path.steps[item.step].node
+    if node then
+      counts[node.id] = (counts[node.id] or 0) + 1
+    end
+  end
+  return counts
 end
 
 local function review_window()
@@ -528,6 +540,7 @@ local function path_context()
     find = function()
       M.find()
     end,
+    threads = thread_counts,
     toggle_reviewed = function(path)
       toggle_reviewed(path)
     end,
@@ -1008,7 +1021,7 @@ function M.find()
   end
   local items, by_id = {}, {}
   for _, entry in ipairs(order) do
-    local nodes = route.graph(entry.path.impact).nodes
+    local nodes = lanes.graph(entry.path.impact).nodes
     for s, step in ipairs(entry.path.steps) do
       local id = step.node.id
       if not by_id[id] then
@@ -1165,51 +1178,52 @@ local function build_home(review)
   local columns = win ~= -1 and vim.api.nvim_win_get_width(win) or vim.o.columns
   for i, p in ipairs(state.code) do
     local done = progress(p)
-    local left = string.format("  %s  ", i <= 9 and tostring(i) or " ")
-    local g = route.graph(p.impact)
-    local routes = route.routes(g)
+    local key = "path:" .. p.id
+    if open[key] == nil and p.id == state.last_path then
+      open[key] = true
+    end
+    local head = string.format("%s %s  %s", open[key] and "▾" or "▸", i <= 9 and tostring(i) or " ", p.title)
     local tail = string.format("   %d/%d", done, #p.steps) .. (done == #p.steps and " ✓" or "")
-    if #routes > 1 then
-      tail = tail .. "  " .. count(#routes, "route")
+    local threads = thread_counts(p)
+    local total = 0
+    for _, n in pairs(threads) do
+      total = total + n
     end
-    local n = #path_threads(p)
-    if n > 0 then
-      tail = tail .. "  " .. count(n, "thread")
+    if total > 0 then
+      tail = tail .. "  " .. count(total, "thread")
     end
-    local at = state.last_path == p.id and p.steps[store.position(p.id) or 1]
-    local current = at and at.node and at.node.id or nil
-    local number = current and route.find(g, current, route.current(p.id))
-    if not number then
-      current, number = nil, 1
-    end
-    local shown = routes[number] or { ids = {} }
-    local index = current and route.index(shown, current) or 1
-    local ids = shown.ids
-    local seen = M.done_steps(p)
-    local drawn, drawn_hls = route.draw(g, ids, {
-      current = current,
-      anchor = index,
-      width = columns - #left - vim.fn.strdisplaywidth(tail) - 2,
-      done = function(id)
-        for s, step in ipairs(p.steps) do
-          if step.node.id == id then
-            return seen[s] == true
-          end
-        end
-        return false
-      end,
+    add(head .. tail, { path = p, fold_path = key, header = true }, {
+      { "Number", #"▸ ", #"▸ " + 1 },
+      { done == #p.steps and "Comment" or "Normal", #"▸ " + 3, #head },
+      { "Comment", #head, -1 },
     })
-    local text = left .. drawn .. tail
-    local hls = { { "Number", 2, 3 } }
-    if done == #p.steps then
-      table.insert(hls, { "Comment", #left, -1 })
-    else
-      for _, h in ipairs(drawn_hls) do
-        table.insert(hls, { h[3], #left + h[1], #left + h[2] })
+    if open[key] then
+      local g = lanes.graph(p.impact)
+      local seen = M.done_steps(p)
+      local step_of = {}
+      for s, step in ipairs(p.steps) do
+        step_of[step.node.id] = s
       end
-      table.insert(hls, { "Comment", #left + #drawn, -1 })
+      local at = state.last_path == p.id and p.steps[store.position(p.id) or 1]
+      local rows = lanes.rows(g)
+      local drawn, drawn_hls = lanes.render(g, rows, {
+        indent = "     ",
+        current = at and at.node and at.node.id or nil,
+        done = function(id)
+          return step_of[id] ~= nil and seen[step_of[id]] == true
+        end,
+        threads = function(id)
+          return threads[id] or 0
+        end,
+      })
+      local first = #lines
+      for r, line in ipairs(drawn) do
+        add(line, { path = p, step = step_of[rows[r].id], fold_path = key })
+      end
+      for _, h in ipairs(drawn_hls) do
+        table.insert(hls, { first + h[1], h[2], h[3], h[4] })
+      end
     end
-    add(text, { path = p }, hls)
   end
 
   if #state.tests > 0 then
@@ -1548,6 +1562,44 @@ function M.open(arg)
   end, "Mark the path as reviewed, or unmark it")
   map("gp", M.switch_path, "Switch path")
   map("<C-p>", M.find, "Find a changed function")
+  map("za", function()
+    local item = state.items and state.items[vim.api.nvim_win_get_cursor(0)[1]]
+    local key = item and (item.fold_path or item.fold)
+    if not key then
+      return
+    end
+    state.open[key] = not state.open[key]
+    M.refresh_home()
+    for row, it in pairs(state.items) do
+      if it.header and it.fold_path == key then
+        vim.api.nvim_win_set_cursor(0, { row, 0 })
+      end
+    end
+  end, "Fold or unfold the line")
+  map("gm", function()
+    local item = state.items and state.items[vim.api.nvim_win_get_cursor(0)[1]]
+    if item and item.path and item.path.impact then
+      require("trail.map").open(lanes.graph(item.path.impact), {
+        title = item.path.title,
+        done = function(id)
+          for s, step in ipairs(item.path.steps) do
+            if step.node.id == id then
+              return M.done_steps(item.path)[s] == true
+            end
+          end
+          return false
+        end,
+        pick = function(id)
+          for s, step in ipairs(item.path.steps) do
+            if step.node.id == id then
+              return enter(item.path, s)
+            end
+          end
+          enter(item.path)
+        end,
+      })
+    end
+  end, "Map of the path's changes")
   map("r", function()
     for _, p in ipairs(state.code or {}) do
       if p.id == state.last_path then

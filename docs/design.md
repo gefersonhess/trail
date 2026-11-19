@@ -17,7 +17,7 @@ Two levels, like a file explorer.
 
 ### Paths screen (home)
 
-- A list of paths, one line each: the path's first route (its entry point, then each change below, `●` reviewed and `○` not yet), done/total, and how many routes it has. The path last reviewed shows the route through where the review was, with `▶` on it; `r` resumes there.
+- A list of paths, one folded line each: its name, done/total and threads. `za` unfolds a path into its lanes (below); the path last reviewed starts unfolded, with `▶` where the review was, and `r` resumes there. `gm` opens its map.
 - "No test reaches": the changes no test calls, even through other code.
 - The changed test files, with the functions they cover.
 - A "Not in any path" section. Every changed hunk lands in a path, in Tests, or here.
@@ -25,8 +25,9 @@ Two levels, like a file explorer.
 
 ### Inside a path
 
-- The route on top, two lines: one chain from an entry point through the function shown down to the last change below it, with the unchanged functions between left out, and under it which of the path's routes it is (`route 2 of 5`) and what else calls the function. A path has one route per change with nothing changed below it, in the order `]s` walks the steps, so `]s`/`[s` move along a route and on into the next; the route line follows. `hjkl` stay Vim motions in the route window; `<CR>` shows the function under the cursor. A route wider than the window shows the stations around the function shown and counts the hidden ones at each end.
-- `gt` swaps the route for the path's tree: from each entry point down to the last change, current step highlighted, at most a third of the screen and scrollable beyond that. What leads to no change is folded; `<CR>` opens a fold and `c` folds back. Test files and hunks in no path always show as a list.
+- The lanes on top: every change of the path, one per row in the order `]s` walks them, with the calls between them drawn in a gutter on the left (`├─`, `╰─`) and the unchanged functions between them left out. Each row has the change's mark (`▶` shown now, `●` reviewed, `○` not yet, `◇` an unchanged entry point), its name, its other callers (`⇠ Refresh, Run`) and its thread count. `hjkl` stay Vim motions; `<CR>` shows the row's function, and `]s`/`[s` move the cursor with the step. At most a third of the screen, scrolled to the current row.
+- `gm` opens the map: the same changes as boxes in a floating window, callers above what they call, the function shown and its neighbours standing out and the rest dimmed. `<CR>` on a box shows that function.
+- `gt` swaps the lanes for the path's tree: from each entry point down to the last change, current step highlighted, at most a third of the screen and scrollable beyond that. What leads to no change is folded; `<CR>` opens a fold and `c` folds back. Test files and hunks in no path always show as a list.
 - A scrollable diff below, unified by default and side by side with `t`, with unchanged stretches folded.
 - `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen.
 - `<CR>` on a node in the graph jumps the diff to it.
