@@ -299,6 +299,8 @@ local function arrange()
   end
   pane.place()
   pathview.place()
+  -- Moving the tree across the top takes rows from the pane, so its size comes last.
+  pane.resize()
   vim.cmd.wincmd("=")
 end
 
