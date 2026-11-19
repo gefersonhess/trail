@@ -104,8 +104,27 @@ function M.pane_open()
   return pane.win ~= nil and vim.api.nvim_win_is_valid(pane.win)
 end
 
----The trail app shows a thread in a window on the right of the review,
----opened once and reused, with the focus left where it was.
+---Moves the thread pane to the right of a unified diff, or across the bottom
+---of a side-by-side one, which needs the width.
+function M.place()
+  if not M.pane_open() then
+    return
+  end
+  local below = require("trail.diffview").side_by_side()
+  vim.api.nvim_win_call(pane.win, function()
+    vim.cmd.wincmd(below and "J" or "L")
+  end)
+  local wo = vim.wo[pane.win]
+  wo.winfixwidth, wo.winfixheight = not below, below
+  if below then
+    vim.api.nvim_win_set_height(pane.win, 10)
+  else
+    vim.api.nvim_win_set_width(pane.win, math.min(46, math.floor(vim.o.columns * 0.3)))
+  end
+end
+
+---The trail app shows a thread in a pane beside the review, opened once and
+---reused, with the focus left where it was.
 show_in_pane = function(t, buf, where, reply)
   local back = vim.api.nvim_get_current_win()
   if M.pane_open() then
@@ -113,10 +132,10 @@ show_in_pane = function(t, buf, where, reply)
   else
     vim.cmd("botright vsplit")
     pane.win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_width(pane.win, math.min(46, math.floor(vim.o.columns * 0.3)))
     local wo = vim.wo[pane.win][0]
-    wo.winfixwidth, wo.number, wo.relativenumber, wo.signcolumn, wo.statuscolumn = true, false, false, "no", ""
+    wo.number, wo.relativenumber, wo.signcolumn, wo.statuscolumn = false, false, "no", ""
     wo.wrap, wo.linebreak, wo.cursorline = true, true, false
+    M.place()
   end
   vim.api.nvim_win_set_buf(pane.win, buf)
   vim.bo[buf].modifiable = true

@@ -45,7 +45,7 @@ Press `?` anywhere for the keys that work there.
 
 ## The trail app
 
-`trail` also runs on its own, as Neovim with trail's own config: the tree on the left, the diff in the middle, threads in a pane on the right, the screens in the tabline and the keys in the status line. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
+`trail` also runs on its own, as Neovim with trail's own config: the tree on the left, the diff in the middle, threads in a pane on the right (side by side moves the tree to the top and threads to the bottom), the screens in the tabline and the keys in the status line. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
 
 ```sh
 trail                 # pick an open pull request

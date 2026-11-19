@@ -292,6 +292,15 @@ end
 
 local reply_to, load_threads
 
+local function arrange()
+  if not vim.g.trail_app then
+    return
+  end
+  threads.place()
+  pathview.place()
+  vim.cmd.wincmd("=")
+end
+
 local function show_target(target, is_node, win, keys, after)
   local review = state.review
   -- Context nodes can live in files the change does not touch.
@@ -375,6 +384,7 @@ local function show_target(target, is_node, win, keys, after)
       win = win,
       keys = all_keys,
       on_redraw = function(again)
+        arrange()
         current = again
         state.shown = { view = again, file = target.file, old_path = params.old_path, new_path = params.new_path }
         annotate()
@@ -422,6 +432,7 @@ local function show_target(target, is_node, win, keys, after)
         end)
       end,
     })
+    arrange()
     current = view
     state.shown = { view = view, file = target.file, old_path = params.old_path, new_path = params.new_path }
     state.reannotate = annotate
@@ -1336,7 +1347,7 @@ function M.statusline()
     threads = "threads",
     comment = "comment",
     thread = "thread",
-  })[screen] or vim.api.nvim_buf_get_name(buf):gsub("^trail://diff/", "")
+  })[screen] or vim.api.nvim_buf_get_name(buf):gsub("^trail://%a+/", "")
   -- %< cuts the key hints first when the window is narrow.
   return "%#TrailMode" .. mode:gsub("-", "") .. "# " .. mode .. " %#StatusLine# " .. escape(where)
     .. "%=%<" .. escape(help.hints(buf) or "") .. " "

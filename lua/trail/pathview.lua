@@ -10,17 +10,18 @@ local function valid()
   return view and vim.api.nvim_win_is_valid(view.tree_win) and vim.api.nvim_win_get_buf(view.tree_win) == view.tree_buf
 end
 
-local function tree_height(lines)
-  return math.max(1, math.min(lines, math.floor(vim.o.lines / 3)))
-end
-
 ---Whether the tree sits on the left of the diff (`vim.g.trail_tree = "left"`)
----rather than above it.
+---rather than above it. Side by side needs the width, so the tree goes on top.
 local function tree_on_left()
-  return vim.g.trail_tree == "left"
+  return vim.g.trail_tree == "left" and not require("trail.diffview").side_by_side()
 end
 
 local TREE_WIDTH = 38
+
+local function tree_height(lines)
+  local most = vim.g.trail_tree == "left" and 8 or math.floor(vim.o.lines / 3)
+  return math.max(1, math.min(lines, most))
+end
 
 ---A path with no impact tree (a test file, or hunks in no path) as a list of its steps.
 local function list_lines(path, current, done)
@@ -182,6 +183,31 @@ end
 function M.current()
   if valid() then
     return view.path, view.step
+  end
+end
+
+---Moves the tree to where the layout wants it: the left of a unified diff,
+---or across the top of a side-by-side one.
+function M.place()
+  if not valid() or vim.g.trail_tree ~= "left" then
+    return
+  end
+  local left = tree_on_left()
+  vim.api.nvim_win_call(view.tree_win, function()
+    vim.cmd.wincmd(left and "H" or "K")
+  end)
+  local wo = vim.wo[view.tree_win]
+  wo.winfixwidth, wo.winfixheight = left, not left
+  if left then
+    vim.api.nvim_win_set_width(view.tree_win, TREE_WIDTH)
+  else
+    local lines = vim.api.nvim_buf_line_count(view.tree_buf)
+    vim.api.nvim_win_set_height(view.tree_win, tree_height(lines))
+    if lines <= tree_height(lines) then
+      vim.api.nvim_win_call(view.tree_win, function()
+        vim.fn.winrestview({ topline = 1 })
+      end)
+    end
   end
 end
 

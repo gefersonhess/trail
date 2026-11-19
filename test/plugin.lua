@@ -1461,6 +1461,46 @@ athreads.show(athreads.all()[1], function() end)
 check(#vim.tbl_filter(function(w)
   return vim.wo[w].winbar:match("auth/auth%.go:9") ~= nil
 end, vim.api.nvim_tabpage_list_wins(0)) == 1, "showing another thread reuses the pane")
+local function win_of(name_pattern)
+  return vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match(name_pattern) ~= nil
+  end)
+end
+local function the_pane()
+  return vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.wo[w].winbar:match("auth/auth%.go:9") ~= nil
+  end)
+end
+vim.api.nvim_set_current_win(diff_win)
+vim.api.nvim_feedkeys("t", "x", false)
+local base_win, head_win = win_of("^trail://base/"), win_of("^trail://head/")
+tree_win = vim.fn.bufwinid("trail://path")
+local full = vim.o.columns
+check(base_win and head_win and vim.api.nvim_win_get_position(tree_win)[1] < vim.api.nvim_win_get_position(base_win)[1]
+  and vim.api.nvim_win_get_width(tree_win) == full
+  and vim.api.nvim_win_get_height(tree_win) == math.min(8, vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(tree_win))),
+  "side by side puts the tree across the top at a fixed height")
+check(vim.fn.line("w0", tree_win) == 1, "a tree that fits shows from its header")
+check(the_pane() and vim.api.nvim_win_get_width(the_pane()) == full
+  and vim.api.nvim_win_get_position(the_pane())[1] > vim.api.nvim_win_get_position(head_win)[1],
+  "side by side puts the thread pane across the bottom")
+check(math.abs(vim.api.nvim_win_get_width(base_win) - vim.api.nvim_win_get_width(head_win)) <= 1
+  and vim.api.nvim_win_get_width(base_win) >= math.floor(full / 2) - 1, "the two halves share the full width")
+local head_title = evaluated((vim.wo[head_win].winbar:gsub("%%=.*", "")), { winid = head_win, maxwidth = 1000 })
+local head_bar = evaluated(vim.wo[head_win].winbar, { winid = head_win, maxwidth = vim.fn.strdisplaywidth(head_title) + 7 })
+check(not head_bar:match("%S%? keys"), "a narrow title keeps a gap before its keys: " .. head_bar)
+vim.api.nvim_set_current_win(head_win)
+check(evaluated(app.statusline(), { maxwidth = 200 }):match("^ NORMAL  auth/auth%.go .*%]c change"),
+  "in side by side the status line names the file and the diff's keys: " .. evaluated(app.statusline(), { maxwidth = 200 }))
+vim.api.nvim_feedkeys("t", "x", false)
+diff_win = win_of("^trail://diff/")
+tree_win = vim.fn.bufwinid("trail://path")
+check(vim.api.nvim_win_get_position(tree_win)[2] == 0 and vim.api.nvim_win_get_width(tree_win) == 38
+  and vim.api.nvim_win_get_position(tree_win)[1] == vim.api.nvim_win_get_position(diff_win)[1],
+  "back in unified the tree returns to the left")
+check(the_pane() and vim.api.nvim_win_get_position(the_pane())[2] > vim.api.nvim_win_get_position(diff_win)[2]
+  and vim.api.nvim_win_get_position(the_pane())[1] == vim.api.nvim_win_get_position(diff_win)[1],
+  "and the thread pane to the right")
 athreads.set({})
 vim.g.trail_app, vim.g.trail_tree = nil, nil
 

@@ -68,7 +68,8 @@ function M.screen(buf)
     return vim.b[buf].trail_screen
   end
   local name = vim.api.nvim_buf_get_name(buf)
-  if name:match("^trail://diff/") then
+  local kind = name:match("^trail://(%a+)/")
+  if kind == "diff" or kind == "base" or kind == "head" then
     return "diff"
   elseif name:match("^trail://path$") then
     return "tree"
