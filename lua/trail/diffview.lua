@@ -59,8 +59,14 @@ function M.statuscolumn()
   end
   local g = gutters[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
   local e = g and g.rows[vim.v.lnum]
+  -- The trail app marks lines with comments in a column of their own.
+  local sign = ""
+  if g and g.signs then
+    local s = g.signs[vim.v.lnum]
+    sign = s and string.format("%%#%s#%s%%* ", s[2], s[1]) or "  "
+  end
   if not e then
-    return g and g.unified and "            " or "       "
+    return sign .. (g and g.unified and "            " or "       ")
   end
   local mark = e.mark and string.format("%%#%s#%s%%*", e.mark == "+" and "TrailAdd" or "TrailDelete", e.mark) or " "
   -- The column between the gutter and the code marks rows of reviewed hunks.
@@ -69,9 +75,9 @@ function M.statuscolumn()
     reviewed = "%#TrailReviewed#▎%*"
   end
   if g.unified then
-    return string.format("%4s %4s %s%s", e.old or "", e.new or "", mark, reviewed)
+    return sign .. string.format("%4s %4s %s%s", e.old or "", e.new or "", mark, reviewed)
   end
-  return string.format("%4d %s%s", e.old or e.new, mark, reviewed)
+  return sign .. string.format("%4d %s%s", e.old or e.new, mark, reviewed)
 end
 
 local function by_line(changes)
@@ -95,7 +101,7 @@ local function make_buf(name, path, view, unified)
     vim.bo[buf].syntax = "off"
     pcall(vim.treesitter.stop, buf)
   end
-  gutters[buf] = { rows = view.gutter, unified = unified }
+  gutters[buf] = { rows = view.gutter, unified = unified, signs = vim.g.trail_app and {} or nil }
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = buf,
     callback = function()
@@ -469,13 +475,19 @@ function M.show(diff, opts)
     return { side = side, line = first, last = last, text = lines[first] }
   end
 
-  ---Draws notes as virtual lines under their file lines, replacing earlier ones.
-  ---@param notes { side: "old"|"new", line: integer, lines: table[] }[]
+  ---Draws notes on their file lines, replacing earlier ones: as virtual lines
+  ---under them, or as a hint at the end of the line and a mark in the gutter.
+  ---@param notes { side: "old"|"new", line: integer, lines?: table[], hint?: table[], sign?: string[] }[]
   function view.annotate(notes)
+    local hints = {}
     for _, p in ipairs(panes) do
       if vim.api.nvim_buf_is_valid(p.buf) then
         vim.api.nvim_buf_clear_namespace(p.buf, ns_notes, 0, -1)
       end
+      if gutters[p.buf] then
+        gutters[p.buf].signs = vim.g.trail_app and {} or nil
+      end
+      hints[p] = {}
     end
     for _, note in ipairs(notes) do
       local p = panes[1]
@@ -489,9 +501,28 @@ function M.show(diff, opts)
         end
       end
       if row and vim.api.nvim_buf_is_valid(p.buf) then
-        vim.api.nvim_buf_set_extmark(p.buf, ns_notes, row - 1, 0, { virt_lines = note.lines })
+        if note.lines then
+          vim.api.nvim_buf_set_extmark(p.buf, ns_notes, row - 1, 0, { virt_lines = note.lines })
+        end
+        if note.hint then
+          local chunks = hints[p][row] or { { "  " } }
+          if #chunks > 1 then
+            table.insert(chunks, { "  " })
+          end
+          hints[p][row] = vim.list_extend(chunks, note.hint)
+        end
+        local signs = gutters[p.buf] and gutters[p.buf].signs
+        if note.sign and signs and not signs[row] then
+          signs[row] = note.sign
+        end
       end
     end
+    for p, rows in pairs(hints) do
+      for row, chunks in pairs(rows) do
+        vim.api.nvim_buf_set_extmark(p.buf, ns_notes, row - 1, 0, { virt_text = chunks, virt_text_pos = "eol" })
+      end
+    end
+    view.redraw_marks()
   end
 
   function view.lines(side)

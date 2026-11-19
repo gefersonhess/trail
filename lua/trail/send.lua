@@ -45,10 +45,11 @@ local function render()
     for _, c in ipairs(groups[file]) do
       local where = (c.side == "old" and "-" or "") .. comments.where(c)
       local body = vim.split(c.body, "\n", { plain = true })
-      local head = string.format("  %9s  %-8s  %s", where, c.kind, body[1]) .. (c.sent and "  · sent" or "")
+      local note = c.sent and "  · sent" or c.unselected and "  · not selected" or ""
+      local head = string.format("  %9s  %-8s  %s", where, c.kind, body[1]) .. note
       add(head, { 13, 13 + #c.kind, comments.highlight(c.kind) }, c)
-      if c.sent then
-        table.insert(hls, { #lines - 1, #head - #"  · sent", #head, "Comment" })
+      if note ~= "" then
+        table.insert(hls, { #lines - 1, #head - #note, #head, "Comment" })
       end
       for i = 2, #body do
         add(string.rep(" ", 23) .. body[i], nil, c)

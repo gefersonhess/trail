@@ -1299,6 +1299,28 @@ do
     return submitted ~= nil
   end) and #submitted.comments == 0 and submitted.event == "APPROVE", "a second submit leaves out comments already sent")
   vim.wait(200)
+  table.insert(pstore.comments(), { id = "skip", kind = "nit", body = "later", file = "auth/auth.go", side = "new",
+    line = 8, text = "func Login(user string) bool {", unselected = true })
+  table.insert(pstore.comments(), { id = "send", kind = "nit", body = "now", file = "auth/auth.go", side = "new",
+    line = 8, text = "func Login(user string) bool {" })
+  table.insert(pstore.comments(), { id = "re", kind = "reply", body = "then test it", file = "auth/auth.go", side = "new",
+    line = 9, text = "", reply_to = "T1" })
+  pstore.save()
+  submitted, updates = nil, {}
+  vim.api.nvim_feedkeys("P", "x", false)
+  vim.fn.maparg("<C-s>", "n", false, true).callback()
+  check(vim.wait(5000, function()
+    return submitted ~= nil and #updates == 1
+  end) and #submitted.comments == 1 and submitted.comments[1].body == "**nit:** now"
+    and updates[1].thread == "T1" and updates[1].body == "then test it" and not updates[1].state,
+    "sending takes only the selected comments, and posts replies to their threads: " .. vim.inspect({ submitted, updates }))
+  check(vim.wait(2000, function()
+    return not vim.iter(pstore.comments()):any(function(c)
+      return c.id == "re"
+    end)
+  end) and vim.iter(pstore.comments()):any(function(c)
+    return c.id == "skip" and not c.sent
+  end), "a reply sent is the thread's now; a comment left out stays to send later")
   local dstore = require("trail.state")
   table.insert(dstore.comments(), { id = "old", kind = "question", body = "it guards\nreally", file = "auth/auth.go", side = "new",
     line = 13, text = "\treturn hashOf(h) == h", sent = true })
@@ -1476,10 +1498,10 @@ local pane = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
 end)
 check(pane and vim.api.nvim_win_get_position(pane)[2] > vim.api.nvim_win_get_position(diff_win)[2]
   and vim.api.nvim_get_current_win() == diff_win, "a thread opens in a pane on the right, and the focus stays in the diff")
-check(pane and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pane), 0, -1, false), "\n"):match("bob · 2026%-11%-18.*why%?.*r reply · q close"),
+check(pane and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pane), 0, -1, false), "\n"):match("bob · 2026%-11%-18.*why%?.*r reply.*q close"),
   "the pane shows the thread and its keys")
 vim.api.nvim_set_current_win(pane)
-check(evaluated(app.statusline(), { maxwidth = 200 }):match("^ NORMAL  thread .*r reply  q close"), "in the pane the status line shows its keys")
+check(evaluated(app.statusline(), { maxwidth = 200 }):match("^ NORMAL  thread .*r reply.*q close"), "in the pane the status line shows its keys")
 vim.api.nvim_set_current_win(diff_win)
 require("trail.compose").open({ kind = "nit", kinds = { "nit" }, highlight = function() return "Comment" end }, function() end)
 check(evaluated(app.statusline(), { maxwidth = 200 }):match("^ %u+  comment .*<C%-s> save"), "in the comment box it shows the box's keys: "
@@ -1573,6 +1595,103 @@ check(vim.api.nvim_win_get_position(tree_win)[2] == 0 and vim.api.nvim_win_get_w
 check(the_pane() and vim.api.nvim_win_get_position(the_pane())[2] > vim.api.nvim_win_get_position(diff_win)[2]
   and vim.api.nvim_win_get_position(the_pane())[1] == vim.api.nvim_win_get_position(diff_win)[1],
   "and the thread pane to the right")
+
+-- In the app every comment, the user's own included, is a hint at the end of
+-- its line and a mark in the gutter; the pane is where it is read and acted on.
+local cstore = require("trail.state")
+local newfile = vim.fn.systemlist({ "git", "-C", repo, "show", "feature:auth/auth.go" })
+local dbuf = vim.api.nvim_win_get_buf(diff_win)
+local notes_ns = vim.api.nvim_get_namespaces()["trail.diffview.notes"]
+local function row_of(text)
+  for r, l in ipairs(vim.api.nvim_buf_get_lines(dbuf, 0, -1, false)) do
+    if l == text then
+      return r
+    end
+  end
+end
+local function hint_at(row)
+  local out = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(dbuf, notes_ns, { row - 1, 0 }, { row - 1, -1 }, { details = true })) do
+    check(not m[4].virt_lines, "no lines are drawn under the code in the app")
+    for _, chunk in ipairs(m[4].virt_text or {}) do
+      table.insert(out, chunk[1])
+    end
+  end
+  return table.concat(out)
+end
+local function gutter_at(row)
+  return evaluated(vim.wo[diff_win].statuscolumn, { winid = diff_win, use_statuscol_lnum = row })
+end
+local function pane_text()
+  return table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pane_win()), 0, -1, false), "\n")
+end
+local function save_box(text)
+  vim.cmd.stopinsert()
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { text })
+  vim.fn.maparg("<C-s>", "n", false, true).callback()
+end
+local acomments = require("trail.comments")
+local before = #acomments.to_send()
+vim.api.nvim_set_current_win(diff_win)
+local mine_row = row_of("\treturn hashOf(h) == h")
+vim.api.nvim_win_set_cursor(diff_win, { mine_row, 0 })
+vim.api.nvim_feedkeys("cb", "x", false)
+save_box("hashOf lowercases")
+check(hint_at(mine_row):match("◆ blocking · not sent: hashOf lowercases ☑"),
+  "a comment shows as a hint at the end of its line, selected for sending: " .. hint_at(mine_row))
+check(gutter_at(mine_row):match("^◆ "), "and as a mark in the gutter: " .. gutter_at(mine_row))
+local thread_row = row_of(newfile[9])
+check(hint_at(thread_row):match("● bob: why%?") and gutter_at(thread_row):match("^● "),
+  "a GitHub thread shows the same way: " .. hint_at(thread_row) .. " / " .. gutter_at(thread_row))
+check(gutter_at(row_of(newfile[1])):match("^  "), "lines without one keep the gutter aligned")
+check(evaluated(app.tabline(), { use_tabline = true }):match(" Send " .. before + 1 .. " "), "the tabline counts the comments to send")
+vim.api.nvim_win_set_cursor(diff_win, { mine_row, 0 })
+app.follow_thread()
+check(pane_win() and pane_text():match("☑ you · blocking · not sent\n +hashOf lowercases") and pane_text():match("e edit")
+  and pane_text():match("s select") and pane_text():match("S send " .. before + 1 .. " selected"),
+  "on its line the pane shows the comment with what can be done to it: " .. (pane_win() and pane_text() or "no pane"))
+vim.api.nvim_set_current_win(pane_win())
+vim.api.nvim_feedkeys("s", "x", false)
+check(cstore.comments()[#cstore.comments()].unselected and pane_text():match("☐ you") and hint_at(mine_row):match("☐")
+  and evaluated(app.tabline(), { use_tabline = true }):match(" Send " .. (before > 0 and before .. " " or "")),
+  "s in the pane takes it out of what is sent: " .. pane_text())
+vim.api.nvim_feedkeys("s", "x", false)
+check(not cstore.comments()[#cstore.comments()].unselected and pane_text():match("☑ you"), "and s again puts it back")
+vim.api.nvim_win_close(pane_win(), true)
+vim.api.nvim_set_current_win(diff_win)
+vim.api.nvim_win_set_cursor(diff_win, { thread_row, 0 })
+athreads.show(athreads.all()[1], function() end)
+check(pane_text():match("bob") and pane_text():match("r reply") and pane_text():match("R resolve"), "on a thread's line the pane shows the thread")
+check(vim.wo[pane_win()].linebreak and vim.wo[pane_win()].wrap, "the pane wraps at words whatever it shows")
+vim.api.nvim_set_current_win(pane_win())
+vim.api.nvim_feedkeys("r", "x", false)
+save_box("then test it")
+local reply = cstore.comments()[#cstore.comments()]
+check(reply.reply_to == "A" and reply.body == "then test it" and not reply.sent, "r writes a reply to send later, not posted at once")
+check(pane_text():match("bob.*☑ you · reply · not sent\n +then test it"), "the reply shows under the thread in the pane: " .. pane_text())
+check(hint_at(thread_row):match("● bob: why%?.*↳ reply ☑"), "and on the thread's line: " .. hint_at(thread_row))
+check(evaluated(app.tabline(), { use_tabline = true }):match(" Send " .. before + 2 .. " "), "replies count as comments to send")
+vim.api.nvim_set_current_win(pane_win())
+vim.api.nvim_win_set_cursor(0, { vim.fn.search("then test it", "n"), 0 })
+vim.api.nvim_feedkeys("d", "x", false)
+check(not vim.iter(cstore.comments()):any(function(c)
+  return c.reply_to == "A"
+end) and not pane_text():match("then test it"), "d in the pane deletes the comment under the cursor")
+vim.api.nvim_set_current_win(diff_win)
+vim.api.nvim_win_set_cursor(diff_win, { mine_row, 0 })
+app.follow_thread()
+vim.api.nvim_set_current_win(pane_win())
+vim.api.nvim_feedkeys("e", "x", false)
+save_box("hashOf lowercases both")
+check(cstore.comments()[#cstore.comments()].body == "hashOf lowercases both" and pane_text():match("hashOf lowercases both"),
+  "e in the pane edits it")
+vim.api.nvim_set_current_win(pane_win())
+vim.api.nvim_feedkeys("S", "x", false)
+check(require("trail.help").screen(0) == "send", "S in the pane sends; on a branch review that is the send screen")
+for k = #cstore.comments(), 1, -1 do
+  table.remove(cstore.comments(), k)
+end
+cstore.save()
 athreads.set({})
 vim.g.trail_app, vim.g.trail_tree = nil, nil
 

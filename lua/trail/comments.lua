@@ -109,11 +109,51 @@ local function in_file(comment, old_path, new_path)
   return comment.file == file_of(comment.side, old_path, new_path)
 end
 
----Virtual-line notes for the comments on the file shown in `view`.
+---A comment's first line, cut to `width` columns.
+function M.summary(body, width)
+  local first = vim.trim((body:gsub("\r", "")):match("[^\n]*"))
+  if vim.fn.strdisplaywidth(first) > width then
+    first = vim.fn.strcharpart(first, 0, width - 1) .. "…"
+  end
+  return first
+end
+
+---Whether `S` sends the comment: every one not sent yet, unless taken out with `s`.
+function M.selected(c)
+  return not c.sent and not c.unselected
+end
+
+---The comments `S` would send.
+function M.to_send()
+  return vim.tbl_filter(M.selected, store.comments())
+end
+
+function M.check_mark(c)
+  return c.unselected and "☐" or "☑"
+end
+
+---The trail app's hint at the end of a comment's line, and its gutter mark.
+local function hint(c)
+  local hl = M.highlight(c.kind)
+  local state = c.sent and "sent" or "not sent"
+  local chunks = {
+    { "◆ ", hl },
+    { c.kind, hl },
+    { " · " .. state .. ": " .. M.summary(c.body, 40), "TrailThread" },
+  }
+  if not c.sent then
+    table.insert(chunks, { " " .. M.check_mark(c), c.unselected and "TrailThread" or "WarningMsg" })
+  end
+  return chunks, { "◆", hl }
+end
+
+---Notes for the comments on the file shown in `view`: virtual lines under
+---their lines, or in the trail app a hint at the end of the line. Replies
+---show with their thread.
 function M.notes(view, old_path, new_path)
   local notes, moved = {}, false
   for _, c in ipairs(store.comments()) do
-    if in_file(c, old_path, new_path) then
+    if in_file(c, old_path, new_path) and not c.reply_to then
       local line = M.anchor(c, view.lines(c.side))
       if line and line ~= c.line then
         if c.last then
@@ -122,7 +162,10 @@ function M.notes(view, old_path, new_path)
         c.line = line
         moved = true
       end
-      if line then
+      if line and vim.g.trail_app then
+        local chunks, sign = hint(c)
+        table.insert(notes, { side = c.side, line = line, hint = chunks, sign = sign })
+      elseif line then
         local virt = {}
         local label = c.kind .. (c.last and string.format(" %d-%d", c.line, c.last) or "")
         local hl, block = M.highlight(c.kind), M.block_highlight(c.kind)
@@ -194,22 +237,33 @@ function M.add(kind, view, old_path, new_path, on_change)
   end)
 end
 
+---Edits a comment in the comment box; emptied, it is deleted.
+function M.edit_one(comment, on_change)
+  local kinds = comment.reply_to and { comment.kind } or M.kinds
+  compose.open({ kind = comment.kind, kinds = kinds, highlight = M.highlight, body = comment.body }, function(body, picked)
+    if body == "" then
+      local all = store.comments()
+      for k = #all, 1, -1 do
+        if all[k] == comment then
+          table.remove(all, k)
+        end
+      end
+    else
+      comment.body = body
+      comment.kind = picked
+    end
+    store.save()
+    on_change()
+  end)
+end
+
 function M.edit(view, old_path, new_path, on_change)
   local comment = at_cursor(view, old_path, new_path)
   if not comment then
     vim.notify("trail: no comment on this line", vim.log.levels.INFO)
     return
   end
-  local opts = { kind = comment.kind, kinds = M.kinds, highlight = M.highlight, body = comment.body }
-  compose.open(opts, function(body, picked)
-    if body == "" then
-      return M.delete(view, old_path, new_path, on_change)
-    end
-    comment.body = body
-    comment.kind = picked
-    store.save()
-    on_change()
-  end)
+  M.edit_one(comment, on_change)
 end
 
 function M.delete(view, old_path, new_path, on_change)

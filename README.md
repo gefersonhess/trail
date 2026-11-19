@@ -45,7 +45,7 @@ Press `?` anywhere for the keys that work there.
 
 ## The trail app
 
-`trail` also runs on its own, as Neovim with trail's own config: the tree on the left, the diff in the middle, threads and the comment box in a pane on the right (side by side moves the tree to the top and the pane to the bottom), the screens in the tabline and the keys in the status line. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
+`trail` also runs on its own, as Neovim with trail's own config: the tree on the left, the diff in the middle, threads and the comment box in a pane on the right (side by side moves the tree to the top and the pane to the bottom), the screens in the tabline and the keys in the status line. Comments and threads don't sit between the code lines there: each shows as a mark in the gutter and a hint at the end of its line, and the pane shows the line's thread with your unsent comments and replies under it. A reply is written now and sent later. Everything you add is selected for sending (☑): `s` in the pane takes a comment out or puts it back, `e` and `d` edit and delete it, and `S` sends the selected ones as one review, replies going to their threads. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
 
 ```sh
 trail                     # pick an open pull request
