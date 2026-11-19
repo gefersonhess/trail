@@ -86,7 +86,7 @@ Inside a path (tree on top, diff below)
 | `<CR>` in the tree | Open a fold, show a step or function |
 | `a` / `c` in the tree | Show every function on the way / fold back to the changes |
 | `t` | Unified or side by side |
-| `o` | Fold unchanged code, or show the whole file |
+| `o` | On a step: fold away what is outside its function, which is otherwise shown dimmed. Elsewhere: fold unchanged code, or show the whole file |
 | `K` | Show the function's code in a popup |
 | `gd` | Open the definition in a separate Neovim with your config |
 | `mr` | Mark the path as reviewed |
@@ -119,7 +119,7 @@ Send screen
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `vim.g.trail_layout` | `"unified"` | `"side_by_side"` to start side by side |
-| `vim.g.trail_fold_unchanged` | `true` | `false` to start with whole files |
+| `vim.g.trail_fold_unchanged` | `true` | `false` to start with whole files, outside a step |
 | `vim.g.trail_seen_on_scroll` | `true` | `false` to mark hunks as seen only by hand (`mh`, `mr`) |
 | `vim.g.trail_default_comment_kind` | `"blocking"` | Kind `cc` starts with |
 | `vim.g.trail_ignore` | `{}` | Gitignore-style patterns for files to leave out |

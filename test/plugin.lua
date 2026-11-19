@@ -288,7 +288,6 @@ check(not reviewed(uwin, new_login) and reviewed(uwin, verify_row), "a selection
 
 -- A hunk unmarked by hand counts as seen again once it has left the screen
 -- and come back, unless scrolling is told not to mark hunks.
-vim.api.nvim_feedkeys("o", "x", false)
 moved("G")
 check(vim.fn.line("w0") > new_login, "the end of the file scrolls Login out of view")
 moved("gg")
@@ -303,7 +302,6 @@ vim.api.nvim_win_set_cursor(uwin, { new_login, 0 })
 vim.api.nvim_feedkeys("mh", "x", false)
 check(reviewed(uwin, new_login), "mh marks hunks with scrolling turned off")
 vim.g.trail_seen_on_scroll = nil
-vim.api.nvim_feedkeys("o", "x", false)
 vim.api.nvim_win_set_cursor(uwin, { urow, 0 })
 local function peek_on(row, word)
   vim.api.nvim_win_set_cursor(0, { row, vim.api.nvim_get_current_line():len() > 0 and 0 or 0 })
@@ -441,21 +439,26 @@ vim.fn.delete(cache, "rf")
 vim.system({ "git", "-C", repo, "worktree", "prune" }):wait()
 
 
-check(vim.fn.foldclosed(row_with(ubuf, "func p6() {}") or 1) > 0, "unified folds long unchanged stretches")
+local p6_row = row_with(ubuf, "func p6() {}")
+local function dim_at(buf, row)
+  local focus = vim.api.nvim_get_namespaces()["trail.diffview.focus"]
+  return focus ~= nil and #vim.api.nvim_buf_get_extmarks(buf, focus, { row - 1, 0 }, { row - 1, -1 }, {}) > 0
+end
+check(vim.fn.foldlevel(p6_row) == 0 and dim_at(ubuf, p6_row) and not dim_at(ubuf, row_with(ubuf, "func VerifyHash(h string) bool {")),
+  "a step shows the whole file, what is outside its function dimmed")
 vim.api.nvim_win_set_cursor(uwin, { 1, 0 })
 vim.api.nvim_feedkeys("]h", "x", false)
 check(vim.api.nvim_get_current_line() == 'import "fmt"', "unified ]h jumps to the first change, got " .. vim.api.nvim_get_current_line())
-local p6_row = row_with(ubuf, "func p6() {}")
 vim.api.nvim_feedkeys("o", "x", false)
-check(vim.fn.foldclosed(p6_row) == -1 and vim.fn.foldlevel(p6_row) == 0, "o shows the whole file")
+check(vim.fn.foldclosed(p6_row) > 0, "o folds away what is outside the function")
 check(vim.api.nvim_get_current_line() == 'import "fmt"', "o keeps the cursor where it was")
+vim.api.nvim_feedkeys("o", "x", false)
+check(vim.fn.foldlevel(p6_row) == 0, "o again shows the whole file")
 vim.api.nvim_win_set_cursor(uwin, { 1, 0 })
 vim.api.nvim_feedkeys("]h]h", "x", false)
 check(vim.api.nvim_get_current_line() == "func Login(u string) bool {", "]h moves hunk by hunk with the whole file shown, got " .. vim.api.nvim_get_current_line())
 vim.api.nvim_feedkeys("[h", "x", false)
 check(vim.api.nvim_get_current_line() == 'import "fmt"', "[h moves back a hunk, got " .. vim.api.nvim_get_current_line())
-vim.api.nvim_feedkeys("o", "x", false)
-check(vim.fn.foldclosed(p6_row) > 0, "o folds unchanged code again")
 vim.api.nvim_win_set_cursor(uwin, { urow, 0 })
 
 vim.api.nvim_feedkeys("t", "x", false)
@@ -497,11 +500,9 @@ end), "marker uses the TrailAdd color")
 check(login_row and vim.api.nvim_buf_get_lines(lbuf, login_row - 1, login_row, false)[1] == "func Login(u string) bool {", "Login lines aligned")
 
 local p6 = row_with(rbuf, "func p6() {}")
-check(p6 and vim.api.nvim_win_call(lwin, function()
-  return vim.fn.foldclosed(p6)
-end) > 0 and vim.api.nvim_win_call(rwin, function()
-  return vim.fn.foldclosed(p6)
-end) > 0, "long unchanged stretch is folded on both sides")
+check(p6 and dim_at(lbuf, p6) and dim_at(rbuf, p6) and vim.api.nvim_win_call(rwin, function()
+  return vim.fn.foldlevel(p6)
+end) == 0, "what is outside the function is dimmed on both sides")
 
 vim.api.nvim_win_set_cursor(rwin, { 1, 0 })
 vim.api.nvim_feedkeys("]h", "x", false)
@@ -511,9 +512,10 @@ check(first_change > 1 and first_change <= strings_row, "]h jumps to the first c
 vim.api.nvim_feedkeys("o", "x", false)
 check(vim.iter(panes()):all(function(w)
   return vim.api.nvim_win_call(w, function()
-    return vim.fn.foldlevel(p6) == 0
+    return vim.fn.foldclosed(p6) > 0
   end)
-end), "o shows the whole file on both sides")
+end), "o folds it away on both sides")
+vim.api.nvim_feedkeys("o", "x", false)
 vim.api.nvim_feedkeys("t", "x", false)
 check(#panes() == 1, "t switches back to unified")
 check(vim.api.nvim_get_current_line() == "import (", "toggling keeps the cursor on the same line, got " .. vim.api.nvim_get_current_line())
@@ -1635,6 +1637,27 @@ check(vim.wait(5000, function()
 end), "]] on a call follows it into the step it calls: step " .. tostring(step_now()) .. ", " .. cursor_text())
 check(hint_on("func VerifyHash(h string) bool {"):match("← called by Login line 9"),
   "the function says where it is called from: " .. hint_on("func VerifyHash(h string) bool {"))
+local function folded(text)
+  return vim.fn.foldclosed(diff_text_row(text)) ~= -1
+end
+local focus_ns = vim.api.nvim_get_namespaces()["trail.diffview.focus"]
+local function dimmed(text)
+  local buf = vim.api.nvim_win_get_buf(win_of("^trail://diff/"))
+  local row = diff_text_row(text) - 1
+  return focus_ns ~= nil and #vim.api.nvim_buf_get_extmarks(buf, focus_ns, { row, 0 }, { row, -1 }, {}) > 0
+end
+local inside = { "func VerifyHash(h string) bool {", "\treturn h != \"\"", "\treturn hashOf(h) == h" }
+local outside = { "package auth", "func Login(user string) bool {", "func hashOf(h string) string { return strings.ToLower(h) }" }
+check(vim.iter(inside):all(function(t)
+  return not dimmed(t) and not folded(t)
+end) and vim.iter(outside):all(function(t)
+  return dimmed(t) and not folded(t)
+end), "a step shows the whole file, everything outside its function dimmed")
+vim.api.nvim_feedkeys("o", "x", false)
+check(vim.iter(outside):all(folded) and not vim.iter(inside):any(folded), "o folds away what is outside the function")
+vim.api.nvim_feedkeys("o", "x", false)
+check(not vim.iter(outside):any(folded), "and o again shows it")
+vim.api.nvim_win_set_cursor(0, { diff_text_row("func VerifyHash(h string) bool {"), 0 })
 vim.api.nvim_feedkeys("]]", "x", false)
 check(step_now() == 2 and cursor_text() == "\treturn hashOf(h) == h", "]] off a call moves to the next call: " .. cursor_text())
 vim.api.nvim_feedkeys("]]", "x", false)

@@ -392,7 +392,11 @@ local function show_target(target, is_node, win, keys, after)
     table.insert(all_keys, { "cd", function()
       comments.delete(current, params.old_path, params.new_path, changed)
     end, "Delete the comment on this line" })
+    -- A changed function, as a step shows it: the rest of its file is dimmed.
+    local focus = target.focus or (is_node and target.hunks and (target.old or target.new)
+      and { old = target.old, new = target.new }) or nil
     local view = diffview.show(diff, {
+      focus = focus,
       win = win,
       keys = all_keys,
       on_redraw = function(again)

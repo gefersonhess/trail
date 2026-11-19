@@ -112,6 +112,11 @@ local function show_step(i, focus_tree, hunk)
   render_tree()
   local target = path.steps[i]
   local shown = hunk and vim.tbl_extend("force", hunk, { at_start = true }) or target.node or target.hunk
+  -- Moving to a line of the step's file keeps the step's function in focus.
+  local node = target.node
+  if hunk and node and hunk.file == node.file then
+    shown.focus = { old = node.old, new = node.new }
+  end
   view.ctx.show_target(shown, hunk == nil and target.node ~= nil, view.diff_win, view.keys, function()
     if focus_tree and vim.api.nvim_win_is_valid(view.tree_win) then
       vim.api.nvim_set_current_win(view.tree_win)
