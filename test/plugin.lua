@@ -1056,6 +1056,7 @@ do
   }
   local pr_numbers = {}
   local updates = {}
+  local posts = {}
   eng.request = function(method, params, cb)
     if method == "pull_request" then
       table.insert(pr_numbers, params.number)
@@ -1066,6 +1067,11 @@ do
           { number = 7, title = "Add hashing", author = "alice", head_ref_name = "feature", is_draft = false, review_requested = true },
           { number = 3, title = "Fix docs", author = "bob", head_ref_name = "docs", is_draft = true, review_requested = false },
         })
+      end)
+    elseif method == "post_comment" then
+      table.insert(posts, params)
+      return vim.schedule(function()
+        cb(nil, { url = "https://github.com/owner/repo/pull/7#discussion_r9" })
       end)
     elseif method == "update_thread" then
       table.insert(updates, params)
@@ -1252,6 +1258,46 @@ do
     return vim.fn.strdisplaywidth(vim.trim(l)) <= 84
   end), "and wraps at 80 columns in the popup: " .. ptext)
   press("q")
+
+  -- <C-s> keeps a comment for the review; <C-y> posts it at once.
+  local login_line = "func Login(user string) bool {"
+  local function line_row(text)
+    for r, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
+      if l == text then
+        return r
+      end
+    end
+  end
+  vim.api.nvim_win_set_cursor(0, { line_row(login_line), 0 })
+  local reads_before = thread_reads
+  vim.api.nvim_feedkeys("cc", "x", false)
+  check(vim.inspect(vim.api.nvim_win_get_config(0).footer):match("<C%-y> post now"), "the comment box offers posting at once")
+  vim.cmd.stopinsert()
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "post this now" })
+  press("<C-y>")
+  check(vim.wait(3000, function()
+    return #posts == 1
+  end) and posts[1].comment.path == "auth/auth.go" and posts[1].comment.side == "new" and posts[1].comment.line == 8
+    and posts[1].comment.text == login_line and posts[1].comment.body == "**blocking:** post this now"
+    and posts[1].commit == head_sha and posts[1].number == 7, "<C-y> posts the comment at once: " .. vim.inspect(posts))
+  check(not vim.iter(require("trail.state").comments()):any(function(c)
+    return c.body == "post this now"
+  end) and vim.wait(2000, function()
+    return thread_reads > reads_before
+  end), "it is a GitHub thread now, not a comment kept for the review")
+  vim.g.trail_app = true
+  vim.api.nvim_win_set_cursor(0, { line_row("\treturn VerifyHash(user)"), 0 })
+  local updated = #updates
+  press("r")
+  vim.cmd.stopinsert()
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "replying now" })
+  press("<C-y>")
+  check(vim.wait(3000, function()
+    return #updates == updated + 1
+  end) and updates[#updates].body == "replying now" and not vim.iter(require("trail.state").comments()):any(function(c)
+    return c.body == "replying now"
+  end), "in the app, <C-y> posts a reply at once instead of keeping it: " .. vim.inspect(updates[#updates]))
+  vim.g.trail_app = nil
   vim.api.nvim_feedkeys("-", "x", false)
   check(vim.wait(3000, function()
     return vim.api.nvim_get_current_buf() == prbuf
@@ -1273,6 +1319,7 @@ do
   local box = vim.api.nvim_get_current_buf()
   check(vim.api.nvim_win_get_config(0).relative ~= "" and vim.inspect(vim.api.nvim_win_get_config(0).title):match("comment"),
     "P opens the overall comment box on the verdict")
+  local reads_at_submit = thread_reads
   vim.api.nvim_buf_set_lines(box, 0, -1, false, { "Ship it" })
   vim.fn.maparg("<Tab>", "n", false, true).callback()
   vim.fn.maparg("<C-s>", "n", false, true).callback()
@@ -1291,7 +1338,7 @@ do
     return c.body == "name it user"
   end), "a comment posted inline is a GitHub thread now, not a trail comment")
   check(vim.wait(2000, function()
-    return thread_reads == 2
+    return thread_reads >= reads_at_submit + 1
   end), "the threads are read again after submitting")
   check(pstore.verdict() == "approve", "the verdict chosen is kept")
   submitted = nil

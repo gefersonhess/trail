@@ -276,6 +276,17 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
             })?;
             Ok(serde_json::to_value(checkout).expect("checkout serializes"))
         }
+        "post_comment" => {
+            let p: pull_request::Single = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            let posted = pull_request::post_comment(&p).map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
+            Ok(serde_json::to_value(posted).expect("posted comment serializes"))
+        }
         "commits" => {
             let p: CommitsParams = serde_json::from_value(params).map_err(|e| RpcError {
                 code: INVALID_PARAMS,

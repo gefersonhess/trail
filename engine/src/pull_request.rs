@@ -207,32 +207,22 @@ fn repository_of(url: &str, number: u32) -> Result<(String, String), String> {
     }
 }
 
-/// Posts one review on a pull request: `event` (`APPROVE`, `REQUEST_CHANGES`,
-/// `COMMENT`, or none for a pending review), the overall `body`, and the
-/// comments as inline comments where GitHub's diff has their lines. The
-/// others are listed at the end of the body, since GitHub refuses them inline.
-pub fn submit_review(review: &Submission) -> Result<Submitted, String> {
-    let Submission {
-        repo,
-        url,
-        number,
-        commit,
-        base,
-        event,
-        body,
-        comments,
-    } = review;
-    let (repo, number, commit) = (repo.as_path(), *number, commit.as_str());
+/// The lines GitHub's diff of the pull request has, per file: (old, new).
+type DiffRanges = std::collections::HashMap<String, (Ranges, Ranges)>;
+
+fn diff_ranges(
+    repo: &Path,
+    host: &str,
+    repository: &str,
+    number: u32,
+) -> Result<DiffRanges, String> {
     let gh = gh_command();
-    // `gh api` goes to github.com unless told otherwise, even inside a
-    // repository on GitHub Enterprise, where `gh pr view` finds the host itself.
-    let (host, repository) = repository_of(url, number)?;
     let out = Command::new(&gh)
         .current_dir(repo)
         .args([
             "api",
             "--hostname",
-            &host,
+            host,
             &format!("repos/{repository}/pulls/{number}/files"),
             "--paginate",
             "--jq",
@@ -246,87 +236,76 @@ pub fn submit_review(review: &Submission) -> Result<Submitted, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let mut ranges: std::collections::HashMap<String, (Ranges, Ranges)> = Default::default();
+    let mut ranges = DiffRanges::default();
     for file in serde_json::Deserializer::from_slice(&out.stdout).into_iter::<(String, String)>() {
         let (name, patch) = file.map_err(|e| format!("reading {gh} output: {e}"))?;
         ranges.insert(name, hunk_ranges(&patch));
     }
+    Ok(ranges)
+}
 
-    // Removed lines are on GitHub's left side: the merge base of the pull request.
-    let left = match base {
-        Some(base) => Some(git::merge_base(repo, &git::commit(repo, base)?, commit)?),
-        None => None,
+/// Where a comment goes on GitHub: its first and last line, found again by
+/// its text at the head (removed lines at `left`, the merge base), and
+/// whether GitHub's diff has them, which it needs to take it inline.
+fn place(
+    repo: &Path,
+    commit: &str,
+    left: Option<&str>,
+    c: &ReviewComment,
+    ranges: &DiffRanges,
+) -> (u32, u32, bool) {
+    // A comment written on an earlier commit, or before new pushes, may sit
+    // on another line at the head.
+    let rev = if c.side == Side::Old {
+        left
+    } else {
+        Some(commit)
     };
-    let mut inline = Vec::new();
-    let mut inline_comments = Vec::new();
-    let mut elsewhere = Vec::new();
-    for (index, c) in comments.iter().enumerate() {
-        // A comment written on an earlier commit, or before new pushes, may sit
-        // on another line at the head: it is found again by its text.
-        let rev = if c.side == Side::Old {
-            left.as_deref()
-        } else {
-            Some(commit)
-        };
-        let at = match (&c.text, rev) {
-            (Some(text), Some(rev)) => anchored(repo, rev, c, text),
-            _ => Some((c.line, c.last)),
-        };
-        let (line, last) = at.map_or((c.line, c.last.unwrap_or(c.line)), |(l, last)| {
-            (l, last.unwrap_or(l))
+    let at = match (&c.text, rev) {
+        (Some(text), Some(rev)) => anchored(repo, rev, c, text),
+        _ => Some((c.line, c.last)),
+    };
+    let (line, last) = at.map_or((c.line, c.last.unwrap_or(c.line)), |(l, last)| {
+        (l, last.unwrap_or(l))
+    });
+    let fits = at.is_some()
+        && ranges.get(&c.path).is_some_and(|(old, new)| {
+            let side = if c.side == Side::Old { old } else { new };
+            side.iter().any(|&(a, b)| a <= line && last <= b)
         });
-        let fits = at.is_some()
-            && ranges.get(&c.path).is_some_and(|(old, new)| {
-                let side = if c.side == Side::Old { old } else { new };
-                side.iter().any(|&(a, b)| a <= line && last <= b)
-            });
-        if !fits {
-            let lines = if last > line {
-                format!("{line}-{last}")
-            } else {
-                line.to_string()
-            };
-            let removed = if c.side == Side::Old {
-                " (removed)"
-            } else {
-                ""
-            };
-            elsewhere.push(format!("- `{}` line {lines}{removed}: {}", c.path, c.body));
-            continue;
-        }
-        let side = if c.side == Side::Old { "LEFT" } else { "RIGHT" };
-        let mut comment =
-            serde_json::json!({ "path": c.path, "body": c.body, "line": last, "side": side });
-        if last > line {
-            comment["start_line"] = line.into();
-            comment["start_side"] = side.into();
-        }
-        inline.push(comment);
-        inline_comments.push(index);
-    }
+    (line, last, fits)
+}
 
-    let mut text = body.trim().to_string();
-    if !elsewhere.is_empty() {
-        if !text.is_empty() {
-            text.push_str("\n\n");
-        }
-        text.push_str("Comments on lines outside the diff:\n\n");
-        text.push_str(&elsewhere.join("\n"));
+/// The comment as GitHub's API takes it, on the lines `place` found.
+fn inline_json(c: &ReviewComment, line: u32, last: u32) -> serde_json::Value {
+    let side = if c.side == Side::Old { "LEFT" } else { "RIGHT" };
+    let mut comment =
+        serde_json::json!({ "path": c.path, "body": c.body, "line": last, "side": side });
+    if last > line {
+        comment["start_line"] = line.into();
+        comment["start_side"] = side.into();
     }
-    let mut payload = serde_json::json!({ "commit_id": commit, "body": text, "comments": inline });
-    if let Some(event) = event {
-        payload["event"] = event.as_str().into();
-    }
+    comment
+}
 
+/// POSTs `payload` to the GitHub API path with `gh`, returning the html_url
+/// of what it created.
+fn post(
+    repo: &Path,
+    host: &str,
+    path: &str,
+    payload: &serde_json::Value,
+) -> Result<String, String> {
+    let gh = gh_command();
     let mut child = Command::new(&gh)
         .current_dir(repo)
         .args([
             "api",
             "--hostname",
-            &host,
+            host,
             "--method",
             "POST",
-            &format!("repos/{repository}/pulls/{number}/reviews"),
+            path,
             "--input",
             "-",
         ])
@@ -346,12 +325,10 @@ pub fn submit_review(review: &Submission) -> Result<Submitted, String> {
         .wait_with_output()
         .map_err(|e| format!("running {gh}: {e}"))?;
     if !out.status.success() {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(format!(
-            "{gh} api pulls/{number}/reviews: {} {}",
-            stderr.trim(),
-            stdout.trim()
+            "{gh} api {path}: {} {}",
+            String::from_utf8_lossy(&out.stderr).trim(),
+            String::from_utf8_lossy(&out.stdout).trim()
         ));
     }
     #[derive(Deserialize)]
@@ -360,17 +337,141 @@ pub fn submit_review(review: &Submission) -> Result<Submitted, String> {
     }
     let posted: Posted =
         serde_json::from_slice(&out.stdout).map_err(|e| format!("reading {gh} output: {e}"))?;
+    Ok(posted.html_url)
+}
+
+/// Removed lines are on GitHub's left side: the merge base of the pull request.
+fn left_side(repo: &Path, base: Option<&str>, commit: &str) -> Result<Option<String>, String> {
+    match base {
+        Some(base) => Ok(Some(git::merge_base(
+            repo,
+            &git::commit(repo, base)?,
+            commit,
+        )?)),
+        None => Ok(None),
+    }
+}
+
+/// Submits a review to the pull request at `url`: the body and event, with
+/// comments as inline comments where GitHub's diff has their lines. The
+/// others are listed at the end of the body, since GitHub refuses them inline.
+pub fn submit_review(review: &Submission) -> Result<Submitted, String> {
+    let Submission {
+        repo,
+        url,
+        number,
+        commit,
+        base,
+        event,
+        body,
+        comments,
+    } = review;
+    let (repo, number, commit) = (repo.as_path(), *number, commit.as_str());
+    // `gh api` goes to github.com unless told otherwise, even inside a
+    // repository on GitHub Enterprise, where `gh pr view` finds the host itself.
+    let (host, repository) = repository_of(url, number)?;
+    let ranges = diff_ranges(repo, &host, &repository, number)?;
+    let left = left_side(repo, base.as_deref(), commit)?;
+    let mut inline = Vec::new();
+    let mut inline_comments = Vec::new();
+    let mut elsewhere = Vec::new();
+    for (index, c) in comments.iter().enumerate() {
+        let (line, last, fits) = place(repo, commit, left.as_deref(), c, &ranges);
+        if !fits {
+            let lines = if last > line {
+                format!("{line}-{last}")
+            } else {
+                line.to_string()
+            };
+            let removed = if c.side == Side::Old {
+                " (removed)"
+            } else {
+                ""
+            };
+            elsewhere.push(format!("- `{}` line {lines}{removed}: {}", c.path, c.body));
+            continue;
+        }
+        inline.push(inline_json(c, line, last));
+        inline_comments.push(index);
+    }
+
+    let mut text = body.trim().to_string();
+    if !elsewhere.is_empty() {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str("Comments on lines outside the diff:\n\n");
+        text.push_str(&elsewhere.join("\n"));
+    }
+    let mut payload = serde_json::json!({ "commit_id": commit, "body": text, "comments": inline });
+    if let Some(event) = event {
+        payload["event"] = event.as_str().into();
+    }
+    let url = post(
+        repo,
+        &host,
+        &format!("repos/{repository}/pulls/{number}/reviews"),
+        &payload,
+    )?;
     log(&format!(
         "submitted a review on pull request {number}: {} inline, {} in the body",
         inline.len(),
         elsewhere.len()
     ));
     Ok(Submitted {
-        url: posted.html_url,
+        url,
         inline: inline.len(),
         in_body: elsewhere.len(),
         inline_comments,
     })
+}
+
+/// One comment to post at once: the `post_comment` request.
+#[derive(Deserialize)]
+pub struct Single {
+    repo: std::path::PathBuf,
+    url: String,
+    number: u32,
+    /// The pull request's head commit, which the comment's lines refer to.
+    commit: String,
+    base: Option<String>,
+    comment: ReviewComment,
+}
+
+#[derive(Serialize)]
+pub struct Posted {
+    pub url: String,
+}
+
+/// Posts one comment on its line of the pull request at once, outside any
+/// review, like GitHub's "Add single comment". GitHub takes it only on a
+/// line its diff has.
+pub fn post_comment(single: &Single) -> Result<Posted, String> {
+    let (repo, number, commit) = (single.repo.as_path(), single.number, single.commit.as_str());
+    let (host, repository) = repository_of(&single.url, number)?;
+    let ranges = diff_ranges(repo, &host, &repository, number)?;
+    let left = left_side(repo, single.base.as_deref(), commit)?;
+    let c = &single.comment;
+    let (line, last, fits) = place(repo, commit, left.as_deref(), c, &ranges);
+    if !fits {
+        return Err(format!(
+            "{} line {line} is not in the pull request's diff on GitHub; save it for the review instead (it goes in the review's text)",
+            c.path
+        ));
+    }
+    let mut payload = inline_json(c, line, last);
+    payload["commit_id"] = commit.into();
+    let url = post(
+        repo,
+        &host,
+        &format!("repos/{repository}/pulls/{number}/comments"),
+        &payload,
+    )?;
+    log(&format!(
+        "posted a comment on pull request {number}: {}:{line}",
+        c.path
+    ));
+    Ok(Posted { url })
 }
 
 const THREADS_QUERY: &str =

@@ -100,7 +100,8 @@ Comments, in a diff
 | `cc` | Comment on the line, or on the visual selection |
 | `cb` `cq` `cn` | Same, as blocking, question or nit |
 | `ce` / `cd` | Edit / delete the comment on the line |
-| `<C-s>` | Save, in the comment box |
+| `<C-s>` | Save, in the comment box: kept for the review, sent with it |
+| `<C-y>` | Post at once, in the comment box on a pull request: a comment as a single comment on its line, a reply to its thread |
 | `<Tab>` (`<C-t>` while typing) | Change the kind, in the comment box |
 | `q` `<Esc>` | Cancel, in the comment box |
 

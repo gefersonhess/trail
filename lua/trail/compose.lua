@@ -8,8 +8,9 @@ local WIDTH, HEIGHT = 64, 6
 ---`<Tab>` (`<C-t>` while typing) cycles the kind, `q` or `<Esc>` in normal mode
 ---cancels. `on_confirm` gets the text, possibly empty, and the kind chosen.
 ---In the trail app the box is the side pane, so the code stays in view and
----can be scrolled while writing.
----@param opts { kind: string, kinds: string[], highlight: fun(kind: string): string, body?: string, footer?: string }
+---can be scrolled while writing. With `on_now`, `<C-y>` hands the text and
+---kind to it instead, to post at once rather than keep for the review.
+---@param opts { kind: string, kinds: string[], highlight: fun(kind: string): string, body?: string, footer?: string, on_now?: fun(body: string, kind: string) }
 ---@param on_confirm fun(body: string, kind: string)
 function M.open(opts, on_confirm)
   local in_pane = vim.g.trail_app
@@ -24,7 +25,8 @@ function M.open(opts, on_confirm)
   vim.bo[buf].bufhidden = "wipe"
   local lines = opts.body and vim.split(opts.body, "\n", { plain = true }) or { "" }
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  local footer = opts.footer or " <C-s> save  <Tab> kind  q cancel "
+  local footer = opts.footer
+    or (opts.on_now and " <C-s> keep for the review  <C-y> post now  <Tab> kind  q cancel " or " <C-s> save  <Tab> kind  q cancel ")
   local function title()
     return { { " " .. kind .. " ", opts.highlight(kind) } }
   end
@@ -78,6 +80,14 @@ function M.open(opts, on_confirm)
     close()
     on_confirm(body, kind)
   end
+  local function now()
+    local body = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
+    vim.cmd.stopinsert()
+    close()
+    if body ~= "" then
+      opts.on_now(body, kind)
+    end
+  end
   local function cycle()
     for i, k in ipairs(opts.kinds) do
       if k == kind then
@@ -92,6 +102,9 @@ function M.open(opts, on_confirm)
     close()
   end
   vim.keymap.set({ "n", "i" }, "<C-s>", submit, { buffer = buf })
+  if opts.on_now then
+    vim.keymap.set({ "n", "i" }, "<C-y>", now, { buffer = buf })
+  end
   vim.keymap.set("n", "<Tab>", cycle, { buffer = buf })
   vim.keymap.set("i", "<C-t>", cycle, { buffer = buf })
   vim.keymap.set("n", "q", cancel, { buffer = buf, nowait = true })

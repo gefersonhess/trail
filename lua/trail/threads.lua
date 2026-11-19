@@ -34,7 +34,8 @@ local show_spot
 local hooks = {}
 
 ---What the review does for the pane's keys: `reply(t)`, `resolve(t)`,
----`send()`, and `changed()` after a comment changed.
+---`send()`, `changed()` after a comment changed, and `poster()`, what posts
+---a comment at once, if anything can.
 function M.hooks(h)
   hooks = h
 end
@@ -299,7 +300,7 @@ show_spot = function(spot)
   map("e", function()
     local c = target()
     if c then
-      comments.edit_one(c, changed)
+      comments.edit_one(c, changed, hooks.poster and hooks.poster())
     end
   end)
   map("S", function()

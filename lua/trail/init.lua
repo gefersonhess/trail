@@ -293,7 +293,7 @@ local function toggle_seen(ids)
   return not reviewed
 end
 
-local reply_to, load_threads, comments_changed
+local reply_to, load_threads, comments_changed, poster
 
 local function arrange()
   if not vim.g.trail_app then
@@ -354,13 +354,13 @@ local function show_target(target, is_node, win, keys, after)
     local all_keys = vim.list_extend({}, keys or {})
     for _, kind in ipairs(comments.kinds) do
       local function add()
-        comments.add(kind, current, params.old_path, params.new_path, changed)
+        comments.add(kind, current, params.old_path, params.new_path, changed, poster())
       end
       table.insert(all_keys, { "c" .. kind:sub(1, 1), add, "Add a " .. kind .. " comment on this line" })
       table.insert(all_keys, { "c" .. kind:sub(1, 1), add, "Add a " .. kind .. " comment on the selected lines", "x" })
     end
     local function add_default()
-      comments.add(comments.default_kind(), current, params.old_path, params.new_path, changed)
+      comments.add(comments.default_kind(), current, params.old_path, params.new_path, changed, poster())
     end
     table.insert(all_keys, { "]]", function()
       calls.follow(current, params.new_path)
@@ -387,7 +387,7 @@ local function show_target(target, is_node, win, keys, after)
     table.insert(all_keys, { "cc", add_default, "Add a comment on this line (kind from vim.g.trail_default_comment_kind)" })
     table.insert(all_keys, { "cc", add_default, "Add a comment on the selected lines", "x" })
     table.insert(all_keys, { "ce", function()
-      comments.edit(current, params.old_path, params.new_path, changed)
+      comments.edit(current, params.old_path, params.new_path, changed, poster())
     end, "Edit the comment on this line" })
     table.insert(all_keys, { "cd", function()
       comments.delete(current, params.old_path, params.new_path, changed)
@@ -677,12 +677,56 @@ local function update_thread(t, body, change, done)
   end)
 end
 
+---Posts a comment to the pull request at once, outside the review: a reply
+---to its thread, or a comment on its own line. A new comment GitHub refuses
+---is kept for the review instead, so its text is not lost.
+local function post_now(c, done)
+  if c.reply_to then
+    return update_thread({ id = c.reply_to, path = c.file, line = c.line }, c.body, nil, done)
+  end
+  local posting = state
+  engine.request("post_comment", {
+    repo = state.repo,
+    url = state.pr_url,
+    number = state.pr,
+    commit = state.full_head or state.review.head_commit,
+    base = state.base,
+    comment = { path = c.file, side = c.side, line = c.line, last = c.last, text = c.text,
+      body = string.format("**%s:** %s", c.kind, c.body) },
+  }, function(err, posted)
+    if state ~= posting then
+      return
+    end
+    if err then
+      if not vim.tbl_contains(store.comments(), c) then
+        table.insert(store.comments(), c)
+        store.save()
+        comments_changed()
+      end
+      vim.notify("trail: " .. err.message .. " (kept for the review)", vim.log.levels.WARN)
+      return
+    end
+    vim.notify("trail: posted: " .. posted.url, vim.log.levels.INFO)
+    if done then
+      done()
+    end
+    load_threads()
+  end)
+end
+
+---What `<C-y>` posts with in the comment box: only on a pull request.
+poster = function()
+  return state.pr and post_now or nil
+end
+
 ---In the trail app, a reply is written now and sent with the review's other
----comments; its line's text is kept to find the line again.
+---comments; its line's text is kept to find the line again. `<C-y>` posts it at once.
 local function draft_reply(t)
   compose.open({ kind = "reply", kinds = { "reply" }, highlight = function()
     return "TrailThreadAuthor"
-  end }, function(body)
+  end, on_now = state.pr and function(body)
+    update_thread(t, body, nil)
+  end or nil }, function(body)
     if body == "" then
       return
     end
@@ -942,6 +986,9 @@ threads.hooks({
   end,
   changed = function()
     comments_changed()
+  end,
+  poster = function()
+    return poster()
   end,
 })
 
