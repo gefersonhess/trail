@@ -53,7 +53,7 @@ trail '#1241'             # a pull request (quoted: the shell drops a bare #1241
 trail --my-config '#1241' # the same in your own Neovim and config
 ```
 
-It takes on your Neovim's colors: at startup it asks your own Neovim, headless, for its highlight groups, your colorscheme's options and overrides included, and falls back to its own dark theme if that fails or takes over 3 seconds. `gd` still opens definitions in your own Neovim. `q` on the overview quits. Review state is shared with the plugin, so a review can move between the two. Inside the plugin, `vim.g.trail_tree = "left"` puts the tree on the left too.
+It takes on your Neovim's colors: at startup it asks your own Neovim, headless, for its highlight groups, your colorscheme's options and overrides included, and falls back to its own dark theme, with a message saying why, if that fails or takes over 3 seconds. `gd` still opens definitions in your own Neovim. `q` on the overview quits. Review state is shared with the plugin, so a review can move between the two. Inside the plugin, `vim.g.trail_tree = "left"` puts the tree on the left too.
 
 ## Keys
 

@@ -13,21 +13,28 @@ function M.user_nvim(args)
 end
 
 ---The user's colors: their Neovim is started headless, and once its config
----has run it writes out every highlight group. Nil if that fails or takes
----longer than `timeout` milliseconds.
----@return { name: string?, background: string, groups: table<string, table> }?
+---has run it writes out every highlight group. What it wrote counts even if
+---it then exits with an error. Without colors, the second value says why.
+---@return { name: string?, background: string, groups: table<string, table> }?, string?
 function M.user_theme(probe, timeout)
   local out = vim.fn.tempname()
   local done = vim.system(M.user_nvim({ "--headless", "-n", "-i", "NONE", "--cmd", "luafile " .. vim.fn.fnameescape(probe) }),
-    { env = { TRAIL_THEME_OUT = out }, stdin = false }):wait(timeout)
+    { env = { TRAIL_THEME_OUT = out }, stdin = false, text = true }):wait(timeout)
   local ok, theme = pcall(function()
     return vim.json.decode(table.concat(vim.fn.readfile(out), "\n"))
   end)
   vim.fn.delete(out)
-  if done.code ~= 0 or not ok or type(theme) ~= "table" or type(theme.groups) ~= "table" then
-    return nil
+  if ok and type(theme) == "table" and type(theme.groups) == "table" then
+    return theme
   end
-  return theme
+  if done.signal ~= 0 then
+    return nil, string.format("your Neovim took over %d seconds", timeout / 1000)
+  end
+  local said = vim.trim((done.stderr or ""):match("[^\n]*%S[^\n]*") or "")
+  if done.code ~= 0 then
+    return nil, string.format("your Neovim exited with code %d%s", done.code, said ~= "" and ": " .. said or "")
+  end
+  return nil, "your Neovim wrote no colors" .. (said ~= "" and ": " .. said or "")
 end
 
 ---Replaces every highlight group with the user's.

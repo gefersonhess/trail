@@ -70,12 +70,13 @@ local function derived()
 end
 
 local app = require("trail.app")
-local theme = app.user_theme(root .. "/app/theme_probe.lua", 3000)
+local theme, why = app.user_theme(root .. "/app/theme_probe.lua", 3000)
 if theme then
   app.apply(theme)
   derived()
 else
   own_theme()
+  vim.notify("trail: using its own colors, " .. why, vim.log.levels.WARN)
 end
 
 vim.cmd.runtime("plugin/trail.lua")
