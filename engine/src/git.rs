@@ -104,3 +104,43 @@ fn contains_word(data: &[u8], word: &[u8]) -> bool {
             && data.get(i + word.len()).is_none_or(|b| !ident(*b))
     })
 }
+
+/// One commit of a review's range.
+#[derive(serde::Serialize)]
+pub struct Commit {
+    pub id: String,
+    pub short: String,
+    pub subject: String,
+    pub author: String,
+    /// The commit date, `2026-11-19`.
+    pub date: String,
+}
+
+/// The commits `head` has over its merge base with `base`, oldest first.
+pub fn commits(repo: &Path, base: &str, head: &str) -> Result<Vec<Commit>, String> {
+    let head = commit(repo, head)?;
+    let from = merge_base(repo, &commit(repo, base)?, &head)?;
+    let out = run(
+        repo,
+        &[
+            "log",
+            "--reverse",
+            "--abbrev=7",
+            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cs",
+            &format!("{from}..{head}"),
+        ],
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\x1f').map(str::to_string);
+            Some(Commit {
+                id: fields.next()?,
+                short: fields.next()?,
+                subject: fields.next()?,
+                author: fields.next()?,
+                date: fields.next()?,
+            })
+        })
+        .collect())
+}

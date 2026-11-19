@@ -41,6 +41,8 @@ The review opens in its own tab, on the overview: the pull request's title, auth
 
 Progress is per function: a hunk is seen once its last line has been on screen, or when you mark it with `mh`, and a function is done when all its hunks are seen, in every path that has it. Reviewed hunks show a `▎` between the gutter and the code. Review state (seen hunks, positions, comments, verdict) lives in `.git/trail/<review>.json` and survives new commits, because hunk ids hash their content and comments find their line again by its text.
 
+`C` opens the Commits screen: the review's commits, oldest first. `<CR>` reviews just that commit, `V` and `<CR>` a run of them, and `a` all of them again; the overview and the tabline say which. Comments and reviewed hunks stay with the review whatever the range, and a pull request's comments are still submitted on their lines at its head.
+
 Press `?` anywhere for the keys that work there.
 
 ## The trail app
