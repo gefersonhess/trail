@@ -2693,7 +2693,7 @@ fn fake_gh_for_reviews(dir: &Path, host: &str) -> PathBuf {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\ncase \"$*\" in\n  'api --hostname {host} repos/owner/repo/pulls/7/files --paginate'*) printf '%s\\n' '{files}' ;;\n  'api --hostname {host} --method POST repos/owner/repo/pulls/7/reviews --input -') cat > \"{}/payload.json\"; echo '{{\"id\":1,\"html_url\":\"https://{host}/owner/repo/pull/7#pullrequestreview-1\"}}' ;;\n  *) echo \"HTTP 401: Bad credentials (unexpected: $*)\" >&2; exit 1 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$*\" in\n  'api --hostname {host} repos/owner/repo/pulls/7/files --paginate'*) printf '%s\\n' '{files}' ;;\n  'api --hostname {host} --method POST repos/owner/repo/pulls/7/reviews --input -') cat > \"{0}/payload.json\"; echo '{{\"id\":1,\"html_url\":\"https://{host}/owner/repo/pull/7#pullrequestreview-1\"}}' ;;\n  'api --hostname {host} --method POST repos/owner/repo/pulls/7/comments --input -') cat > \"{0}/comment.json\"; echo '{{\"id\":2,\"html_url\":\"https://{host}/owner/repo/pull/7#discussion_r2\"}}' ;;\n  *) echo \"HTTP 401: Bad credentials (unexpected: $*)\" >&2; exit 1 ;;\nesac\n",
             dir.display()
         ),
     )
@@ -2825,6 +2825,61 @@ fn a_comment_written_on_an_earlier_commit_is_submitted_on_its_line_at_the_head()
             .unwrap()
             .contains("- `a.go` line 3: **nit:** gone"),
         "a line the head no longer has goes to the body: {payload}"
+    );
+}
+
+#[test]
+fn a_comment_is_posted_on_its_own_at_once() {
+    let repo = Repo::new();
+    repo.write("a.go", "x\ny\nq\nw\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("a.go", "x\ny2\nz\nT\nq\nw\n");
+    repo.commit("change");
+    let head = rev(&repo, "HEAD");
+    let gh = fake_gh_for_reviews(repo.path(), "github.com");
+    let post = |comment: Value| {
+        let mut params = json!({
+            "repo": repo.path(),
+            "url": "https://github.com/owner/repo/pull/7",
+            "number": 7,
+            "commit": head,
+            "base": "main",
+        });
+        params["comment"] = comment;
+        serve_with_env(
+            &[json!({ "jsonrpc": "2.0", "id": 1, "method": "post_comment", "params": params })],
+            &[("TRAIL_GH", gh.to_str().unwrap())],
+        )
+        .into_iter()
+        .next()
+        .unwrap()
+    };
+
+    let response = post(
+        json!({ "path": "a.go", "side": "new", "line": 2, "text": "T", "body": "**nit:** now" }),
+    );
+
+    assert_eq!(
+        response["result"]["url"], "https://github.com/owner/repo/pull/7#discussion_r2",
+        "{response}"
+    );
+    let payload: Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.path().join("comment.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        payload,
+        json!({ "commit_id": head, "path": "a.go", "body": "**nit:** now", "line": 4, "side": "RIGHT" }),
+        "found again by its text at the head"
+    );
+
+    let outside =
+        post(json!({ "path": "a.go", "side": "new", "line": 30, "body": "**nit:** far" }));
+    assert!(
+        outside["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("not in the pull request's diff")),
+        "a line GitHub's diff lacks can only go in a review: {outside}"
     );
 }
 

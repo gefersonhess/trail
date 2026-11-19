@@ -206,7 +206,9 @@ local function at_cursor(view, old_path, new_path)
   return nil, nil, here
 end
 
-function M.add(kind, view, old_path, new_path, on_change)
+---Writes a comment on the cursor's line, or the selected lines. `<C-s>` keeps
+---it for the review; with `post`, `<C-y>` posts it at once: post(comment, done).
+function M.add(kind, view, old_path, new_path, on_change, post)
   local mode = vim.fn.mode()
   local visual = mode == "v" or mode == "V" or mode == "\22"
   local here = visual and view.selection() or view.line_at_cursor()
@@ -217,37 +219,61 @@ function M.add(kind, view, old_path, new_path, on_change)
     vim.notify("trail: no code line under the cursor", vim.log.levels.INFO)
     return
   end
-  compose.open({ kind = kind, kinds = M.kinds, highlight = M.highlight }, function(body, picked)
-    if body == "" then
-      return
-    end
-    kind = picked
-    table.insert(store.comments(), {
+  local function comment(body, picked)
+    return {
       id = tostring(vim.uv.hrtime()),
-      kind = kind,
+      kind = picked,
       body = body,
       file = file_of(here.side, old_path, new_path),
       side = here.side,
       line = here.line,
       last = here.last and here.last > here.line and here.last or nil,
       text = here.text,
-    })
+    }
+  end
+  local opts = { kind = kind, kinds = M.kinds, highlight = M.highlight }
+  if post then
+    opts.on_now = function(body, picked)
+      post(comment(body, picked), on_change)
+    end
+  end
+  compose.open(opts, function(body, picked)
+    if body == "" then
+      return
+    end
+    table.insert(store.comments(), comment(body, picked))
     store.save()
     on_change()
   end)
 end
 
----Edits a comment in the comment box; emptied, it is deleted.
-function M.edit_one(comment, on_change)
+local function remove(comment)
+  local all = store.comments()
+  for k = #all, 1, -1 do
+    if all[k] == comment then
+      table.remove(all, k)
+    end
+  end
+end
+
+---Edits a comment in the comment box; emptied, it is deleted. With `post`,
+---`<C-y>` posts it at once, and it is no longer kept once posted.
+function M.edit_one(comment, on_change, post)
   local kinds = comment.reply_to and { comment.kind } or M.kinds
-  compose.open({ kind = comment.kind, kinds = kinds, highlight = M.highlight, body = comment.body }, function(body, picked)
+  local opts = { kind = comment.kind, kinds = kinds, highlight = M.highlight, body = comment.body }
+  if post then
+    opts.on_now = function(body, picked)
+      comment.body, comment.kind = body, picked
+      post(comment, function()
+        remove(comment)
+        store.save()
+        on_change()
+      end)
+    end
+  end
+  compose.open(opts, function(body, picked)
     if body == "" then
-      local all = store.comments()
-      for k = #all, 1, -1 do
-        if all[k] == comment then
-          table.remove(all, k)
-        end
-      end
+      remove(comment)
     else
       comment.body = body
       comment.kind = picked
@@ -257,13 +283,13 @@ function M.edit_one(comment, on_change)
   end)
 end
 
-function M.edit(view, old_path, new_path, on_change)
+function M.edit(view, old_path, new_path, on_change, post)
   local comment = at_cursor(view, old_path, new_path)
   if not comment then
     vim.notify("trail: no comment on this line", vim.log.levels.INFO)
     return
   end
-  M.edit_one(comment, on_change)
+  M.edit_one(comment, on_change, post)
 end
 
 function M.delete(view, old_path, new_path, on_change)

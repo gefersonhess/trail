@@ -77,7 +77,7 @@ local hints = {
   diff = "]s step  ]c change  ]] call  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
   send = "P submit  y copy  v verdict  ? keys",
   threads = "⏎ go  r reply  ? keys",
-  comment = "<C-s> save  ⇥ kind  q cancel",
+  comment = "<C-s> save  <C-y> post now  ⇥ kind  q cancel",
   thread = "e edit  s select  S send  r reply  R resolve  ⎋ back  q close",
 }
 
