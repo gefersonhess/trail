@@ -41,6 +41,7 @@ local screens = {
     { "Move", vim.list_extend({
       { "]s", "step" }, { "[s", "step" }, { "]c", "change" }, { "[c", "change" },
       { "]h", "hunk" }, { "[h", "hunk" }, { "]t", "thread" }, { "[t", "thread" }, { "gp", "switch path" },
+      { "]]", "into the call" }, { "[[", "back from it" },
     }, back) },
     { "Review", {
       { "cc", "comment" }, { "cb", "as kind" }, { "cq", "as kind" }, { "cn", "as kind" },
@@ -68,7 +69,7 @@ local hints = {
   pulls = "⏎ open  1-9 pull request  q quit  ? keys",
   home = "⏎ open  1-9 path  S send  T threads  ? keys",
   tree = "⏎ open  n p step  ]c change  ]t thread  ? keys",
-  diff = "]s step  ]c change  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
+  diff = "]s step  ]c change  ]] call  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
   send = "P submit  y copy  v verdict  ? keys",
   threads = "⏎ go  r reply  ? keys",
   comment = "<C-s> save  ⇥ kind  q cancel",

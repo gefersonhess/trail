@@ -17,6 +17,8 @@ pub struct Symbol {
 pub struct Call {
     pub name: String,
     pub via: Via,
+    /// 1-based line of the call.
+    pub line: u32,
 }
 
 /// How the callee was written, which decides what it can match.
@@ -299,6 +301,7 @@ fn callee(function: Node, src: &[u8]) -> Option<Call> {
     Some(Call {
         name: text(name, src).to_string(),
         via,
+        line: function.start_position().row as u32 + 1,
     })
 }
 

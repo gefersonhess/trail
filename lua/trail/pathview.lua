@@ -181,6 +181,15 @@ function M.thread(dir)
   end
 end
 
+---Shows `line` of `file` as part of step `step`: the step's own function, or
+---a function of the path reached from it. Without a line, the step's start.
+function M.go(step, file, line)
+  if not valid() then
+    return
+  end
+  show_step(step, false, line and { file = file, new = { start = line, len = 1 }, old = { start = 0, len = 0 } } or nil)
+end
+
 ---The path and step being shown, if the path view is open.
 function M.current()
   if valid() then

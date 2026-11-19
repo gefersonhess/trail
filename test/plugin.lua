@@ -1596,6 +1596,70 @@ check(the_pane() and vim.api.nvim_win_get_position(the_pane())[2] > vim.api.nvim
   and vim.api.nvim_win_get_position(the_pane())[1] == vim.api.nvim_win_get_position(diff_win)[1],
   "and the thread pane to the right")
 
+-- Calls between a path's functions show where they are made; ]] follows one
+-- into the function it calls and [[ goes back.
+local pathview = require("trail.pathview")
+local function step_now()
+  return select(2, pathview.current())
+end
+local function diff_text_row(text)
+  local buf = vim.api.nvim_win_get_buf(win_of("^trail://diff/"))
+  for r, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+    if l == text then
+      return r
+    end
+  end
+end
+local calls_ns = vim.api.nvim_get_namespaces()["trail.diffview.notes"]
+local function hint_on(text)
+  local buf = vim.api.nvim_win_get_buf(win_of("^trail://diff/"))
+  local row = diff_text_row(text)
+  local out = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, calls_ns, { row - 1, 0 }, { row - 1, -1 }, { details = true })) do
+    for _, chunk in ipairs(m[4].virt_text or {}) do
+      table.insert(out, chunk[1])
+    end
+  end
+  return table.concat(out)
+end
+local function cursor_text()
+  return vim.api.nvim_get_current_line()
+end
+check(step_now() == 1 and hint_on("\treturn VerifyHash(user)"):match("→ VerifyHash · step 2"),
+  "a call to another step shows where it goes: " .. hint_on("\treturn VerifyHash(user)"))
+vim.api.nvim_set_current_win(win_of("^trail://diff/"))
+vim.api.nvim_win_set_cursor(0, { diff_text_row("\treturn VerifyHash(user)"), 0 })
+vim.api.nvim_feedkeys("]]", "x", false)
+check(vim.wait(5000, function()
+  return step_now() == 2 and cursor_text() == "func VerifyHash(h string) bool {"
+end), "]] on a call follows it into the step it calls: step " .. tostring(step_now()) .. ", " .. cursor_text())
+check(hint_on("func VerifyHash(h string) bool {"):match("← called by Login line 9"),
+  "the function says where it is called from: " .. hint_on("func VerifyHash(h string) bool {"))
+vim.api.nvim_feedkeys("]]", "x", false)
+check(step_now() == 2 and cursor_text() == "\treturn hashOf(h) == h", "]] off a call moves to the next call: " .. cursor_text())
+vim.api.nvim_feedkeys("]]", "x", false)
+check(vim.wait(5000, function()
+  return step_now() == 3
+end), "and ]] again follows it")
+vim.api.nvim_feedkeys("[[", "x", false)
+check(vim.wait(5000, function()
+  return step_now() == 2 and cursor_text() == "\treturn hashOf(h) == h"
+end), "[[ goes back to the call it came from: " .. cursor_text())
+vim.api.nvim_feedkeys("[[", "x", false)
+check(vim.wait(5000, function()
+  return step_now() == 1 and cursor_text() == "\treturn VerifyHash(user)"
+end), "and again, further back: " .. cursor_text())
+vim.api.nvim_feedkeys("]s", "x", false)
+vim.wait(5000, function()
+  return step_now() == 2 and cursor_text() == "func VerifyHash(h string) bool {"
+end)
+vim.api.nvim_feedkeys("[[", "x", false)
+check(vim.wait(5000, function()
+  return step_now() == 1 and cursor_text() == "\treturn VerifyHash(user)"
+end), "with nothing to go back to, [[ goes up to the call of the function: " .. cursor_text())
+diff_win = win_of("^trail://diff/")
+tree_win = vim.fn.bufwinid("trail://path")
+
 -- Sizes the user sets survive the app laying its windows out again.
 -- Headless Neovim has no screen to send WinResized after a drag; it is sent here.
 vim.api.nvim_win_set_width(tree_win, 30)

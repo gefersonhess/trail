@@ -77,6 +77,8 @@ Inside a path (tree on top, diff below)
 | `]c` `[c` | Next / previous change of this path, across steps |
 | `]h` `[h` | Next / previous hunk in the file shown |
 | `]t` `[t` | Next / previous review thread of this path |
+| `]]` | Follow the call on the line into the function it calls (a step, or a function on the way); off a call, move to the next one. Calls in the path show `→ name · step N` on their line, and functions `← called by …` |
+| `[[` | Back to the call `]]` followed; with none, up to the line calling this function |
 | `<CR>` in the diff | Open the review thread on the line in a popup |
 | `r` | Reply to the review thread on the line (also in the `T` list); `<Tab>` resolves or reopens it too |
 | `<CR>` in the tree | Open a fold, show a step or function |

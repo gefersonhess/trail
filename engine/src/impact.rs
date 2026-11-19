@@ -79,6 +79,9 @@ pub struct ImpactEdge {
     /// The interface or trait method the call goes through, when it is not direct.
     pub via: Option<String>,
     pub source: &'static str,
+    /// 1-based head lines of the calls in the caller's file; empty for a use
+    /// of a changed type or value.
+    pub lines: Vec<u32>,
 }
 
 /// A function by file and the 1-based line of its name at head.
@@ -91,6 +94,8 @@ struct Link {
     /// Through an interface declared outside the repository, like `io.Writer`,
     /// which connects too much to join paths.
     outside: bool,
+    /// 1-based lines of the calls, in the caller's file.
+    sites: Vec<u32>,
 }
 
 /// Functions at head, parsed on demand.
@@ -303,6 +308,17 @@ impl Server<'_> {
     }
 }
 
+/// 1-based lines of an LSP call hierarchy item's `fromRanges`.
+fn lines_of(call: &Value) -> Vec<u32> {
+    call["fromRanges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["start"]["line"].as_u64())
+        .map(|l| l as u32 + 1)
+        .collect()
+}
+
 impl Calls for Server<'_> {
     fn callers(&mut self, key: &Key, sources: &mut Sources) -> Result<Vec<Link>, String> {
         let Some(item) = self.items.get(key).cloned() else {
@@ -351,6 +367,7 @@ impl Calls for Server<'_> {
                 key: caller,
                 via,
                 outside,
+                sites: lines_of(call),
             });
         }
         Ok(out)
@@ -381,6 +398,7 @@ impl Calls for Server<'_> {
                     key: callee,
                     via: None,
                     outside: false,
+                    sites: lines_of(call),
                 });
                 continue;
             }
@@ -412,6 +430,7 @@ impl Calls for Server<'_> {
                     key: implementation,
                     via: Some(via.clone()),
                     outside: false,
+                    sites: lines_of(call),
                 });
             }
             if !implemented {
@@ -421,6 +440,7 @@ impl Calls for Server<'_> {
                     key: callee,
                     via: None,
                     outside: false,
+                    sites: lines_of(call),
                 });
             }
         }
@@ -482,11 +502,18 @@ impl Calls for Names {
         let mut out = Vec::new();
         for file in self.files(&name, sources)? {
             for symbol in sources.symbols(&file) {
-                if is_function(symbol) && symbol.calls.iter().any(|c| c.name == name) {
+                let sites: Vec<u32> = symbol
+                    .calls
+                    .iter()
+                    .filter(|c| c.name == name)
+                    .map(|c| c.line)
+                    .collect();
+                if is_function(symbol) && !sites.is_empty() {
                     out.push(Link {
                         key: (file.clone(), symbol.name_at.0 + 1),
                         via: None,
                         outside: false,
+                        sites,
                     });
                 }
             }
@@ -495,16 +522,19 @@ impl Calls for Names {
     }
 
     fn callees(&mut self, key: &Key, sources: &mut Sources) -> Result<Vec<Link>, String> {
-        let Some(mut names) = sources
-            .function(key)
-            .map(|s| s.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>())
-        else {
+        let Some(calls) = sources.function(key).map(|s| s.calls.clone()) else {
             return Ok(Vec::new());
         };
+        let mut names: Vec<String> = calls.iter().map(|c| c.name.clone()).collect();
         names.sort();
         names.dedup();
         let mut out = Vec::new();
         for name in names {
+            let sites: Vec<u32> = calls
+                .iter()
+                .filter(|c| c.name == name)
+                .map(|c| c.line)
+                .collect();
             for file in self.files(&name, sources)? {
                 for symbol in sources.symbols(&file) {
                     if is_function(symbol) && short_name(&symbol.name) == name {
@@ -512,6 +542,7 @@ impl Calls for Names {
                             key: (file.clone(), symbol.name_at.0 + 1),
                             via: None,
                             outside: false,
+                            sites: sites.clone(),
                         });
                     }
                 }
@@ -528,7 +559,8 @@ struct Reach {
     /// Reached without an interface from outside the repository on the way,
     /// so a changed function among them shares the path.
     joins: HashSet<Key>,
-    edges: Vec<(Key, Key, Option<String>)>,
+    /// Caller, callee, the interface the call goes through, and the call lines.
+    edges: Vec<(Key, Key, Option<String>, Vec<u32>)>,
     truncated: bool,
 }
 
@@ -555,7 +587,19 @@ impl Walker<'_> {
         };
         let mut links: Vec<Link> = found.into_iter().filter(|l| &l.key != key).collect();
         links.sort();
-        links.dedup();
+        // The same call reported more than once keeps all its lines once.
+        links.dedup_by(|later, kept| {
+            let same =
+                later.key == kept.key && later.via == kept.via && later.outside == kept.outside;
+            if same {
+                kept.sites.append(&mut later.sites);
+            }
+            same
+        });
+        for link in &mut links {
+            link.sites.sort();
+            link.sites.dedup();
+        }
         let cache = if up {
             &mut self.callers
         } else {
@@ -590,6 +634,7 @@ impl Walker<'_> {
                 key: next,
                 via,
                 outside,
+                sites,
             } in links
             {
                 if !outside && reach.joins.contains(&key) {
@@ -609,9 +654,9 @@ impl Walker<'_> {
                     }
                 }
                 let edge = if up {
-                    (next, key.clone(), via)
+                    (next, key.clone(), via, sites)
                 } else {
-                    (key.clone(), next, via)
+                    (key.clone(), next, via, sites)
                 };
                 reach.edges.push(edge);
             }
@@ -696,7 +741,9 @@ fn walk_language(
                 Some(users) => {
                     reach.joins.insert(root.clone());
                     for (user, _) in users {
-                        reach.edges.push((user.clone(), root.clone(), None));
+                        reach
+                            .edges
+                            .push((user.clone(), root.clone(), None, Vec::new()));
                         reach.up.push(user.clone());
                         walker.walk(user, true, &mut reach)?;
                     }
@@ -933,17 +980,29 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
             let reach = &reaches[i].1;
             truncated |= reach.truncated;
             keys.extend(reach.up.iter().chain(&reach.down).cloned());
-            edges.extend(reach.edges.iter().map(|(from, to, via)| ImpactEdge {
+            edges.extend(reach.edges.iter().map(|(from, to, via, lines)| ImpactEdge {
                 from: id_of(from),
                 to: id_of(to),
                 via: via.clone(),
                 source,
+                lines: lines.clone(),
             }));
         }
         keys.sort();
         keys.dedup();
         edges.sort();
-        edges.dedup();
+        // An edge walked from both ends, or from two changes, is one edge.
+        edges.dedup_by(|later, kept| {
+            let same = later.from == kept.from && later.to == kept.to && later.via == kept.via;
+            if same {
+                kept.lines.append(&mut later.lines);
+            }
+            same
+        });
+        for edge in &mut edges {
+            edge.lines.sort();
+            edge.lines.dedup();
+        }
         let nodes = keys
             .iter()
             .map(|key| {
