@@ -83,15 +83,15 @@ end
 
 ---Every change of the path, one per row with the calls between them drawn
 ---in the gutter, under a line saying where the review is. The function shown
----is marked and the cursor sits on it.
-local function render_lanes()
+---is marked and the cursor sits on it, unless `keep_cursor`.
+local function render_lanes(keep_cursor)
   local path = view.path
   local g = lanes.graph(path.impact)
   local current = here(g)
   view.station = current
   local done = view.ctx.done_steps(path)
   local threads = view.ctx.threads(path)
-  local rows = lanes.rows(g)
+  local rows = lanes.rows(g, expanded_by_path[path.id])
   local lines, hls = lanes.render(g, rows, {
     current = current,
     done = function(id)
@@ -104,13 +104,17 @@ local function render_lanes()
   })
   local header = string.format(" %s  ·  step %d of %d", path.title, view.step, #path.steps)
   table.insert(lines, 1, header)
-  view.row_ids = {}
+  view.row_ids, view.lane_folds = {}, {}
   local cursor = 1
   for i, r in ipairs(rows) do
     view.row_ids[i + 1] = r.id
-    if r.id == current then
+    view.lane_folds[i + 1] = r.fold
+    if r.id == current and not r.again then
       cursor = i + 1
     end
+  end
+  if keep_cursor then
+    cursor = math.min(vim.api.nvim_win_get_cursor(view.tree_win)[1], #lines)
   end
   local buf = view.tree_buf
   vim.bo[buf].modifiable = true
@@ -388,16 +392,21 @@ function M.open(ctx, path, step, target)
       return view.item_of_row[vim.api.nvim_win_get_cursor(0)[1]] or {}
     end
     map("<CR>", function()
-      if laned(view.path) then
-        local id = view.row_ids[vim.api.nvim_win_get_cursor(0)[1]]
+      local row = vim.api.nvim_win_get_cursor(0)[1]
+      local it = laned(view.path) and { fold = view.lane_folds[row] } or item()
+      if laned(view.path) and not it.fold then
+        local id = view.row_ids[row]
         return id and show_change(id, true)
       end
-      local it = item()
       if it.fold then
         local expanded = expanded_by_path[view.path.id] or {}
         expanded[it.fold] = true
         expanded_by_path[view.path.id] = expanded
-        render_tree(true)
+        if laned(view.path) then
+          render_lanes(true)
+        else
+          render_tree(true)
+        end
       elseif it.step then
         show_step(it.step, true)
       elseif it.node then
