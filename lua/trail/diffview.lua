@@ -38,14 +38,21 @@ local function set_highlights()
   local fallback = vim.o.background == "light" and 0x24292f or 0xc9d1d9
   vim.api.nvim_set_hl(0, "TrailContext", { fg = normal.fg or fallback, default = true })
   vim.api.nvim_set_hl(0, "TrailReviewed", { link = "Comment", default = true })
-  -- Code outside the function being reviewed: the text colour faded halfway into the background.
-  local fg, bg = normal.fg or fallback, normal.bg or (vim.o.background == "light" and 0xffffff or 0x0d1117)
-  local dim = 0
-  for shift = 0, 16, 8 do
-    local x, y = bit.band(bit.rshift(fg, shift), 0xff), bit.band(bit.rshift(bg, shift), 0xff)
-    dim = dim + bit.lshift(math.floor(x * 0.4 + y * 0.6 + 0.5), shift)
+  -- Code outside the function being reviewed: its colours faded halfway into the background.
+  local bg = normal.bg or (vim.o.background == "light" and 0xffffff or 0x0d1117)
+  local function fade(fg)
+    local out = 0
+    for shift = 0, 16, 8 do
+      local x, y = bit.band(bit.rshift(fg, shift), 0xff), bit.band(bit.rshift(bg, shift), 0xff)
+      out = out + bit.lshift(math.floor(x * 0.4 + y * 0.6 + 0.5), shift)
+    end
+    return out
   end
-  vim.api.nvim_set_hl(0, "TrailDim", { fg = dim, default = true })
+  vim.api.nvim_set_hl(0, "TrailDim", { fg = fade(normal.fg or fallback), default = true })
+  for dimmed, group in pairs({ TrailDimAdd = "TrailAddText", TrailDimDelete = "TrailDeleteText" }) do
+    local spec = vim.api.nvim_get_hl(0, { name = group, link = false })
+    vim.api.nvim_set_hl(0, dimmed, { fg = spec.fg and fade(spec.fg), default = true })
+  end
 end
 set_highlights()
 vim.api.nvim_create_autocmd("ColorScheme", { callback = set_highlights })
@@ -271,7 +278,10 @@ local function outside(focus, lines_of, total)
   return folds
 end
 
----Fades the rows of `folds` in `buf`: the code outside the function a step is about.
+local faded = { TrailAddText = "TrailDimAdd", TrailDeleteText = "TrailDimDelete" }
+
+---Fades the rows of `folds` in `buf`: the code outside the function a step is
+---about. Its changed tokens keep their colour, faded too.
 local function dim(buf, folds)
   vim.api.nvim_buf_clear_namespace(buf, ns_focus, 0, -1)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -279,6 +289,13 @@ local function dim(buf, folds)
     for row = f[1], f[2] do
       vim.api.nvim_buf_set_extmark(buf, ns_focus, row - 1, 0,
         { end_row = row - 1, end_col = #(lines[row] or ""), hl_group = "TrailDim", priority = 300 })
+      for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, { row - 1, 0 }, { row - 1, -1 }, { details = true })) do
+        local group = faded[m[4].hl_group]
+        if group then
+          vim.api.nvim_buf_set_extmark(buf, ns_focus, row - 1, m[3],
+            { end_row = m[4].end_row, end_col = m[4].end_col, hl_group = group, priority = 301 })
+        end
+      end
     end
   end
 end
