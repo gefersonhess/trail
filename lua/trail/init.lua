@@ -3,6 +3,7 @@ local diffview = require("trail.diffview")
 local help = require("trail.help")
 local peek = require("trail.peek")
 local tree = require("trail.tree")
+local pane = require("trail.pane")
 local pathview = require("trail.pathview")
 local store = require("trail.state")
 local comments = require("trail.comments")
@@ -296,7 +297,7 @@ local function arrange()
   if not vim.g.trail_app then
     return
   end
-  threads.place()
+  pane.place()
   pathview.place()
   vim.cmd.wincmd("=")
 end
@@ -1356,7 +1357,7 @@ end
 ---In the trail app the thread pane follows the cursor onto the next thread.
 function M.follow_thread()
   local shown = state.shown
-  if not (threads.pane_open() and shown and vim.api.nvim_buf_get_name(0):match("^trail://diff/")) then
+  if not (threads.pane_open() and not pane.held() and shown and help.screen(0) == "diff") then
     return
   end
   local here = shown.view.line_at_cursor()

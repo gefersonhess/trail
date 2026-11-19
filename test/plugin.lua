@@ -1461,6 +1461,49 @@ athreads.show(athreads.all()[1], function() end)
 check(#vim.tbl_filter(function(w)
   return vim.wo[w].winbar:match("auth/auth%.go:9") ~= nil
 end, vim.api.nvim_tabpage_list_wins(0)) == 1, "showing another thread reuses the pane")
+local function pane_win()
+  return vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.api.nvim_win_get_config(w).relative == "" and vim.api.nvim_win_get_position(w)[2] > vim.api.nvim_win_get_position(diff_win)[2]
+  end)
+end
+vim.api.nvim_set_current_win(diff_win)
+local wrote
+require("trail.compose").open({ kind = "nit", kinds = { "nit", "question" }, highlight = function() return "Comment" end },
+  function(body, kind) wrote = { body, kind } end)
+local box = vim.api.nvim_get_current_win()
+check(box == pane_win() and vim.api.nvim_win_get_config(box).relative == "" and vim.wo[box].winbar:match("nit"),
+  "in the app the comment box opens in the side pane, named by its kind")
+vim.cmd.stopinsert()
+vim.api.nvim_set_current_win(diff_win)
+vim.api.nvim_win_set_cursor(diff_win, { 1, 0 })
+app.follow_thread()
+check(vim.api.nvim_win_get_buf(pane_win()) == vim.api.nvim_win_get_buf(box), "moving in the diff leaves the comment being written alone")
+athreads.show(athreads.all()[1], function() end)
+check(vim.api.nvim_win_get_buf(pane_win()) == vim.api.nvim_win_get_buf(box), "opening a thread while writing keeps the comment too")
+for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+  if vim.api.nvim_win_get_config(w).relative ~= "" then
+    vim.api.nvim_win_close(w, true)
+  end
+end
+vim.api.nvim_set_current_win(box)
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "rename this" })
+vim.api.nvim_feedkeys(vim.keycode("<Tab>"), "x", false)
+check(vim.wo[box].winbar:match("question"), "<Tab> changes the kind in the pane's title")
+vim.fn.maparg("<C-s>", "n", false, true).callback()
+check(wrote and wrote[1] == "rename this" and wrote[2] == "question", "<C-s> saves the comment from the pane")
+check(vim.api.nvim_get_current_win() == diff_win, "saving goes back to the diff")
+check(pane_win() and vim.wo[pane_win()].winbar:match("auth/auth%.go:9"), "and the pane shows the thread it showed before")
+vim.api.nvim_win_close(pane_win(), true)
+require("trail.compose").open({ kind = "nit", kinds = { "nit" }, highlight = function() return "Comment" end }, function() end)
+vim.cmd.stopinsert()
+vim.fn.maparg("q", "n", false, true).callback()
+check(not pane_win() and vim.api.nvim_get_current_win() == diff_win, "cancelling a box opened without a pane closes the pane")
+athreads.show(athreads.all()[1], function() end)
+local replied = vim.deepcopy(athreads.all()[1])
+table.insert(replied.comments, { author = "me", body = "because", created_at = "2026-11-19T10:00:00Z", url = "u" })
+athreads.set({ replied })
+check(table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(pane_win()), 0, -1, false), "\n"):match("because")
+  and vim.api.nvim_get_current_win() == diff_win, "when threads load again the pane shows the thread's new replies")
 local function win_of(name_pattern)
   return vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
     return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match(name_pattern) ~= nil
