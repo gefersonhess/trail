@@ -46,13 +46,25 @@ function M.resize()
   end
 end
 
+---Lays the trail app's windows out: the pane and the tree where the layout
+---wants them, at the sizes the user gave them there, and the diff's halves
+---sharing the rest.
+function M.arrange()
+  M.place()
+  require("trail.pathview").place()
+  -- Moving the tree across the top takes rows from the pane, so its size comes last.
+  M.resize()
+  vim.cmd.wincmd("=")
+end
+
 ---Shows `buf` in the pane, opening it if needed, and leaves the focus in the pane.
 ---`again` shows the same content anew, for when a comment box is done with the pane.
 function M.show(buf, again)
   if not M.win() then
     vim.cmd("botright vsplit")
     win = vim.api.nvim_get_current_win()
-    M.place()
+    -- Opening it rebalanced the other windows; they go back to their sizes.
+    M.arrange()
     restore = nil
   else
     vim.api.nvim_set_current_win(win)
