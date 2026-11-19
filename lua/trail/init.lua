@@ -1171,6 +1171,13 @@ end
 ---Lists the repository's open pull requests, those asking for your review
 ---first, and opens the one picked.
 local function pick_pull_request(root)
+  if vim.g.trail_app then
+    return require("trail.pulls").show(function(cb)
+      engine.request("pull_requests", { repo = root }, cb)
+    end, function(number)
+      M.open("#" .. number)
+    end)
+  end
   vim.notify("trail: listing open pull requests…", vim.log.levels.INFO)
   engine.request("pull_requests", { repo = root }, function(err, list)
     if err then
@@ -1301,6 +1308,9 @@ end
 ---The trail app's tabline: the screens, the current one marked, and inside a
 ---path its step and progress.
 function M.tabline()
+  if help.screen(vim.api.nvim_get_current_buf()) == "pulls" then
+    return "%#TrailTabBrand# trail %#TabLineSel# Pull requests %#TabLineFill#"
+  end
   local path, step = pathview.current()
   local screen = "home"
   if path then
@@ -1342,6 +1352,7 @@ function M.statusline()
   local buf = vim.api.nvim_get_current_buf()
   local screen = help.screen(buf)
   local where = ({
+    pulls = "pull requests",
     home = "overview",
     tree = "path",
     send = "send",

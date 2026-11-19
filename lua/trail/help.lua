@@ -10,7 +10,16 @@ local back = { { "-", "back to paths" }, { "q", "back to paths" } }
 ---Each screen's keys in groups, with short labels. Keys sharing a group and
 ---a label are shown together (`]s [s  step`). Only keys mapped on the
 ---screen are shown; one mapped but missing here still shows, under Other.
+local picks = {}
+for n = 1, 9 do
+  table.insert(picks, { tostring(n), "open pull request" })
+end
+
 local screens = {
+  pulls = {
+    { "Open", vim.list_extend({ { "<CR>", "open pull request" } }, picks) },
+    { "Screen", { { "q", "quit" } } },
+  },
   home = {
     { "Open", vim.list_extend({ { "<CR>", "open the line" }, { "gp", "switch path" } }, digits) },
     { "Review", { { "mr", "mark path" }, { "S", "send screen" }, { "T", "threads" } } },
@@ -52,6 +61,7 @@ local screens = {
 
 ---The few keys the trail app's status line shows for each screen.
 local hints = {
+  pulls = "⏎ open  1-9 pull request  q quit  ? keys",
   home = "⏎ open  1-9 path  S send  T threads  ? keys",
   tree = "⏎ open  n p step  ]c change  ]t thread  ? keys",
   diff = "]s step  ]c change  ]t thread  cc comment  r reply  K peek  gd open  ? keys",

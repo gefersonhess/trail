@@ -48,12 +48,12 @@ Press `?` anywhere for the keys that work there.
 `trail` also runs on its own, as Neovim with trail's own config: the tree on the left, the diff in the middle, threads and the comment box in a pane on the right (side by side moves the tree to the top and the pane to the bottom), the screens in the tabline and the keys in the status line. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
 
 ```sh
-trail                 # pick an open pull request
-trail #1241           # a pull request, its URL, or main..feature
-trail --my-config #1241   # the same in your own Neovim and config
+trail                     # pick an open pull request
+trail '#1241'             # a pull request (quoted: the shell drops a bare #1241), its URL, or main..feature
+trail --my-config '#1241' # the same in your own Neovim and config
 ```
 
-`gd` still opens definitions in your own Neovim. `q` on the overview quits. Review state is shared with the plugin, so a review can move between the two. Inside the plugin, `vim.g.trail_tree = "left"` puts the tree on the left too.
+It takes on your Neovim's colors: at startup it asks your own Neovim, headless, for its highlight groups, your colorscheme's options and overrides included, and falls back to its own dark theme if that fails or takes over 3 seconds. `gd` still opens definitions in your own Neovim. `q` on the overview quits. Review state is shared with the plugin, so a review can move between the two. Inside the plugin, `vim.g.trail_tree = "left"` puts the tree on the left too.
 
 ## Keys
 
