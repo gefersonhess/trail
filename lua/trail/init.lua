@@ -525,7 +525,6 @@ local function path_context()
       store.set_position(path.id, step)
       state.last_path = path.id
     end,
-    pick = finder.pick,
     find = function()
       M.find()
     end,
@@ -1167,20 +1166,25 @@ local function build_home(review)
   for i, p in ipairs(state.code) do
     local done = progress(p)
     local left = string.format("  %s  ", i <= 9 and tostring(i) or " ")
+    local g = route.graph(p.impact)
+    local routes = route.routes(g)
     local tail = string.format("   %d/%d", done, #p.steps) .. (done == #p.steps and " ✓" or "")
+    if #routes > 1 then
+      tail = tail .. "  " .. count(#routes, "route")
+    end
     local n = #path_threads(p)
     if n > 0 then
       tail = tail .. "  " .. count(n, "thread")
     end
-    local g = route.graph(p.impact)
-    local ids, index, current
     local at = state.last_path == p.id and p.steps[store.position(p.id) or 1]
-    if at and at.node and g.nodes[at.node.id] then
-      current = at.node.id
-      ids, index = route.through(g, current, route.prefer(p.id))
-    else
-      ids, index = route.main(g)
+    local current = at and at.node and at.node.id or nil
+    local number = current and route.find(g, current, route.current(p.id))
+    if not number then
+      current, number = nil, 1
     end
+    local shown = routes[number] or { ids = {} }
+    local index = current and route.index(shown, current) or 1
+    local ids = shown.ids
     local seen = M.done_steps(p)
     local drawn, drawn_hls = route.draw(g, ids, {
       current = current,

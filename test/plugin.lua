@@ -1057,45 +1057,21 @@ do
   local rl = route_lines()
   check(#rl == 2 and rl[1] == " Entry ── ▶ Work" and vim.api.nvim_win_get_height(fold_win) == 2,
     "gt shows the route: the unchanged entry point, then the change shown: " .. table.concat(rl, "\n"))
-  check(rl[2]:match("^%s+k 1 more caller%s+step 1 of 1$"), "under it, how many other callers it has, and the step: " .. rl[2])
-
-  vim.api.nvim_feedkeys("h", "x", false)
-  check(vim.wait(10000, function()
-    return route_lines()[1] == " ▶ Entry ── ● Work" and diff_top():match("func Entry%(%) {") ~= nil
-  end), "h moves to the caller above and shows its code: " .. table.concat(route_lines(), "\n"))
-  vim.api.nvim_feedkeys("h", "x", false)
-  check(route_lines()[1] == " ▶ Entry ── ● Work", "h stops at the entry point")
-  vim.api.nvim_feedkeys("l", "x", false)
-  check(vim.wait(10000, function()
-    return route_lines()[1] == " Entry ── ▶ Work"
-  end), "l moves back down to the change")
-
-  local route_diff = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
-    return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match("^trail://diff/")
-  end)
-  vim.api.nvim_set_current_win(route_diff)
-  vim.api.nvim_feedkeys("[r", "x", false)
-  check(vim.wait(10000, function()
-    return route_lines()[1] == " ▶ Entry ── ● Work" and diff_top():match("func Entry%(%) {") ~= nil
-  end) and vim.api.nvim_get_current_win() == route_diff, "[r in the diff moves up the route and stays in the diff")
-  vim.api.nvim_feedkeys("]r", "x", false)
-  check(vim.wait(10000, function()
-    return route_lines()[1] == " Entry ── ▶ Work"
-  end) and vim.api.nvim_get_current_win() == route_diff, "]r in the diff moves back down")
-
-  local real_select = vim.ui.select
-  local offered
-  vim.ui.select = function(items, opts, on_choice)
-    offered = vim.tbl_map(opts.format_item, items)
-    on_choice(items[2])
+  check(rl[2]:match("^%s+also called from Other%s+step 1 of 1$"), "under it, what else calls it, and the step: " .. rl[2])
+  for _, key in ipairs({ "h", "j", "k", "l" }) do
+    check(vim.fn.maparg(key, "n", false, true).buffer ~= 1, key .. " stays a Vim motion in the route")
   end
-  vim.api.nvim_set_current_win(fold_win)
-  vim.api.nvim_feedkeys("k", "x", false)
-  check(offered and offered[1] == "  Entry" and offered[2] == "  Other", "k lists the callers: " .. vim.inspect(offered))
-  check(vim.wait(5000, function()
-    return route_lines()[1] == " Other ── ▶ Work"
-  end), "picking one shows the route through it: " .. table.concat(route_lines(), "\n"))
-  vim.ui.select = real_select
+
+  vim.api.nvim_win_set_cursor(fold_win, { 1, 0 })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+  check(vim.wait(10000, function()
+    return route_lines()[1] == " ▶ Entry ── ● Work" and diff_top():match("func Entry%(%) {") ~= nil
+  end), "<CR> on a function of the route shows it: " .. table.concat(route_lines(), "\n"))
+  vim.api.nvim_win_set_cursor(fold_win, { 1, #" ▶ Entry ── " + 2 })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+  check(vim.wait(10000, function()
+    return route_lines()[1] == " Entry ── ▶ Work"
+  end), "<CR> on the change goes back to it: " .. table.concat(route_lines(), "\n"))
 
   vim.api.nvim_feedkeys("gt", "x", false)
   check(vim.api.nvim_buf_get_lines(fold_buf, 0, 1, false)[1]:match("^ Work  ·  step 1 of 1"), "gt switches back to the tree")
@@ -1103,10 +1079,11 @@ do
 
   vim.api.nvim_feedkeys("-", "x", false)
   check(vim.iter(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false)):any(function(l)
-    return l == "  1  Other ── ▶ Work   1/1 ✓"
+    return l == "  1  Entry ── ▶ Work   1/1 ✓"
   end), "the paths screen draws the path through where the review was: "
     .. table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), "\n"))
 
+  local real_select, offered = vim.ui.select, nil
   vim.ui.select = function(items, opts, on_choice)
     offered = vim.tbl_map(opts.format_item, items)
     on_choice(items[2])
@@ -1137,6 +1114,58 @@ do
   vim.g.trail_graph = "tree"
 end
 vim.fn.delete(folds, "rf")
+
+-- A path whose entry point calls several changes: one route per branch, in step order.
+do
+  local fan = vim.fn.tempname()
+  vim.fn.mkdir(fan .. "/a", "p")
+  local function run(cmd)
+    local out = vim.system({ "sh", "-c", cmd }, { cwd = fan, text = true }):wait()
+    assert(out.code == 0, cmd .. ": " .. out.stderr)
+  end
+  local function source(n)
+    return "package a\n\nfunc Entry() int {\n\tFirst()\n\tSecond()\n\treturn " .. n .. "\n}\n\nfunc Other() {\n\tSecond()\n}\n\nfunc First() int {\n\treturn "
+      .. n .. "\n}\n\nfunc Second() int {\n\treturn " .. n .. "\n}"
+  end
+  run("git init -q -b main && git config user.email t@t && git config user.name t")
+  vim.fn.writefile(vim.split(source(1), "\n"), fan .. "/a/a.go")
+  run("git add -A && git commit -qm base && git checkout -qb feature")
+  vim.fn.writefile(vim.split(source(2), "\n"), fan .. "/a/a.go")
+  run("git add -A && git commit -qm feature")
+  vim.cmd.cd(fan)
+  vim.g.trail_graph = nil
+  vim.cmd("Trail main..feature")
+  local home = vim.api.nvim_get_current_buf()
+  local function home_text()
+    return table.concat(vim.api.nvim_buf_get_lines(home, 0, -1, false), "\n")
+  end
+  check(vim.wait(15000, function()
+    return home_text():match("\n  1  ○ Entry ── ○ First   0/3  2 routes\n") ~= nil
+  end), "a path row shows its first route and how many routes it has: " .. home_text())
+  vim.api.nvim_feedkeys("1", "x", false)
+  local route_buf = vim.fn.bufnr("trail://path")
+  local function lines()
+    return vim.api.nvim_buf_get_lines(route_buf, 0, -1, false)
+  end
+  check(vim.wait(10000, function()
+    return lines()[1] == " ▶ Entry ── ○ First" and lines()[2]:match("route 1 of 2") ~= nil
+  end), "the path opens on its first route: " .. table.concat(lines(), "\n"))
+  vim.api.nvim_feedkeys("]s", "x", false)
+  check(vim.wait(10000, function()
+    return lines()[1] == " ● Entry ── ▶ First" and lines()[2]:match("route 1 of 2") ~= nil
+  end), "]s moves down the route: " .. table.concat(lines(), "\n"))
+  vim.api.nvim_feedkeys("]s", "x", false)
+  check(vim.wait(10000, function()
+    return lines()[1] == " ● Entry ── ▶ Second" and lines()[2]:match("route 2 of 2 · also called from Other") ~= nil
+  end), "]s past the end of a route goes on to the next one: " .. table.concat(lines(), "\n"))
+  vim.api.nvim_feedkeys("[s", "x", false)
+  check(vim.wait(10000, function()
+    return lines()[1] == " ● Entry ── ▶ First" and lines()[2]:match("route 1 of 2") ~= nil
+  end), "[s goes back onto the first route: " .. table.concat(lines(), "\n"))
+  vim.api.nvim_feedkeys("-", "x", false)
+  vim.g.trail_graph = "tree"
+  vim.fn.delete(fan, "rf")
+end
 
 -- An engine that stops while working out the impact: the screen says so instead of waiting forever.
 -- Submitting a pull request review to GitHub from the send screen.

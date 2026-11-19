@@ -17,6 +17,7 @@ local function float(items, opts, on_choice)
   local list_win = vim.api.nvim_open_win(list_buf, false, {
     relative = "editor", row = row + 3, col = col, width = width, height = height,
     style = "minimal", border = "rounded", focusable = false,
+    footer = " j k move  ⏎ pick  i search  q close ", footer_pos = "right",
   })
   local input_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[input_buf].bufhidden = "wipe"
@@ -80,8 +81,8 @@ local function float(items, opts, on_choice)
       on_choice(choice)
     end)
   end
-  local function key(lhs, fn)
-    vim.keymap.set({ "i", "n" }, lhs, fn, { buffer = input_buf, nowait = true })
+  local function key(modes, lhs, fn)
+    vim.keymap.set(modes, lhs, fn, { buffer = input_buf, nowait = true })
   end
   local function move(delta)
     return function()
@@ -91,22 +92,44 @@ local function float(items, opts, on_choice)
       end
     end
   end
-  key("<CR>", function()
+  local function to(index)
+    return function()
+      if #shown > 0 then
+        selected = index < 0 and #shown or index
+        draw()
+      end
+    end
+  end
+  local function pick()
     if vim.api.nvim_get_current_line() ~= query then
       filter()
     end
     close(shown[selected] and items[shown[selected]] or nil)
-  end)
-  key("<Esc>", function()
+  end
+  local function cancel()
     close(nil)
+  end
+  local function typing()
+    vim.cmd.startinsert({ bang = true })
+  end
+  key({ "i", "n" }, "<CR>", pick)
+  key({ "i", "n" }, "<C-c>", cancel)
+  key({ "i", "n" }, "<C-n>", move(1))
+  key({ "i", "n" }, "<Down>", move(1))
+  key({ "i", "n" }, "<C-p>", move(-1))
+  key({ "i", "n" }, "<Up>", move(-1))
+  key("i", "<Esc>", function()
+    vim.cmd.stopinsert()
   end)
-  key("<C-c>", function()
-    close(nil)
-  end)
-  key("<C-n>", move(1))
-  key("<Down>", move(1))
-  key("<C-p>", move(-1))
-  key("<Up>", move(-1))
+  key("n", "<Esc>", cancel)
+  key("n", "q", cancel)
+  key("n", "j", move(1))
+  key("n", "k", move(-1))
+  key("n", "gg", to(1))
+  key("n", "G", to(-1))
+  for _, lhs in ipairs({ "i", "a", "I", "A", "/" }) do
+    key("n", lhs, typing)
+  end
   vim.api.nvim_create_autocmd("TextChangedI", { buffer = input_buf, callback = filter })
   vim.api.nvim_create_autocmd("WinLeave", {
     buffer = input_buf,
@@ -120,6 +143,8 @@ local function float(items, opts, on_choice)
 end
 
 ---Calls `on_choice` with the item picked from `items`, or nil.
+---In the app the list opens typing; `<Esc>` goes to Normal mode, where `j`/`k`
+---move, `<CR>` picks and `q` or `<Esc>` closes.
 ---@param opts { prompt: string, format: fun(item): string, current: any }
 function M.pick(items, opts, on_choice)
   if #items == 0 then
