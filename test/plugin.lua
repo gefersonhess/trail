@@ -1593,14 +1593,21 @@ vim.fn.mkdir(configs .. "/broken", "p")
 vim.fn.writefile({ "os.exit(1)" }, configs .. "/broken/init.lua")
 local function app_colors(user_appname)
   return vim.system({ vim.v.progpath, "--headless", "-u", root .. "/app/init.lua",
-    "+lua io.stdout:write(string.format('%s|%06x|%s', vim.g.colors_name, vim.api.nvim_get_hl(0, { name = 'Normal' }).bg or 0, vim.api.nvim_get_hl(0, { name = 'TrailModeNORMAL' }).bg and 'mode' or 'none')); vim.cmd('qa!')" },
+    "+lua io.stdout:write(string.format('%s|%06x|%s|%s', vim.g.colors_name, vim.api.nvim_get_hl(0, { name = 'Normal' }).bg or 0, vim.api.nvim_get_hl(0, { name = 'TrailModeNORMAL' }).bg and 'mode' or 'none', vim.fn.execute('messages'):gsub('\\n', ' '))); vim.cmd('qa!')" },
     { cwd = repo, text = true, env = { NVIM_APPNAME = "trail-test", TRAIL_USER_APPNAME = user_appname, XDG_CONFIG_HOME = configs,
       XDG_CACHE_HOME = repo .. "-appcache", TRAIL_ARGS = "main..feature", TRAIL_GOPLS = repo .. "-no-gopls" } }):wait(30000).stdout
 end
 local inherited = app_colors("mine")
-check(inherited == "blue|123456|mode", "the app uses the colors of the user's Neovim, their overrides included: " .. inherited)
+check(inherited:match("^blue|123456|mode|"), "the app uses the colors of the user's Neovim, their overrides included: " .. inherited)
+check(not inherited:match("own colors"), "and says nothing about it: " .. inherited)
 local fallback = app_colors("broken")
-check(fallback:match("|0e1116|mode$"), "without them it keeps its own: " .. fallback)
+check(fallback:match("|0e1116|mode|") and fallback:match("own colors.*exited with code 1"),
+  "without them it keeps its own and says why: " .. fallback)
+vim.fn.mkdir(configs .. "/noisy", "p")
+vim.fn.writefile({ 'vim.cmd.colorscheme("blue")', 'vim.api.nvim_create_autocmd("VimLeavePre", { callback = function() vim.cmd("cquit 3") end })' },
+  configs .. "/noisy/init.lua")
+local noisy = app_colors("noisy")
+check(noisy:match("^blue|"), "colors written by a Neovim that then exits with an error still count: " .. noisy)
 vim.fn.delete(configs, "rf")
 
 vim.fn.delete(repo, "rf")
