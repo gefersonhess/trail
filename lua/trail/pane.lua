@@ -6,6 +6,25 @@ local sizes = require("trail.sizes")
 local M = {}
 
 local win, holder, restore
+-- The last window used outside the pane, normally the diff: where the
+-- pane's keys and a comment box written from it go back to.
+local review_win
+
+vim.api.nvim_create_autocmd("WinEnter", {
+  callback = function()
+    local here = vim.api.nvim_get_current_win()
+    if here ~= win and vim.api.nvim_win_get_config(here).relative == "" then
+      review_win = here
+    end
+  end,
+})
+
+---Goes back from the pane to the window used before it.
+function M.back()
+  if review_win and vim.api.nvim_win_is_valid(review_win) and review_win ~= win then
+    vim.api.nvim_set_current_win(review_win)
+  end
+end
 
 ---The pane's window, if it is open.
 function M.win()

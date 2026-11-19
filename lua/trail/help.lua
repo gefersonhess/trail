@@ -22,7 +22,7 @@ local screens = {
   },
   thread = {
     { "Your comments", { { "e", "edit" }, { "d", "delete" }, { "s", "select for sending" }, { "S", "send selected" } } },
-    { "Thread", { { "r", "reply" }, { "R", "resolve or reopen" }, { "q", "close" } } },
+    { "Thread", { { "r", "reply" }, { "R", "resolve or reopen" }, { "<Esc>", "back to the diff" }, { "q", "close" } } },
   },
   pulls = {
     { "Open", vim.list_extend({ { "<CR>", "open pull request" } }, picks) },
@@ -78,7 +78,7 @@ local hints = {
   send = "P submit  y copy  v verdict  ? keys",
   threads = "⏎ go  r reply  ? keys",
   comment = "<C-s> save  ⇥ kind  q cancel",
-  thread = "e edit  s select  S send  r reply  R resolve  q close",
+  thread = "e edit  s select  S send  r reply  R resolve  ⎋ back  q close",
 }
 
 ---Which screen a buffer is: home, tree, diff, send, threads, or the comment
