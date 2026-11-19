@@ -471,6 +471,12 @@ local function dim_at(buf, row)
 end
 check(vim.fn.foldlevel(p6_row) == 0 and dim_at(ubuf, p6_row) and not dim_at(ubuf, row_with(ubuf, "func VerifyHash(h string) bool {")),
   "a step shows the whole file, what is outside its function dimmed")
+do
+  local strings_at = row_with(ubuf, '\t"strings"')
+  check(dim_at(ubuf, strings_at) and has_mark(ubuf, strings_at, function(d)
+    return d.hl_group == "TrailDimAdd" and d.priority > 300
+  end), "a change outside the function stays coloured, faded with the rest")
+end
 vim.api.nvim_win_set_cursor(uwin, { 1, 0 })
 vim.api.nvim_feedkeys("]h", "x", false)
 check(vim.api.nvim_get_current_line() == 'import "fmt"', "unified ]h jumps to the first change, got " .. vim.api.nvim_get_current_line())
