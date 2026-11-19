@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{diff, impact, peek, pull_request, review, sidebyside, worktree};
+use crate::{diff, git, impact, peek, pull_request, review, sidebyside, worktree};
 
 const PARSE_ERROR: i64 = -32700;
 const INTERNAL_ERROR: i64 = -32603;
@@ -66,6 +66,13 @@ struct CheckoutParams {
 }
 
 #[derive(Deserialize)]
+struct CommitsParams {
+    repo: PathBuf,
+    base: String,
+    head: String,
+}
+
+#[derive(Deserialize)]
 struct PullRequestParams {
     repo: PathBuf,
     number: u32,
@@ -92,19 +99,6 @@ struct UpdateThreadParams {
     #[serde(default)]
     body: String,
     state: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct SubmitReviewParams {
-    repo: PathBuf,
-    url: String,
-    number: u32,
-    commit: String,
-    event: Option<String>,
-    #[serde(default)]
-    body: String,
-    #[serde(default)]
-    comments: Vec<pull_request::ReviewComment>,
 }
 
 struct RpcError {
@@ -282,6 +276,23 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
             })?;
             Ok(serde_json::to_value(checkout).expect("checkout serializes"))
         }
+        "commits" => {
+            let p: CommitsParams = serde_json::from_value(params).map_err(|e| RpcError {
+                code: INVALID_PARAMS,
+                message: e.to_string(),
+            })?;
+            let commits = git::commits(&p.repo, &p.base, &p.head).map_err(|message| RpcError {
+                code: GIT_ERROR,
+                message,
+            })?;
+            log(&format!(
+                "commits: {} from {} to {}",
+                commits.len(),
+                p.base,
+                p.head
+            ));
+            Ok(serde_json::to_value(commits).expect("commits serialize"))
+        }
         "pull_requests" => {
             let p: PullRequestsParams = serde_json::from_value(params).map_err(|e| RpcError {
                 code: INVALID_PARAMS,
@@ -338,20 +349,12 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
             Ok(serde_json::to_value(threads).expect("threads serialize"))
         }
         "submit_review" => {
-            let p: SubmitReviewParams = serde_json::from_value(params).map_err(|e| RpcError {
-                code: INVALID_PARAMS,
-                message: e.to_string(),
-            })?;
-            let submitted = pull_request::submit_review(
-                &p.repo,
-                &p.url,
-                p.number,
-                &p.commit,
-                p.event.as_deref(),
-                &p.body,
-                &p.comments,
-            )
-            .map_err(|message| RpcError {
+            let p: pull_request::Submission =
+                serde_json::from_value(params).map_err(|e| RpcError {
+                    code: INVALID_PARAMS,
+                    message: e.to_string(),
+                })?;
+            let submitted = pull_request::submit_review(&p).map_err(|message| RpcError {
                 code: GIT_ERROR,
                 message,
             })?;

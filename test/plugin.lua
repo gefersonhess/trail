@@ -1459,7 +1459,7 @@ local function evaluated(expr, opts)
   return vim.api.nvim_eval_statusline(expr, opts or {}).str
 end
 local tabline = evaluated(app.tabline(), { use_tabline = true })
-check(tabline:match("^ trail  Overview  Paths  Send ") and tabline:match("main%.%.feature $"),
+check(tabline:match("^ trail  Overview  Paths  Commits  Send ") and tabline:match("main%.%.feature $"),
   "the tabline names the screens and the review: " .. tabline)
 local function selected_tab()
   local hl = vim.api.nvim_eval_statusline(app.tabline(), { use_tabline = true, highlights = true })
@@ -1472,7 +1472,7 @@ local function selected_tab()
 end
 check(selected_tab() == "Overview", "the overview's tab is marked: " .. tostring(selected_tab()))
 local status = evaluated(app.statusline(), { maxwidth = 200 })
-check(status:match("^ NORMAL  overview") and status:match("⏎ open  1%-9 path  S send"), "the status line shows the mode and the screen's keys: " .. status)
+check(status:match("^ NORMAL  overview") and status:match("⏎ open  1%-9 path  C commits  S send"), "the status line shows the mode and the screen's keys: " .. status)
 vim.api.nvim_feedkeys("1", "x", false)
 check(vim.wait(10000, function()
   return vim.api.nvim_buf_get_name(0):match("^trail://diff/")
@@ -1805,12 +1805,86 @@ cstore.save()
 athreads.set({})
 vim.g.trail_app, vim.g.trail_tree = nil, nil
 
+-- The Commits screen narrows a review to some of its commits, keeping its
+-- comments, and widens it back.
+local crepo = repo .. "-commits"
+vim.fn.mkdir(crepo, "p")
+local function csh(cmd)
+  local out = vim.system({ "sh", "-c", cmd }, { cwd = crepo, text = true }):wait()
+  assert(out.code == 0, cmd .. ": " .. out.stderr)
+end
+csh("git init -q -b main && git config user.email t@t && git config user.name t")
+csh("printf 'package a\\n\\nfunc A() int { return 1 }\\n' > a.go && printf 'package a\\n\\nfunc B() int { return 1 }\\n' > b.go"
+  .. " && git add -A && git commit -qm base && git checkout -qb feature")
+csh("printf 'package a\\n\\nfunc A() int { return 2 }\\n' > a.go && git commit -qam 'Change A'")
+csh("printf 'package a\\n\\nfunc B() int { return 2 }\\n' > b.go && git commit -qam 'Change B'")
+csh("printf 'package a\\n\\nfunc A() int { return 3 }\\n' > a.go && git commit -qam 'Change A again'")
+vim.cmd.cd(crepo)
+vim.cmd("tabnew")
+vim.cmd("Trail main..feature")
+local chome = vim.api.nvim_get_current_buf()
+local function ctext(buf)
+  return table.concat(vim.api.nvim_buf_get_lines(buf or 0, 0, -1, false), "\n")
+end
+check(vim.wait(15000, function()
+  return ctext(chome):match("2 hunks") ~= nil
+end), "the whole branch opens: " .. ctext(chome))
+local cstate = require("trail.state")
+table.insert(cstate.comments(), { id = "kept", kind = "nit", body = "kept across ranges", file = "a.go", side = "new",
+  line = 3, text = "func A() int { return 3 }" })
+cstate.save()
+vim.api.nvim_feedkeys("C", "x", false)
+check(vim.wait(5000, function()
+  return ctext():match("Change A again")
+end) and require("trail.help").screen(0) == "commits", "C opens the Commits screen: " .. ctext())
+local listed = vim.split(ctext(), "\n")
+local subjects = {}
+for _, l in ipairs(listed) do
+  local s = l:match("^▎ +%d+  %x+  (.-)  +t · ")
+  if s then
+    table.insert(subjects, s)
+  end
+end
+check(vim.deep_equal(subjects, { "Change A", "Change B", "Change A again" }) and ctext():match("reviewing all"),
+  "it lists the commits oldest first, all of them reviewed: " .. ctext())
+vim.api.nvim_win_set_cursor(0, { vim.fn.search("Change B", "n"), 0 })
+vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+check(vim.wait(15000, function()
+  local t = ctext(chome)
+  return vim.api.nvim_get_current_buf() == chome and t:match("1 hunks") and t:match("commit 2 of 3")
+end), "<CR> on a commit reviews just that commit: " .. ctext(chome))
+check(vim.iter(cstate.comments()):any(function(c)
+  return c.id == "kept"
+end), "comments stay with the review")
+vim.api.nvim_feedkeys("C", "x", false)
+vim.wait(5000, function()
+  return ctext():match("Change A again")
+end)
+check(ctext():match("reviewing commit 2 of 3") and ctext():match("\n  +1  %x+  Change A"),
+  "the screen shows which commits are reviewed: " .. ctext())
+vim.api.nvim_win_set_cursor(0, { vim.fn.search("Change B", "n"), 0 })
+vim.api.nvim_feedkeys("Vj" .. vim.keycode("<CR>"), "x", false)
+check(vim.wait(15000, function()
+  return ctext(chome):match("commits 2%-3 of 3") and ctext(chome):match("2 hunks")
+end), "a visual selection reviews a run of commits: " .. ctext(chome))
+vim.api.nvim_feedkeys("C", "x", false)
+vim.wait(5000, function()
+  return ctext():match("Change A again")
+end)
+vim.api.nvim_feedkeys("a", "x", false)
+check(vim.wait(15000, function()
+  return not ctext(chome):match("commits? %d") and ctext(chome):match("2 hunks")
+end), "a goes back to all of them: " .. ctext(chome))
+vim.cmd("silent! tabonly")
+vim.cmd.cd(root)
+vim.fn.delete(crepo, "rf")
+
 -- The bundled startup file the trail command runs.
 local started = vim.system({ vim.v.progpath, "--headless", "-u", root .. "/app/init.lua",
   "+lua vim.defer_fn(function() io.stdout:write(vim.api.nvim_eval_statusline(vim.o.tabline, { use_tabline = true }).str .. '|' .. (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or '') .. '|' .. tostring(vim.g.trail_app) .. '|' .. vim.o.laststatus .. '\\n'); vim.cmd('qa!') end, 8000)" },
   { cwd = repo, text = true, env = { NVIM_APPNAME = "trail-test", TRAIL_ARGS = "main..feature", XDG_CACHE_HOME = repo .. "-appcache",
     TRAIL_GOPLS = repo .. "-no-gopls" } }):wait(30000)
-check(started.stdout:match("^ trail  Overview  Paths  Send .*main%.%.feature |main%.%.feature|true|3"),
+check(started.stdout:match("^ trail  Overview  Paths  Commits  Send .*main%.%.feature |main%.%.feature|true|3"),
   "app/init.lua opens the review from TRAIL_ARGS with trail's own settings: " .. vim.inspect(started))
 
 -- The app takes on the colors of the user's own Neovim, overrides included.

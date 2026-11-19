@@ -7,6 +7,7 @@ local pane = require("trail.pane")
 local pathview = require("trail.pathview")
 local store = require("trail.state")
 local calls = require("trail.calls")
+local commits = require("trail.commits")
 local comments = require("trail.comments")
 local compose = require("trail.compose")
 local send = require("trail.send")
@@ -806,9 +807,10 @@ local function submit_review(done)
       return comments.selected(c) and c.reply_to ~= nil
     end, store.comments())
     local list = vim.tbl_map(function(c)
-      return { path = c.file, side = c.side, line = c.line, last = c.last, body = string.format("**%s:** %s", c.kind, c.body) }
+      return { path = c.file, side = c.side, line = c.line, last = c.last, text = c.text,
+        body = string.format("**%s:** %s", c.kind, c.body) }
     end, pending)
-    local commit = state.review.head_commit
+    local commit = state.full_head or state.review.head_commit
     local submitting = state
     vim.notify("trail: submitting the review…", vim.log.levels.INFO)
     engine.request("submit_review", {
@@ -816,6 +818,7 @@ local function submit_review(done)
       url = state.pr_url,
       number = state.pr,
       commit = commit,
+      base = state.base,
       event = verdict_events[verdict],
       body = body,
       comments = list,
@@ -987,6 +990,10 @@ local function build_home(review)
     add(title .. by, nil, { { "Title", 0, #title }, { "Comment", #title, -1 } })
   else
     add(state.title, nil, { { "Title", 0, -1 } })
+  end
+  if state.range then
+    local only = "Reviewing " .. state.range.label .. "  ·  C to change"
+    add(only, nil, { { "WarningMsg", 0, #("Reviewing " .. state.range.label) }, { "Comment", #("Reviewing " .. state.range.label), -1 } })
   end
   local seen = 0
   for _, h in ipairs(review.hunks) do
@@ -1173,6 +1180,14 @@ end
 
 ---Asks the engine for the impact paths in the background: the walk through
 ---callers and callees can take a while, so the screen shows meanwhile.
+---The range the review shows: all of it, or the commits picked on the Commits screen.
+local function range()
+  if state.range then
+    return state.range.base, state.range.head
+  end
+  return state.base, state.head
+end
+
 local function request_impact()
   local review = state.review
   state.impact_started = vim.uv.now()
@@ -1186,10 +1201,11 @@ local function request_impact()
     end
     M.refresh_home()
   end))
+  local base, head = range()
   engine.request("impact", {
     repo = state.repo,
-    base = state.base,
-    head = state.head,
+    base = base,
+    head = head,
     lsp = vim.g.trail_lsp ~= false,
     ignore = vim.g.trail_ignore,
     ignore_defaults = vim.g.trail_ignore_defaults ~= false,
@@ -1228,7 +1244,8 @@ local function review_range()
   M.refresh_home()
   -- An answer for a review the user has since left must not land in the new one.
   local opening = state
-  engine.request("open", { repo = state.repo, base = state.base, head = state.head, ignore = vim.g.trail_ignore, ignore_defaults = vim.g.trail_ignore_defaults ~= false }, function(err, result)
+  local base, head = range()
+  engine.request("open", { repo = state.repo, base = base, head = head, ignore = vim.g.trail_ignore, ignore_defaults = vim.g.trail_ignore_defaults ~= false }, function(err, result)
     if state ~= opening then
       return
     end
@@ -1236,6 +1253,10 @@ local function review_range()
       return show_failure(err.message)
     end
     state.review = result
+    -- Comments are posted against the whole review's head, even from a narrower range.
+    if not state.range then
+      state.full_head = result.head_commit
+    end
     state.impact, state.impact_error = nil, nil
     request_impact()
     if vim.api.nvim_buf_is_valid(state.list_buf) then
@@ -1299,6 +1320,32 @@ local function pick_pull_request(root)
   end)
 end
 
+---The Commits screen: picking one commit or a run of them reloads the review
+---on just those; all of them widens it back. Comments and marks stay.
+local function open_commits()
+  commits.open({
+    title = state.title,
+    window = review_window,
+    home = home,
+    list = function(cb)
+      engine.request("commits", { repo = state.repo, base = state.base, head = state.head }, cb)
+    end,
+    picked = function()
+      return state.range
+    end,
+    pick = function(list, first, last)
+      if first and not (first == 1 and last == #list) then
+        state.range = { base = list[first].id .. "^", head = list[last].id, first = first, last = last,
+          label = commits.label(first, last, #list) }
+      else
+        state.range = nil
+      end
+      home()
+      load()
+    end,
+  })
+end
+
 function M.open(arg)
   arg = vim.trim(arg or "")
   local root = vim.fs.root(0, ".git") or vim.fn.getcwd()
@@ -1306,6 +1353,7 @@ function M.open(arg)
     return pick_pull_request(root)
   end
   state = { repo = root }
+  commits.reset()
   threads.set({})
   local pr = arg:match("^#(%d+)$") or arg:match("^https?://%S+/pull/(%d+)/?%S*$")
   if pr then
@@ -1379,6 +1427,7 @@ function M.open(arg)
     end
     open_threads()
   end, "Review threads of the pull request")
+  map("C", open_commits, "Commits: review one or some of them")
   map("R", load, "Refresh")
   map("?", help.show, "Show keys")
   map("q", function()
@@ -1418,6 +1467,7 @@ function M.tabline()
   local tabs = {
     { "Overview", screen == "home" },
     { path and path.title or "Paths", screen == "path" },
+    { "Commits", screen == "commits" },
   }
   if state.pr then
     local open = #vim.tbl_filter(function(t)
@@ -1438,7 +1488,7 @@ function M.tabline()
     out = out .. string.format("%%#TabLine# step %d/%d  %%#TrailAddText#%s%%#TabLine#%s %d/%d ", step, #path.steps,
       string.rep("█", filled), string.rep("░", 10 - filled), done, #path.steps)
   elseif state.title then
-    out = out .. "%#TabLine# " .. escape(state.title) .. " "
+    out = out .. "%#TabLine# " .. escape(state.title .. (state.range and " · " .. state.range.label or "")) .. " "
   end
   return out
 end
@@ -1451,6 +1501,7 @@ function M.statusline()
   local screen = help.screen(buf)
   local where = ({
     pulls = "pull requests",
+    commits = "commits",
     home = "overview",
     tree = "path",
     send = "send",

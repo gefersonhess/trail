@@ -16,6 +16,10 @@ for n = 1, 9 do
 end
 
 local screens = {
+  commits = {
+    { "Review", { { "<CR>", "this commit (a run in visual mode)" }, { "a", "all the commits" } } },
+    { "Screen", { { "-", "back to paths" }, { "q", "back to paths" } } },
+  },
   thread = {
     { "Your comments", { { "e", "edit" }, { "d", "delete" }, { "s", "select for sending" }, { "S", "send selected" } } },
     { "Thread", { { "r", "reply" }, { "R", "resolve or reopen" }, { "q", "close" } } },
@@ -26,7 +30,7 @@ local screens = {
   },
   home = {
     { "Open", vim.list_extend({ { "<CR>", "open the line" }, { "gp", "switch path" } }, digits) },
-    { "Review", { { "mr", "mark path" }, { "S", "send screen" }, { "T", "threads" } } },
+    { "Review", { { "mr", "mark path" }, { "C", "commits" }, { "S", "send screen" }, { "T", "threads" } } },
     { "Screen", { { "R", "refresh" }, { "q", "quit" } } },
   },
   tree = {
@@ -67,7 +71,8 @@ local screens = {
 ---The few keys the trail app's status line shows for each screen.
 local hints = {
   pulls = "⏎ open  1-9 pull request  q quit  ? keys",
-  home = "⏎ open  1-9 path  S send  T threads  ? keys",
+  home = "⏎ open  1-9 path  C commits  S send  T threads  ? keys",
+  commits = "⏎ this commit  V⏎ a run  a all  - back  ? keys",
   tree = "⏎ open  n p step  ]c change  ]t thread  ? keys",
   diff = "]s step  ]c change  ]] call  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
   send = "P submit  y copy  v verdict  ? keys",

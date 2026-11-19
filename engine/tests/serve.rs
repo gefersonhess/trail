@@ -2771,6 +2771,105 @@ fn a_review_is_submitted_with_inline_comments_and_the_rest_in_its_body() {
 }
 
 #[test]
+fn a_comment_written_on_an_earlier_commit_is_submitted_on_its_line_at_the_head() {
+    let repo = Repo::new();
+    repo.write("a.go", "x\ny\nq\nw\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.write("a.go", "x\nT\nq\nw\n");
+    repo.commit("first");
+    let first = rev(&repo, "HEAD");
+    repo.write("a.go", "x\ny2\nz\nT\nq\nw\n");
+    repo.commit("second");
+    let head = rev(&repo, "HEAD");
+    let gh = fake_gh_for_reviews(repo.path(), "github.com");
+
+    let responses = serve_with_env(
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "submit_review",
+            "params": {
+                "repo": repo.path(),
+                "url": "https://github.com/owner/repo/pull/7",
+                "number": 7,
+                "commit": head,
+                "base": "main",
+                "event": "COMMENT",
+                "body": "",
+                "comments": [
+                    { "path": "a.go", "side": "new", "line": 2, "text": "T", "body": "**nit:** moved down" },
+                    { "path": "a.go", "side": "old", "line": 1, "text": "y", "body": "**nit:** on the base" },
+                    { "path": "a.go", "side": "new", "line": 3, "text": "only in the first", "body": "**nit:** gone" },
+                ],
+            },
+        })],
+        &[("TRAIL_GH", gh.to_str().unwrap())],
+    );
+
+    assert!(responses[0]["result"].is_object(), "{}", responses[0]);
+    let payload: Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.path().join("payload.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        payload["comments"],
+        json!([
+            { "path": "a.go", "body": "**nit:** moved down", "line": 4, "side": "RIGHT" },
+            { "path": "a.go", "body": "**nit:** on the base", "line": 2, "side": "LEFT" },
+        ]),
+        "lines are found again by their text at the pull request's head and base (first was {first})"
+    );
+    assert!(
+        payload["body"]
+            .as_str()
+            .unwrap()
+            .contains("- `a.go` line 3: **nit:** gone"),
+        "a line the head no longer has goes to the body: {payload}"
+    );
+}
+
+#[test]
+fn commits_lists_a_range_s_commits_oldest_first() {
+    let repo = Repo::new();
+    repo.write("a.go", "a\n");
+    repo.commit("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    for (n, subject) in ["Add hashing", "Rename login arg", "Fix typo"]
+        .iter()
+        .enumerate()
+    {
+        repo.write("a.go", &format!("a{n}\n"));
+        repo.commit(subject);
+    }
+    repo.git(&["checkout", "-q", "main"]);
+    repo.write("b.go", "b\n");
+    repo.commit("on main since");
+
+    let responses = serve(&[json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "commits",
+        "params": { "repo": repo.path(), "base": "main", "head": "feature" },
+    })]);
+
+    let commits = responses[0]["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}", responses[0]));
+    let subjects: Vec<&str> = commits
+        .iter()
+        .map(|c| c["subject"].as_str().unwrap())
+        .collect();
+    assert_eq!(subjects, ["Add hashing", "Rename login arg", "Fix typo"]);
+    let last = &commits[2];
+    assert_eq!(last["id"].as_str().unwrap(), rev(&repo, "feature"));
+    assert_eq!(last["short"].as_str().unwrap().len(), 7);
+    assert!(
+        last["author"].is_string() && last["date"].is_string(),
+        "{last}"
+    );
+}
+
+#[test]
 fn a_function_s_calls_are_laid_out_in_the_order_its_body_makes_them() {
     let repo = Repo::new();
     let base = "package a\n\nfunc Top() {\n\tb()\n\ta()\n}\n\nfunc a() { c() }\n\nfunc b() {}\n\nfunc c() {}\n";

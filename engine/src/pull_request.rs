@@ -105,6 +105,28 @@ pub struct ReviewComment {
     line: u32,
     last: Option<u32>,
     body: String,
+    /// The text of the comment's first line, to find it again at the pull
+    /// request's head or base when it was written on another commit.
+    #[serde(default)]
+    text: Option<String>,
+}
+
+/// Where a comment's lines are at `rev`: the line with its text nearest the
+/// one it was written on, shifted with the rest of its lines. None when the
+/// file at `rev` has no such line.
+fn anchored(repo: &Path, rev: &str, c: &ReviewComment, text: &str) -> Option<(u32, Option<u32>)> {
+    let source = git::show(repo, rev, &c.path).ok()?;
+    let found = source
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| *l == text)
+        .map(|(i, _)| i as u32 + 1)
+        .min_by_key(|&l| l.abs_diff(c.line))?;
+    let shift = i64::from(found) - i64::from(c.line);
+    let last = c
+        .last
+        .map(|last| (i64::from(last) + shift).max(i64::from(found)) as u32);
+    Some((found, last))
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq)]
@@ -112,6 +134,23 @@ pub struct ReviewComment {
 enum Side {
     Old,
     New,
+}
+
+/// A review to submit: the `submit_review` request.
+#[derive(Deserialize)]
+pub struct Submission {
+    repo: std::path::PathBuf,
+    url: String,
+    number: u32,
+    /// The pull request's head commit, which the comments' lines refer to.
+    commit: String,
+    /// The pull request's base, to find removed lines a comment is on again.
+    base: Option<String>,
+    event: Option<String>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    comments: Vec<ReviewComment>,
 }
 
 #[derive(Serialize)]
@@ -172,15 +211,18 @@ fn repository_of(url: &str, number: u32) -> Result<(String, String), String> {
 /// `COMMENT`, or none for a pending review), the overall `body`, and the
 /// comments as inline comments where GitHub's diff has their lines. The
 /// others are listed at the end of the body, since GitHub refuses them inline.
-pub fn submit_review(
-    repo: &Path,
-    url: &str,
-    number: u32,
-    commit: &str,
-    event: Option<&str>,
-    body: &str,
-    comments: &[ReviewComment],
-) -> Result<Submitted, String> {
+pub fn submit_review(review: &Submission) -> Result<Submitted, String> {
+    let Submission {
+        repo,
+        url,
+        number,
+        commit,
+        base,
+        event,
+        body,
+        comments,
+    } = review;
+    let (repo, number, commit) = (repo.as_path(), *number, commit.as_str());
     let gh = gh_command();
     // `gh api` goes to github.com unless told otherwise, even inside a
     // repository on GitHub Enterprise, where `gh pr view` finds the host itself.
@@ -210,20 +252,39 @@ pub fn submit_review(
         ranges.insert(name, hunk_ranges(&patch));
     }
 
+    // Removed lines are on GitHub's left side: the merge base of the pull request.
+    let left = match base {
+        Some(base) => Some(git::merge_base(repo, &git::commit(repo, base)?, commit)?),
+        None => None,
+    };
     let mut inline = Vec::new();
     let mut inline_comments = Vec::new();
     let mut elsewhere = Vec::new();
     for (index, c) in comments.iter().enumerate() {
-        let last = c.last.unwrap_or(c.line);
-        let fits = ranges.get(&c.path).is_some_and(|(old, new)| {
-            let side = if c.side == Side::Old { old } else { new };
-            side.iter().any(|&(a, b)| a <= c.line && last <= b)
+        // A comment written on an earlier commit, or before new pushes, may sit
+        // on another line at the head: it is found again by its text.
+        let rev = if c.side == Side::Old {
+            left.as_deref()
+        } else {
+            Some(commit)
+        };
+        let at = match (&c.text, rev) {
+            (Some(text), Some(rev)) => anchored(repo, rev, c, text),
+            _ => Some((c.line, c.last)),
+        };
+        let (line, last) = at.map_or((c.line, c.last.unwrap_or(c.line)), |(l, last)| {
+            (l, last.unwrap_or(l))
         });
+        let fits = at.is_some()
+            && ranges.get(&c.path).is_some_and(|(old, new)| {
+                let side = if c.side == Side::Old { old } else { new };
+                side.iter().any(|&(a, b)| a <= line && last <= b)
+            });
         if !fits {
-            let lines = if last > c.line {
-                format!("{}-{last}", c.line)
+            let lines = if last > line {
+                format!("{line}-{last}")
             } else {
-                c.line.to_string()
+                line.to_string()
             };
             let removed = if c.side == Side::Old {
                 " (removed)"
@@ -236,8 +297,8 @@ pub fn submit_review(
         let side = if c.side == Side::Old { "LEFT" } else { "RIGHT" };
         let mut comment =
             serde_json::json!({ "path": c.path, "body": c.body, "line": last, "side": side });
-        if last > c.line {
-            comment["start_line"] = c.line.into();
+        if last > line {
+            comment["start_line"] = line.into();
             comment["start_side"] = side.into();
         }
         inline.push(comment);
@@ -254,7 +315,7 @@ pub fn submit_review(
     }
     let mut payload = serde_json::json!({ "commit_id": commit, "body": text, "comments": inline });
     if let Some(event) = event {
-        payload["event"] = event.into();
+        payload["event"] = event.as_str().into();
     }
 
     let mut child = Command::new(&gh)
