@@ -4,10 +4,14 @@ local M = {}
 
 local ns = vim.api.nvim_create_namespace("trail.diffview")
 local ns_notes = vim.api.nvim_create_namespace("trail.diffview.notes")
+local ns_focus = vim.api.nvim_create_namespace("trail.diffview.focus")
 local CONTEXT = 3
 local gutters = {}
 local chosen_layout
-local chosen_folding
+-- Folding chosen with `o`, kept for the next diff of the same kind: "hunks"
+-- folds unchanged code around the changes, "function" folds what is outside
+-- the function a step is about.
+local chosen_folding = {}
 
 local palettes = {
   dark = {
@@ -34,6 +38,14 @@ local function set_highlights()
   local fallback = vim.o.background == "light" and 0x24292f or 0xc9d1d9
   vim.api.nvim_set_hl(0, "TrailContext", { fg = normal.fg or fallback, default = true })
   vim.api.nvim_set_hl(0, "TrailReviewed", { link = "Comment", default = true })
+  -- Code outside the function being reviewed: the text colour faded halfway into the background.
+  local fg, bg = normal.fg or fallback, normal.bg or (vim.o.background == "light" and 0xffffff or 0x0d1117)
+  local dim = 0
+  for shift = 0, 16, 8 do
+    local x, y = bit.band(bit.rshift(fg, shift), 0xff), bit.band(bit.rshift(bg, shift), 0xff)
+    dim = dim + bit.lshift(math.floor(x * 0.4 + y * 0.6 + 0.5), shift)
+  end
+  vim.api.nvim_set_hl(0, "TrailDim", { fg = dim, default = true })
 end
 set_highlights()
 vim.api.nvim_create_autocmd("ColorScheme", { callback = set_highlights })
@@ -46,11 +58,12 @@ function M.side_by_side()
   return layout() ~= "unified"
 end
 
-local function fold_unchanged()
-  if chosen_folding ~= nil then
-    return chosen_folding
+local function fold_unchanged(kind)
+  if chosen_folding[kind] ~= nil then
+    return chosen_folding[kind]
   end
-  return vim.g.trail_fold_unchanged ~= false
+  -- A step's function shows in its whole file, the rest dimmed.
+  return kind ~= "function" and vim.g.trail_fold_unchanged ~= false
 end
 
 function M.statuscolumn()
@@ -238,10 +251,42 @@ local function folds_and_starts(changed, total)
   return folds, starts
 end
 
-local function apply_folds(win, folds)
+---The rows outside `focus` (a function's old and new ranges), as folds;
+---`lines_of(row)` gives a row's old and new line numbers.
+local function outside(focus, lines_of, total)
+  local function within(range, line)
+    return range and line and line >= range.start and line < range.start + range.len
+  end
+  local folds, run_start = {}, nil
+  for row = 1, total + 1 do
+    local old, new = lines_of(row)
+    local out = row <= total and not (within(focus.old, old) or within(focus.new, new))
+    if out then
+      run_start = run_start or row
+    elseif run_start then
+      table.insert(folds, { run_start, row - 1 })
+      run_start = nil
+    end
+  end
+  return folds
+end
+
+---Fades the rows of `folds` in `buf`: the code outside the function a step is about.
+local function dim(buf, folds)
+  vim.api.nvim_buf_clear_namespace(buf, ns_focus, 0, -1)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  for _, f in ipairs(folds) do
+    for row = f[1], f[2] do
+      vim.api.nvim_buf_set_extmark(buf, ns_focus, row - 1, 0,
+        { end_row = row - 1, end_col = #(lines[row] or ""), hl_group = "TrailDim", priority = 300 })
+    end
+  end
+end
+
+local function apply_folds(win, folds, kind)
   vim.api.nvim_win_call(win, function()
     vim.cmd("normal! zE")
-    if fold_unchanged() then
+    if fold_unchanged(kind) then
       for _, f in ipairs(folds) do
         vim.cmd(string.format("%d,%dfold", f[1], f[2]))
       end
@@ -249,7 +294,7 @@ local function apply_folds(win, folds)
   end)
 end
 
-local function setup_window(win, title, folds, unified, bind)
+local function setup_window(win, title, folds, unified, bind, kind)
   local wo = vim.wo[win][0]
   wo.wrap, wo.number, wo.relativenumber, wo.list = false, false, false, false
   wo.signcolumn, wo.foldcolumn = "no", "0"
@@ -257,7 +302,7 @@ local function setup_window(win, title, folds, unified, bind)
   wo.winbar = title:gsub("%%", "%%%%") .. " %=%#Comment#? keys %*"
   wo.scrollbind, wo.cursorbind = bind, bind
   wo.foldmethod, wo.foldenable, wo.foldlevel = "manual", true, 0
-  apply_folds(win, folds)
+  apply_folds(win, folds, kind)
 end
 
 local function row_for(view, side, line)
@@ -293,13 +338,23 @@ function M.show(diff, opts)
   vim.bo[placeholder].bufhidden = "wipe"
   vim.api.nvim_win_set_buf(first_win, placeholder)
 
+  -- A step's function: the rest of the file is dimmed, and `o` folds it away.
+  local focus = opts.focus
+  local kind = focus and "function" or "hunks"
   local panes
   if layout() == "unified" then
     local view, changed = unified_view(diff, old_ch, new_ch)
     local buf = make_buf("trail://diff/" .. new_name, opts.new_path or opts.old_path, view, true)
     vim.api.nvim_win_set_buf(first_win, buf)
     local folds, starts = folds_and_starts(changed, #view.lines)
-    setup_window(first_win, new_name .. "  ·  " .. diff.engine, folds, true, false)
+    if focus then
+      folds = outside(focus, function(row)
+        local e = view.gutter[row] or {}
+        return e.old, e.new
+      end, #view.lines)
+      dim(buf, folds)
+    end
+    setup_window(first_win, new_name .. "  ·  " .. diff.engine, folds, true, false, kind)
     panes = { { win = first_win, buf = buf, view = view, starts = starts, folds = folds } }
   else
     local left, right, changed = side_by_side_views(diff, old_ch, new_ch)
@@ -311,8 +366,16 @@ function M.show(diff, opts)
     vim.w[right_win].trail_pane = true
     vim.api.nvim_win_set_buf(right_win, right_buf)
     local folds, starts = folds_and_starts(changed, #diff.rows)
-    setup_window(first_win, "base  " .. old_name, folds, false, true)
-    setup_window(right_win, "head  " .. new_name .. "  ·  " .. diff.engine, folds, false, true)
+    if focus then
+      folds = outside(focus, function(row)
+        local r = diff.rows[row] or {}
+        return r[1], r[2]
+      end, #diff.rows)
+      dim(left_buf, folds)
+      dim(right_buf, folds)
+    end
+    setup_window(first_win, "base  " .. old_name, folds, false, true, kind)
+    setup_window(right_win, "head  " .. new_name .. "  ·  " .. diff.engine, folds, false, true, kind)
     panes = {
       { win = first_win, buf = left_buf, view = left, starts = starts, folds = folds },
       { win = right_win, buf = right_buf, view = right, starts = starts, folds = folds },
@@ -608,9 +671,9 @@ function M.show(diff, opts)
   end
 
   local function toggle_folds()
-    chosen_folding = not fold_unchanged()
+    chosen_folding[kind] = not fold_unchanged(kind)
     for _, p in ipairs(panes) do
-      apply_folds(p.win, p.folds)
+      apply_folds(p.win, p.folds, kind)
     end
     vim.cmd("normal! zz")
   end
