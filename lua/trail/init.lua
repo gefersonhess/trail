@@ -5,6 +5,8 @@ local peek = require("trail.peek")
 local tree = require("trail.tree")
 local pane = require("trail.pane")
 local pathview = require("trail.pathview")
+local route = require("trail.route")
+local finder = require("trail.finder")
 local store = require("trail.state")
 local calls = require("trail.calls")
 local commits = require("trail.commits")
@@ -185,8 +187,8 @@ local function home()
   local win = review_window()
   if vim.api.nvim_win_get_buf(win) ~= state.list_buf then
     vim.api.nvim_win_set_buf(win, state.list_buf)
-    M.refresh_home()
   end
+  M.refresh_home()
 end
 
 local function find_definition(file, params, side, on_found)
@@ -521,6 +523,11 @@ local function path_context()
     end,
     on_step = function(path, step)
       store.set_position(path.id, step)
+      state.last_path = path.id
+    end,
+    pick = finder.pick,
+    find = function()
+      M.find()
     end,
     toggle_reviewed = function(path)
       toggle_reviewed(path)
@@ -992,6 +999,48 @@ threads.hooks({
   end,
 })
 
+---Finds a changed function among every path's steps and opens it: in the
+---path shown now when it is there, otherwise in the first path holding it.
+function M.find()
+  local here = pathview.current() or {}
+  local order = {}
+  for i, p in ipairs(state.code or {}) do
+    table.insert(order, p.id == here.id and 1 or #order + 1, { path = p, number = i })
+  end
+  local items, by_id = {}, {}
+  for _, entry in ipairs(order) do
+    local nodes = route.graph(entry.path.impact).nodes
+    for s, step in ipairs(entry.path.steps) do
+      local id = step.node.id
+      if not by_id[id] then
+        by_id[id] = { name = nodes[id].short, places = {}, seen = vim.iter(step.node.hunks):all(store.seen) }
+        table.insert(items, by_id[id])
+      end
+      table.insert(by_id[id].places, { path = entry.path, number = entry.number, step = s })
+    end
+  end
+  local width = 0
+  for _, item in ipairs(items) do
+    width = math.max(width, vim.fn.strdisplaywidth(item.name))
+  end
+  finder.pick(items, {
+    prompt = "Changed function",
+    format = function(item)
+      local numbers = vim.tbl_map(function(place)
+        return tostring(place.number)
+      end, item.places)
+      local name = item.name
+      return (item.seen and "● " or "○ ") .. name .. string.rep(" ", width - vim.fn.strdisplaywidth(name) + 3)
+        .. (#numbers == 1 and "path " or "paths ") .. table.concat(numbers, ", ")
+    end,
+  }, function(item)
+    if item then
+      local place = item.places[1]
+      enter(place.path, place.step)
+    end
+  end)
+end
+
 function M.switch_path()
   local list = all_paths()
   vim.ui.select(list, {
@@ -1113,26 +1162,50 @@ local function build_home(review)
   elseif #state.code == 0 then
     add("  (no changed functions)", nil, { { "Comment", 0, -1 } })
   end
-  local width = 0
-  for _, p in ipairs(state.code) do
-    width = math.max(width, vim.fn.strdisplaywidth(p.title))
-  end
+  local win = vim.fn.bufwinid(state.list_buf)
+  local columns = win ~= -1 and vim.api.nvim_win_get_width(win) or vim.o.columns
   for i, p in ipairs(state.code) do
     local done = progress(p)
-    local f, e = bar(done, #p.steps, 10)
-    local left = string.format("  %s  %s", i <= 9 and tostring(i) or " ", p.title .. string.rep(" ", width - vim.fn.strdisplaywidth(p.title)))
-    local text = left .. "  " .. f .. e
-    local bar_start = #left + 2
-    text = text .. string.format("  %d/%d", done, #p.steps) .. (done == #p.steps and " ✓" or "")
+    local left = string.format("  %s  ", i <= 9 and tostring(i) or " ")
+    local tail = string.format("   %d/%d", done, #p.steps) .. (done == #p.steps and " ✓" or "")
     local n = #path_threads(p)
     if n > 0 then
-      text = text .. "  " .. count(n, "thread")
+      tail = tail .. "  " .. count(n, "thread")
     end
-    add(text, { path = p }, {
-      { "Number", 2, 3 },
-      { "TrailAddText", bar_start, bar_start + #f },
-      { "Comment", bar_start + #f, -1 },
+    local g = route.graph(p.impact)
+    local ids, index, current
+    local at = state.last_path == p.id and p.steps[store.position(p.id) or 1]
+    if at and at.node and g.nodes[at.node.id] then
+      current = at.node.id
+      ids, index = route.through(g, current, route.prefer(p.id))
+    else
+      ids, index = route.main(g)
+    end
+    local seen = M.done_steps(p)
+    local drawn, drawn_hls = route.draw(g, ids, {
+      current = current,
+      anchor = index,
+      width = columns - #left - vim.fn.strdisplaywidth(tail) - 2,
+      done = function(id)
+        for s, step in ipairs(p.steps) do
+          if step.node.id == id then
+            return seen[s] == true
+          end
+        end
+        return false
+      end,
     })
+    local text = left .. drawn .. tail
+    local hls = { { "Number", 2, 3 } }
+    if done == #p.steps then
+      table.insert(hls, { "Comment", #left, -1 })
+    else
+      for _, h in ipairs(drawn_hls) do
+        table.insert(hls, { h[3], #left + h[1], #left + h[2] })
+      end
+      table.insert(hls, { "Comment", #left + #drawn, -1 })
+    end
+    add(text, { path = p }, hls)
   end
 
   if #state.tests > 0 then
@@ -1470,6 +1543,15 @@ function M.open(arg)
     end
   end, "Mark the path as reviewed, or unmark it")
   map("gp", M.switch_path, "Switch path")
+  map("<C-p>", M.find, "Find a changed function")
+  map("r", function()
+    for _, p in ipairs(state.code or {}) do
+      if p.id == state.last_path then
+        return enter(p)
+      end
+    end
+    vim.notify("trail: no path opened yet", vim.log.levels.INFO)
+  end, "Resume where the review was")
   map("S", open_send, "Send screen: comments, verdict, copy")
   map("T", function()
     if not state.pr then

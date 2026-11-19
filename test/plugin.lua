@@ -36,12 +36,14 @@ vim.env.XDG_CACHE_HOME = cache
 
 vim.env.TRAIL_GOPLS = repo .. "-no-gopls"
 vim.g.trail_ignore = { "*.md" }
+-- The tree's own checks; the route line has its own section.
+vim.g.trail_graph = "tree"
 vim.cmd.cd(repo)
 vim.cmd("Trail main..feature")
 local buf = vim.api.nvim_get_current_buf()
 local loaded = vim.wait(15000, function()
   return vim.iter(vim.api.nvim_buf_get_lines(buf, 0, -1, false)):any(function(l)
-    return l:match("^  1  Login ")
+    return l:match("^  1  %S+ Login ")
   end)
 end)
 check(loaded, "the paths never loaded: " .. table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
@@ -61,12 +63,14 @@ check(lines[1] == "main..feature", "a branch review's header is its range, with 
 check(lines[2]:find("░", 1, true) == 1 and lines[2]:match("  0/%d+ hunks$"), "a progress bar over every hunk, without a submit status: " .. lines[2])
 check(not text:match("Description") and not text:match("Needs attention"),
   "no description for a branch, and nothing needs attention when every change is tested")
-check(line_of("^  1  Login  ░░░░░░░░░░  0/3$"), "a path row is its name, a progress bar and done/total")
+check(line_of("^  1  ○ Login ── ○ VerifyHash ── ○ hashOf   0/3$"), "a path row is its main route, each change unreviewed, and done/total")
 check(line_of("^▸ Tests %(1%)$") and line_of("^▸ Not in any path %(1%)$") and line_of("^▸ Hidden %(1%)$"),
   "the sections below the paths start folded, with their counts")
 check(not text:match("notes%.md") and not text:match("auth_test%.go"), "folded sections list nothing")
 check(lines[#lines] == "? keys", "the only key hint is ? at the bottom")
-check(not text:match("──") and not text:match("VerifyHash"), "there is no preview tree")
+check(#vim.tbl_filter(function(l)
+  return l:match("──")
+end, lines) == 1, "each path is one line, with no preview tree")
 local function home_row(pattern)
   for i, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
     if l:match(pattern) then
@@ -85,12 +89,12 @@ check(home_row("^    notes%.md$"), "<CR> opens Hidden, naming the files")
 vim.api.nvim_win_set_cursor(0, { home_row("^▾ Hidden"), 0 })
 vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
 check(home_row("^▸ Hidden %(1%)$") and not home_row("notes%.md"), "<CR> folds a section again")
-vim.api.nvim_win_set_cursor(0, { home_row("^  1  Login "), 0 })
+vim.api.nvim_win_set_cursor(0, { home_row("^  1  %S+ Login "), 0 })
 vim.api.nvim_feedkeys("mr", "x", false)
-check(home_row("^  1  Login  ██████████  3/3 ✓$"), "mr marks the path as reviewed")
+check(home_row("^  1  ● Login ── ● VerifyHash ── ● hashOf   3/3 ✓$"), "mr marks the path as reviewed")
 check(vim.api.nvim_buf_get_lines(buf, 1, 2, false)[1]:find("█", 1, true) == 1, "the header's bar moves with it")
 vim.api.nvim_feedkeys("mr", "x", false)
-check(home_row("^  1  Login  ░░░░░░░░░░  0/3$"), "mr on a reviewed path unmarks it")
+check(home_row("^  1  ○ Login .-   0/3$"), "mr on a reviewed path unmarks it")
 check(not text:match("Gone"), "a removed function is not a step: its hunk is part of VerifyHash's")
 check(not text:match("Tidy") and not text:match("Squash"), "reformatted functions are not listed")
 
@@ -609,7 +613,7 @@ local function home_line(pattern)
     end
   end
 end
-check(home_line("^  1  Login  ██████████  3/3 ✓$"), "a path whose steps were all seen is marked done: " .. tostring(home_line("^  1  Login")))
+check(home_line("^  1  .-   3/3 ✓$"), "a path whose steps were all seen is marked done: " .. tostring(home_line("^  1  %S+ Login")))
 vim.fn.delete(state_file)
 -- vim.g.trail_lsp = false keeps the impact walk off the language server.
 local engine_mod = require("trail.engine")
@@ -622,7 +626,7 @@ vim.g.trail_lsp = false
 vim.api.nvim_feedkeys("R", "x", false)
 
 check(vim.wait(10000, function()
-  return home_line("^  1  Login  .-  0/3$") ~= nil
+  return home_line("^  1  %S+ Login .-  0/3$") ~= nil
 end), "progress starts over without saved state")
 check(vim.wait(10000, function()
   return sent.impact ~= nil
@@ -634,13 +638,13 @@ check(vim.wait(10000, function()
   return sent.impact ~= nil
 end) and sent.impact.lsp == true, "the language server is on by default: " .. vim.inspect(sent.impact))
 vim.wait(10000, function()
-  return home_line("^  1  Login  .-  0/3$") ~= nil
+  return home_line("^  1  %S+ Login .-  0/3$") ~= nil
 end)
 engine_mod.request = real_request
 vim.api.nvim_feedkeys("1", "x", false)
 check(wait_diff_line("func Login(user string) bool {"), "a path without a saved step starts at step 1")
 vim.api.nvim_feedkeys("-", "x", false)
-local partial = home_line("^  1  Login  .-  (%d)/3$")
+local partial = home_line("^  1  %S+ Login .-  (%d)/3$")
 local done = partial and tonumber(partial:match("  (%d)/3$"))
 check(done and done >= 1 and done < 3, "only steps whose hunks were on screen count as done: " .. tostring(partial))
 vim.api.nvim_feedkeys("1", "x", false)
@@ -663,7 +667,7 @@ vim.api.nvim_feedkeys("-", "x", false)
 vim.fn.writefile({ vim.json.encode({ version = 1, seen = vim.empty_dict(), positions = { ["go:auth.Login"] = 3 }, comments = {} }) }, state_file)
 vim.api.nvim_feedkeys("R", "x", false)
 vim.wait(10000, function()
-  return home_line("^  1  Login  .-  0/3$") ~= nil
+  return home_line("^  1  %S+ Login .-  0/3$") ~= nil
 end)
 vim.api.nvim_feedkeys("1", "x", false)
 check(vim.wait(10000, function()
@@ -671,7 +675,7 @@ check(vim.wait(10000, function()
     and vim.api.nvim_get_current_line() == "func hashOf(h string) string { return strings.ToLower(h) }"
 end), "the saved step is resumed from the state file")
 vim.api.nvim_feedkeys("-", "x", false)
-local jumped = home_line("^  1  Login  .-  (%d)/3$")
+local jumped = home_line("^  1  %S+ Login .-  (%d)/3$")
 local jumped_done = jumped and tonumber(jumped:match("  (%d)/3$"))
 check(jumped_done and jumped_done < 3, "hunks jumped over above the screen do not count as seen: " .. tostring(jumped))
 
@@ -827,7 +831,7 @@ vim.fn.writefile({ vim.json.encode(list) }, state_file)
 vim.api.nvim_feedkeys("-", "x", false)
 vim.api.nvim_feedkeys("R", "x", false)
 vim.wait(15000, function()
-  return home_line("^  1  Login ") ~= nil
+  return home_line("^  1  %S+ Login ") ~= nil
 end)
 vim.api.nvim_feedkeys("1", "x", false)
 vim.wait(10000, function()
@@ -891,10 +895,10 @@ check(vim.wait(10000, function()
   return vim.api.nvim_buf_get_lines(prbuf, 0, 1, false)[1] == "#7 Add hashing · alice → main"
 end), "a pull request opens with its title: " .. vim.inspect(vim.api.nvim_buf_get_lines(prbuf, 0, 1, false)))
 check(vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
-  return l:match("^  1  Login  .-  0/3$")
+  return l:match("^  1  %S+ Login .-  0/3$")
 end) or vim.wait(15000, function()
   return vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
-    return l:match("^  1  Login  .-  0/3$")
+    return l:match("^  1  %S+ Login .-  0/3$")
   end)
 end), "the pull request is reviewed like a branch")
 check(require("trail.state").path():match("/trail/pr%-7%.json$"), "its review state is kept per pull request number")
@@ -923,7 +927,7 @@ local function tline(pattern)
   end)
 end
 check(vim.wait(15000, function()
-  return tline("^  1  Store  ░░░░░░░░░░  0/1$") ~= nil
+  return tline("^  1  Run ── ○ Store   0/1$") ~= nil
 end), "a changed type gets a path: " .. table.concat(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false), "\n"))
 vim.api.nvim_feedkeys("1", "x", false)
 check(vim.wait(10000, function()
@@ -971,11 +975,11 @@ vim.cmd("Trail main..feature")
 local fbuf = vim.api.nvim_get_current_buf()
 check(vim.wait(15000, function()
   return vim.iter(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false)):any(function(l)
-    return l:match("^  1  Work ")
+    return l:match("^  1  .-Work")
   end)
 end), "the folds review loads: " .. table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), "\n"))
 check(vim.iter(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false)):any(function(l)
-  return l:match("^  2  Lone  ░░░░░░░░░░  0/1$")
+  return l:match("^  2  ○ Lone   0/1$")
 end), "a change only tests call gets its own path: " .. table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), "\n"))
 vim.api.nvim_feedkeys("1", "x", false)
 vim.wait(10000, function()
@@ -1028,6 +1032,110 @@ check(vim.wait(10000, function()
   end)
   return w and vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, 1, false)[1] == "func Entry() {"
 end), "K on a row shows that function's code")
+
+-- The route line: the path as one chain of its changes, moved along with h and l.
+do
+  local function close_floats()
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.api.nvim_win_get_config(w).relative ~= "" then
+        vim.api.nvim_win_close(w, true)
+      end
+    end
+  end
+  close_floats()
+  vim.api.nvim_set_current_win(fold_win)
+  vim.api.nvim_feedkeys("gt", "x", false)
+  local function route_lines()
+    return vim.api.nvim_buf_get_lines(fold_buf, 0, -1, false)
+  end
+  local function diff_top()
+    local diff_win = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+      return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match("^trail://diff/")
+    end)
+    return diff_win and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(diff_win), 0, -1, false), "\n") or ""
+  end
+  local rl = route_lines()
+  check(#rl == 2 and rl[1] == " Entry ── ▶ Work" and vim.api.nvim_win_get_height(fold_win) == 2,
+    "gt shows the route: the unchanged entry point, then the change shown: " .. table.concat(rl, "\n"))
+  check(rl[2]:match("^%s+k 1 more caller%s+step 1 of 1$"), "under it, how many other callers it has, and the step: " .. rl[2])
+
+  vim.api.nvim_feedkeys("h", "x", false)
+  check(vim.wait(10000, function()
+    return route_lines()[1] == " ▶ Entry ── ● Work" and diff_top():match("func Entry%(%) {") ~= nil
+  end), "h moves to the caller above and shows its code: " .. table.concat(route_lines(), "\n"))
+  vim.api.nvim_feedkeys("h", "x", false)
+  check(route_lines()[1] == " ▶ Entry ── ● Work", "h stops at the entry point")
+  vim.api.nvim_feedkeys("l", "x", false)
+  check(vim.wait(10000, function()
+    return route_lines()[1] == " Entry ── ▶ Work"
+  end), "l moves back down to the change")
+
+  local route_diff = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match("^trail://diff/")
+  end)
+  vim.api.nvim_set_current_win(route_diff)
+  vim.api.nvim_feedkeys("[r", "x", false)
+  check(vim.wait(10000, function()
+    return route_lines()[1] == " ▶ Entry ── ● Work" and diff_top():match("func Entry%(%) {") ~= nil
+  end) and vim.api.nvim_get_current_win() == route_diff, "[r in the diff moves up the route and stays in the diff")
+  vim.api.nvim_feedkeys("]r", "x", false)
+  check(vim.wait(10000, function()
+    return route_lines()[1] == " Entry ── ▶ Work"
+  end) and vim.api.nvim_get_current_win() == route_diff, "]r in the diff moves back down")
+
+  local real_select = vim.ui.select
+  local offered
+  vim.ui.select = function(items, opts, on_choice)
+    offered = vim.tbl_map(opts.format_item, items)
+    on_choice(items[2])
+  end
+  vim.api.nvim_set_current_win(fold_win)
+  vim.api.nvim_feedkeys("k", "x", false)
+  check(offered and offered[1] == "  Entry" and offered[2] == "  Other", "k lists the callers: " .. vim.inspect(offered))
+  check(vim.wait(5000, function()
+    return route_lines()[1] == " Other ── ▶ Work"
+  end), "picking one shows the route through it: " .. table.concat(route_lines(), "\n"))
+  vim.ui.select = real_select
+
+  vim.api.nvim_feedkeys("gt", "x", false)
+  check(vim.api.nvim_buf_get_lines(fold_buf, 0, 1, false)[1]:match("^ Work  ·  step 1 of 1"), "gt switches back to the tree")
+  vim.api.nvim_feedkeys("gt", "x", false)
+
+  vim.api.nvim_feedkeys("-", "x", false)
+  check(vim.iter(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false)):any(function(l)
+    return l == "  1  Other ── ▶ Work   1/1 ✓"
+  end), "the paths screen draws the path through where the review was: "
+    .. table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), "\n"))
+
+  vim.ui.select = function(items, opts, on_choice)
+    offered = vim.tbl_map(opts.format_item, items)
+    on_choice(items[2])
+  end
+  vim.api.nvim_feedkeys(vim.keycode("<C-p>"), "x", false)
+  vim.ui.select = real_select
+  check(offered and offered[1] == "● Work   path 1" and offered[2] == "○ Lone   path 2",
+    "<C-p> lists every changed function and its paths: " .. vim.inspect(offered))
+  check(vim.wait(10000, function()
+    return route_lines and diff_top():match("func Lone%(%) int {") ~= nil
+  end), "picking one opens it in its path")
+
+  vim.g.trail_app = true
+  local picked = "none"
+  require("trail.finder").pick({ "Store.Save", "Auth.Verify", "Store.Tx" }, {
+    prompt = "Changed function",
+    format = function(s)
+      return s
+    end,
+  }, function(choice)
+    picked = choice
+  end)
+  vim.api.nvim_feedkeys("itx" .. vim.keycode("<CR>"), "xt", false)
+  check(vim.wait(2000, function()
+    return picked == "Store.Tx"
+  end), "the app's finder narrows by fuzzy match as you type: " .. tostring(picked))
+  vim.g.trail_app = nil
+  vim.g.trail_graph = "tree"
+end
 vim.fn.delete(folds, "rf")
 
 -- An engine that stops while working out the impact: the screen says so instead of waiting forever.
@@ -1102,12 +1210,12 @@ do
   local prbuf = vim.api.nvim_get_current_buf()
   check(vim.wait(15000, function()
     return vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
-      return l:match("^  1  Login ")
+      return l:match("^  1  %S+ Login ")
     end)
   end), "the pull request review opens")
   check(vim.wait(5000, function()
     return vim.iter(vim.api.nvim_buf_get_lines(prbuf, 0, -1, false)):any(function(l)
-      return l:match("^  1  Login  ░░░░░░░░░░  0/3  3 threads$")
+      return l:match("^  1  %S+ Login .-   0/3  3 threads$")
     end)
   end), "a path row counts the threads on its functions, outdated ones aside")
   local function prlines()
@@ -1500,7 +1608,7 @@ local app = require("trail")
 local abuf = vim.api.nvim_get_current_buf()
 check(vim.wait(15000, function()
   return vim.iter(vim.api.nvim_buf_get_lines(abuf, 0, -1, false)):any(function(l)
-    return l:match("^  1  Login ")
+    return l:match("^  1  %S+ Login ")
   end)
 end), "the app opens the review")
 check(#vim.api.nvim_list_tabpages() == 1, "the app keeps a single tab")
@@ -1521,7 +1629,7 @@ local function selected_tab()
 end
 check(selected_tab() == "Overview", "the overview's tab is marked: " .. tostring(selected_tab()))
 local status = evaluated(app.statusline(), { maxwidth = 200 })
-check(status:match("^ NORMAL  overview") and status:match("⏎ open  1%-9 path  C commits  S send"), "the status line shows the mode and the screen's keys: " .. status)
+check(status:match("^ NORMAL  overview") and status:match("⏎ open  1%-9 path  r resume  %^p find  C commits  S send"), "the status line shows the mode and the screen's keys: " .. status)
 vim.api.nvim_feedkeys("1", "x", false)
 check(vim.wait(10000, function()
   return vim.api.nvim_buf_get_name(0):match("^trail://diff/")

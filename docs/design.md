@@ -17,16 +17,16 @@ Two levels, like a file explorer.
 
 ### Paths screen (home)
 
-- A list of paths. Each path is a thread of related changes with its step count and progress.
+- A list of paths, one line each: the path's main route (its entry point, then each change below, `●` reviewed and `○` not yet) and done/total. The path last reviewed shows the route through where the review was, with `▶` on it; `r` resumes there.
 - "No test reaches": the changes no test calls, even through other code.
 - The changed test files, with the functions they cover.
 - A "Not in any path" section. Every changed hunk lands in a path, in Tests, or here.
-- A preview of the selected path's tree below the list.
-- `<CR>` or a number enters a path. `S` opens the send screen.
+- `<CR>` or a number enters a path. `<C-p>` finds a changed function by fuzzy name. `S` opens the send screen.
 
 ### Inside a path
 
-- The path's tree on top, from each entry point down to the last change, current step highlighted, at most a third of the screen and scrollable beyond that. What leads to no change is folded; `<CR>` opens a fold and `c` folds back.
+- The route on top, two lines: one chain from an entry point through the function shown down to the last change below it, with the unchanged functions between left out, and under it how many other callers and callees the function has. `h`/`l` move up and down the chain, `k` picks another caller (changing the route above), `j` another callee (moving to it). A route wider than the window shows the stations around the function shown and counts the hidden ones at each end.
+- `gt` swaps the route for the path's tree: from each entry point down to the last change, current step highlighted, at most a third of the screen and scrollable beyond that. What leads to no change is folded; `<CR>` opens a fold and `c` folds back. Test files and hunks in no path always show as a list.
 - A scrollable diff below, unified by default and side by side with `t`, with unchanged stretches folded.
 - `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen.
 - `<CR>` on a node in the graph jumps the diff to it.

@@ -29,15 +29,21 @@ local screens = {
     { "Screen", { { "q", "quit" } } },
   },
   home = {
-    { "Open", vim.list_extend({ { "<CR>", "open the line" }, { "gp", "switch path" } }, digits) },
+    { "Open", vim.list_extend({
+      { "<CR>", "open the line" }, { "r", "resume" }, { "<C-P>", "find function" }, { "gp", "switch path" },
+    }, digits) },
     { "Review", { { "mr", "mark path" }, { "C", "commits" }, { "S", "send screen" }, { "T", "threads" } } },
     { "Screen", { { "R", "refresh" }, { "q", "quit" } } },
   },
   tree = {
     { "Move", vim.list_extend({
       { "n", "step" }, { "p", "step" }, { "]c", "change" }, { "[c", "change" },
-      { "]t", "thread" }, { "[t", "thread" }, { "gp", "switch path" },
+      { "]t", "thread" }, { "[t", "thread" }, { "gp", "switch path" }, { "<C-P>", "find function" },
     }, back) },
+    { "Route", {
+      { "h", "caller · callee" }, { "l", "caller · callee" }, { "k", "other callers" }, { "j", "other callees" },
+      { "gt", "route or tree" },
+    } },
     { "Tree", { { "<CR>", "open" }, { "a", "every function" }, { "c", "fold back" }, { "K", "peek function" } } },
     { "Review", { { "mr", "mark path" } } },
   },
@@ -45,7 +51,8 @@ local screens = {
     { "Move", vim.list_extend({
       { "]s", "step" }, { "[s", "step" }, { "]c", "change" }, { "[c", "change" },
       { "]h", "hunk" }, { "[h", "hunk" }, { "]t", "thread" }, { "[t", "thread" }, { "gp", "switch path" },
-      { "]]", "into the call" }, { "[[", "back from it" },
+      { "]]", "into the call" }, { "[[", "back from it" }, { "]r", "route" }, { "[r", "route" },
+      { "<C-P>", "find function" },
     }, back) },
     { "Review", {
       { "cc", "comment" }, { "cb", "as kind" }, { "cq", "as kind" }, { "cn", "as kind" },
@@ -71,10 +78,10 @@ local screens = {
 ---The few keys the trail app's status line shows for each screen.
 local hints = {
   pulls = "⏎ open  1-9 pull request  q quit  ? keys",
-  home = "⏎ open  1-9 path  C commits  S send  T threads  ? keys",
+  home = "⏎ open  1-9 path  r resume  ^p find  C commits  S send  T threads  ? keys",
   commits = "⏎ this commit  V⏎ a run  a all  - back  ? keys",
-  tree = "⏎ open  n p step  ]c change  ]t thread  ? keys",
-  diff = "]s step  ]c change  ]] call  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
+  tree = "h l route  j k other calls  gt tree  ^p find  ? keys",
+  diff = "]s step  ]r route  ]c change  ]] call  ]t thread  cc comment  r reply  K peek  gd open  ? keys",
   send = "P submit  y copy  v verdict  ? keys",
   threads = "⏎ go  r reply  ? keys",
   comment = "<C-s> save  <C-y> post now  ⇥ kind  q cancel",
