@@ -1,7 +1,7 @@
 ---A path's changes drawn as lanes: one row per change, in the order `]s`
 ---walks them, with the calls between them drawn in a gutter on the left and
----the unchanged functions between them left out. Another caller of a change
----already drawn shows on its row as `⇠ Caller`.
+---the unchanged functions between them left out. A change reached again
+---shows again under each caller, with the changes below it.
 local M = {}
 
 local graphs = setmetatable({}, { __mode = "k" })
@@ -53,15 +53,14 @@ function M.graph(impact)
     end
   end
   local g = { nodes = nodes, step_of = step_of, parents = parents, children = children, entries = entries }
-  g.roots, g.kids, g.joins = M.spanning(g)
+  g.roots, g.kids = M.spanning(g)
   graphs[impact] = g
   return g
 end
 
 ---Each change once, under the first caller to reach it depth first: the
----roots, each station's children, and for every change the other callers
----reaching it. An entry point reaching only changes already placed is not a
----root; it shows among those changes' other callers.
+---roots and each station's children. An entry point reaching only changes
+---already placed is not a root.
 function M.spanning(g)
   local visited, kids, roots = {}, {}, {}
   local function visit(id)
@@ -86,29 +85,21 @@ function M.spanning(g)
       end
     end
   end
-  local placed_under = {}
-  for parent, list in pairs(kids) do
-    for _, c in ipairs(list) do
-      placed_under[c] = parent
-    end
-  end
-  local joins = {}
-  for to, from in pairs(g.parents) do
-    for _, p in ipairs(from) do
-      if placed_under[to] ~= p then
-        joins[to] = joins[to] or {}
-        table.insert(joins[to], p)
-      end
-    end
-  end
-  return roots, kids, joins
+  return roots, kids
 end
 
+local FOLD = 5
+
 ---The rows to draw, depth first: each with its id, depth, and the guide
----characters before its mark.
-function M.rows(g)
+---characters before its mark. A change reached again shows again under each
+---caller as `again`, with the changes below it, which fold into one row
+---(`fold`, `count`) when there are more than `FOLD`, unless `expanded[fold]`.
+---Entry points that only reach changes placed elsewhere come last.
+---@param expanded table<string, boolean>|nil
+function M.rows(g, expanded)
+  expanded = expanded or {}
   local rows = {}
-  local function walk(id, depth, guides, last)
+  local function prefix_of(depth, guides, last)
     local prefix = ""
     for _, open in ipairs(guides) do
       prefix = prefix .. (open and "│ " or "  ")
@@ -116,15 +107,50 @@ function M.rows(g)
     if depth > 0 then
       prefix = prefix .. (last and "╰─" or "├─")
     end
-    table.insert(rows, { id = id, depth = depth, prefix = prefix })
-    local list = g.kids[id] or {}
-    local below = depth > 0 and vim.list_extend(vim.list_extend({}, guides), { not last }) or {}
-    for i, c in ipairs(list) do
-      walk(c, depth + 1, below, i == #list)
+    return prefix
+  end
+  local function home(id, c)
+    return vim.list_contains(g.kids[id] or {}, c)
+  end
+  local function count(id, on_branch, limit)
+    local n = 0
+    for _, c in ipairs(g.children[id] or {}) do
+      if not on_branch[c] then
+        on_branch[c] = true
+        n = n + 1 + count(c, on_branch, limit - n - 1)
+        on_branch[c] = nil
+        if n > limit then
+          return n
+        end
+      end
     end
+    return n
+  end
+  local function walk(id, depth, guides, last, again, top, on_branch, at)
+    table.insert(rows, { id = id, depth = depth, prefix = prefix_of(depth, guides, last), again = again })
+    on_branch[id] = true
+    local below = depth > 0 and vim.list_extend(vim.list_extend({}, guides), { not last }) or {}
+    local list = vim.tbl_filter(function(c)
+      return not on_branch[c]
+    end, g.children[id] or {})
+    if top and #list > 0 and not expanded[at] and count(id, vim.deepcopy(on_branch), FOLD) > FOLD then
+      local n = count(id, vim.deepcopy(on_branch), math.huge)
+      table.insert(rows, { fold = at, count = n, depth = depth + 1, prefix = prefix_of(depth + 1, below, true) })
+    else
+      for i, c in ipairs(list) do
+        local here = home(id, c)
+        walk(c, depth + 1, below, i == #list, again or not here, not again and not here, on_branch, at .. ">" .. c)
+      end
+    end
+    on_branch[id] = nil
   end
   for i, root in ipairs(g.roots) do
-    walk(root, 0, {}, i == #g.roots)
+    walk(root, 0, {}, i == #g.roots, false, false, {}, root)
+  end
+  for _, entry in ipairs(g.entries) do
+    if not vim.list_contains(g.roots, entry) then
+      walk(entry, 0, {}, true, false, false, {}, entry)
+    end
   end
   return rows
 end
@@ -134,61 +160,60 @@ local function plural(n, word)
 end
 
 ---Draws `rows`: the gutter, the change's mark (`▶` shown now, `●` reviewed,
----`○` not yet, `◇` an unchanged entry point), its name with its other
----callers, and its threads in a column on the right.
+---`○` not yet, `◇` an unchanged entry point), its name, and its threads in a
+---column on the right.
 ---@param opts { indent: string|nil, current: string|nil, done: fun(id): boolean, threads: fun(id): integer }
 ---@return string[] lines, table[] highlights { row, from, to, group }
 function M.render(g, rows, opts)
   local indent = opts.indent or " "
-  local gutter, names = 0, {}
-  for i, r in ipairs(rows) do
-    gutter = math.max(gutter, vim.fn.strdisplaywidth(r.prefix))
-    local others = vim.tbl_map(function(p)
-      return g.nodes[p].short
-    end, g.joins[r.id] or {})
-    names[i] = { name = g.nodes[r.id].short, joins = #others > 0 and ("  ⇠ " .. table.concat(others, ", ")) or "" }
-  end
-  local width = 0
-  for _, n in ipairs(names) do
-    width = math.max(width, vim.fn.strdisplaywidth(n.name .. n.joins))
+  local gutter, width = 0, 0
+  for _, r in ipairs(rows) do
+    if r.id then
+      gutter = math.max(gutter, vim.fn.strdisplaywidth(r.prefix))
+      width = math.max(width, vim.fn.strdisplaywidth(g.nodes[r.id].short))
+    end
   end
   local lines, hls = {}, {}
   for i, r in ipairs(rows) do
     local id, row = r.id, i - 1
-    local mark, mark_hl = "◇", "Comment"
-    if id == opts.current then
-      mark, mark_hl = "▶", "TrailCurrentStep"
-    elseif g.step_of[id] then
-      if opts.done(id) then
-        mark, mark_hl = "●", "TrailAddText"
-      else
-        mark, mark_hl = "○", "Comment"
-      end
-    end
     local head = indent .. r.prefix
-    local line = head .. mark
-    table.insert(hls, { row, #indent, #head, "Comment" })
-    table.insert(hls, { row, #head, #line, mark_hl })
-    line = line .. string.rep(" ", gutter - vim.fn.strdisplaywidth(r.prefix) + 2)
-    local name_at = #line
-    line = line .. names[i].name
-    if id == opts.current then
-      table.insert(hls, { row, name_at, #line, "TrailCurrentStep" })
-    elseif not g.step_of[id] then
-      table.insert(hls, { row, name_at, #line, "Comment" })
+    if r.fold then
+      local line = head .. "▸ " .. plural(r.count, "change")
+      table.insert(hls, { row, #indent, #line, "Comment" })
+      table.insert(lines, line)
+    else
+      local shown = id == opts.current and not r.again
+      local mark, mark_hl = "◇", "Comment"
+      if shown then
+        mark, mark_hl = "▶", "TrailCurrentStep"
+      elseif g.step_of[id] then
+        if opts.done(id) then
+          mark, mark_hl = "●", "TrailAddText"
+        else
+          mark, mark_hl = "○", "Comment"
+        end
+      end
+      local line = head .. mark
+      table.insert(hls, { row, #indent, #head, "Comment" })
+      table.insert(hls, { row, #head, #line, mark_hl })
+      line = line .. string.rep(" ", gutter - vim.fn.strdisplaywidth(r.prefix) + 2)
+      local name_at = #line
+      local name = g.nodes[id].short
+      line = line .. name
+      if shown then
+        table.insert(hls, { row, name_at, #line, "TrailCurrentStep" })
+      elseif not g.step_of[id] then
+        table.insert(hls, { row, name_at, #line, "Comment" })
+      end
+      local n = opts.threads(id)
+      if n > 0 then
+        line = line .. string.rep(" ", width - vim.fn.strdisplaywidth(name) + 3)
+        local count = plural(n, "thread")
+        table.insert(hls, { row, #line, #line + #count, "TrailThreadAuthor" })
+        line = line .. count
+      end
+      table.insert(lines, line)
     end
-    if names[i].joins ~= "" then
-      table.insert(hls, { row, #line, #line + #names[i].joins, "Comment" })
-      line = line .. names[i].joins
-    end
-    local n = opts.threads(id)
-    if n > 0 then
-      line = line .. string.rep(" ", width - vim.fn.strdisplaywidth(names[i].name .. names[i].joins) + 3)
-      local count = plural(n, "thread")
-      table.insert(hls, { row, #line, #line + #count, "TrailThreadAuthor" })
-      line = line .. count
-    end
-    table.insert(lines, line)
   end
   return lines, hls
 end
