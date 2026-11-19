@@ -1,3 +1,4 @@
+mod app;
 mod diff;
 mod difftastic;
 mod git;
@@ -23,9 +24,12 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        _ => {
-            eprintln!("usage: trail serve");
-            ExitCode::from(2)
+        Some("-h" | "--help") => {
+            println!(
+                "usage:\n  trail [--my-config] [#123 | <pull request url> | base..head]   open the trail app\n  trail serve   run the engine over JSON-RPC on stdio"
+            );
+            ExitCode::SUCCESS
         }
+        _ => app::launch(&std::env::args().skip(1).collect::<Vec<_>>()),
     }
 }
