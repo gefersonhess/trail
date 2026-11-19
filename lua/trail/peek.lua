@@ -58,14 +58,9 @@ function M.open_editor(path, line, title)
   local win = large_window(buf, title)
   -- Without $NVIM, plugins that hand files back to a parent Neovim keep them in
   -- this one. -n skips swap files, since the review's Neovim may have the file open.
-  local cmd = { "env", "-u", "NVIM" }
-  -- In the trail app, NVIM_APPNAME selects trail's own config; the editor gets
-  -- the user's, or the one they had selected themselves.
-  if vim.g.trail_app then
-    local own = vim.env.TRAIL_USER_APPNAME
-    vim.list_extend(cmd, own and own ~= "" and { "NVIM_APPNAME=" .. own } or { "-u", "NVIM_APPNAME" })
-  end
-  vim.list_extend(cmd, { vim.v.progpath, "-n", "+" .. line, path })
+  local args = { "-n", "+" .. line, path }
+  local cmd = vim.g.trail_app and require("trail.app").user_nvim(args)
+    or vim.list_extend({ "env", "-u", "NVIM", vim.v.progpath }, args)
   local opts = {
     on_exit = function()
       -- A startinsert still pending would otherwise land in the review window.

@@ -1339,6 +1339,35 @@ do
     return (vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] or "") == "#7 Add hashing · alice → main"
   end), "picking one opens it")
   vim.ui.select = real_select
+
+  vim.g.trail_app = true
+  vim.cmd("tabnew")
+  require("trail").open("")
+  local function screen_text()
+    return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+  end
+  check(screen_text():match("Listing open pull requests") and require("trail.help").screen(0) == "pulls",
+    "the app shows a pull request screen at once, saying it is listing them: " .. screen_text())
+  local pulls_tabs = vim.api.nvim_eval_statusline(require("trail").tabline(), { use_tabline = true }).str
+  check(vim.trim(pulls_tabs) == "trail  Pull requests", "its tabline names only that screen: " .. pulls_tabs)
+  vim.api.nvim_feedkeys("2", "x", false)
+  check(vim.wait(5000, function()
+    return #pr_numbers == 5
+  end) and pr_numbers[5] == 3, "a number typed while listing picks that pull request once they are listed")
+  vim.cmd("tabnew")
+  require("trail").open("")
+  check(vim.wait(5000, function()
+    return screen_text():match("#3")
+  end) and screen_text():match("\n *1 +#7 +Add hashing +alice · feature · review requested")
+    and screen_text():match("\n *2 +#3 +Fix docs +bob · docs · draft"),
+    "the screen lists them numbered, those asking for your review first: " .. screen_text())
+  vim.api.nvim_win_set_cursor(0, { vim.fn.search("#7", "n"), 0 })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+  check(vim.wait(5000, function()
+    return #pr_numbers == 6
+  end) and pr_numbers[6] == 7, "<CR> opens the one under the cursor")
+  vim.g.trail_app = nil
+  vim.cmd("silent! tabonly")
   eng.request = real_request
 end
 
@@ -1554,6 +1583,25 @@ local started = vim.system({ vim.v.progpath, "--headless", "-u", root .. "/app/i
     TRAIL_GOPLS = repo .. "-no-gopls" } }):wait(30000)
 check(started.stdout:match("^ trail  Overview  Paths  Send .*main%.%.feature |main%.%.feature|true|3"),
   "app/init.lua opens the review from TRAIL_ARGS with trail's own settings: " .. vim.inspect(started))
+
+-- The app takes on the colors of the user's own Neovim, overrides included.
+local configs = repo .. "-configs"
+vim.fn.mkdir(configs .. "/mine", "p")
+vim.fn.writefile({ 'vim.cmd.colorscheme("blue")', 'vim.api.nvim_set_hl(0, "Normal", { fg = "#eeeeee", bg = "#123456" })' },
+  configs .. "/mine/init.lua")
+vim.fn.mkdir(configs .. "/broken", "p")
+vim.fn.writefile({ "os.exit(1)" }, configs .. "/broken/init.lua")
+local function app_colors(user_appname)
+  return vim.system({ vim.v.progpath, "--headless", "-u", root .. "/app/init.lua",
+    "+lua io.stdout:write(string.format('%s|%06x|%s', vim.g.colors_name, vim.api.nvim_get_hl(0, { name = 'Normal' }).bg or 0, vim.api.nvim_get_hl(0, { name = 'TrailModeNORMAL' }).bg and 'mode' or 'none')); vim.cmd('qa!')" },
+    { cwd = repo, text = true, env = { NVIM_APPNAME = "trail-test", TRAIL_USER_APPNAME = user_appname, XDG_CONFIG_HOME = configs,
+      XDG_CACHE_HOME = repo .. "-appcache", TRAIL_ARGS = "main..feature", TRAIL_GOPLS = repo .. "-no-gopls" } }):wait(30000).stdout
+end
+local inherited = app_colors("mine")
+check(inherited == "blue|123456|mode", "the app uses the colors of the user's Neovim, their overrides included: " .. inherited)
+local fallback = app_colors("broken")
+check(fallback:match("|0e1116|mode$"), "without them it keeps its own: " .. fallback)
+vim.fn.delete(configs, "rf")
 
 vim.fn.delete(repo, "rf")
 if failures > 0 then
