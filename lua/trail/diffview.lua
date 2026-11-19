@@ -477,7 +477,8 @@ function M.show(diff, opts)
 
   ---Draws notes on their file lines, replacing earlier ones: as virtual lines
   ---under them, or as a hint at the end of the line and a mark in the gutter.
-  ---@param notes { side: "old"|"new", line: integer, lines?: table[], hint?: table[], sign?: string[] }[]
+  ---`spans` highlight parts of the line: { start column, end column, highlight }, 0-based.
+  ---@param notes { side: "old"|"new", line: integer, lines?: table[], hint?: table[], sign?: string[], spans?: table[] }[]
   function view.annotate(notes)
     local hints = {}
     for _, p in ipairs(panes) do
@@ -503,6 +504,9 @@ function M.show(diff, opts)
       if row and vim.api.nvim_buf_is_valid(p.buf) then
         if note.lines then
           vim.api.nvim_buf_set_extmark(p.buf, ns_notes, row - 1, 0, { virt_lines = note.lines })
+        end
+        for _, span in ipairs(note.spans or {}) do
+          vim.api.nvim_buf_set_extmark(p.buf, ns_notes, row - 1, span[1], { end_col = span[2], hl_group = span[3] })
         end
         if note.hint then
           local chunks = hints[p][row] or { { "  " } }

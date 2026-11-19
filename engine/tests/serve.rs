@@ -1899,6 +1899,87 @@ fn has_gopls() -> bool {
     found
 }
 
+/// The head lines of the calls an edge stands for, by caller and callee name.
+fn edge_lines(path: &Value, from: &str, to: &str) -> Vec<u64> {
+    let id = |name: &str| impact_node(path, name)["id"].clone();
+    let (from, to) = (id(from), id(to));
+    let edge = path["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["from"] == from && e["to"] == to)
+        .unwrap_or_else(|| panic!("no edge {from} -> {to} in {path}"));
+    edge["lines"]
+        .as_array()
+        .unwrap_or_else(|| panic!("edge without lines: {edge}"))
+        .iter()
+        .map(|l| l.as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn impact_edges_carry_the_lines_of_their_calls_when_matching_by_name() {
+    let repo = impact_repo();
+
+    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+
+    let paths = &result["paths"];
+    assert_eq!(
+        edge_lines(&paths[0], "api.handleCreateOrder", "orders.Service.Create"),
+        [11],
+        "{result}"
+    );
+    assert_eq!(
+        edge_lines(&paths[0], "orders.Service.Create", "store.Store.Save"),
+        [14]
+    );
+    assert_eq!(edge_lines(&paths[1], "billing.Pay", "billing.Charge"), [8]);
+}
+
+#[test]
+fn impact_edges_carry_the_lines_of_their_calls_from_the_language_server() {
+    if Command::new("rust-analyzer")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("rust-analyzer is not installed; skipping");
+        return;
+    }
+    let lib = "pub mod store;\n\npub fn run() -> u32 {\n    let s = store::Store::new();\n    s.save() + s.save()\n}\n";
+    let store = |n: u32| {
+        format!(
+            "pub struct Store;\n\nimpl Store {{\n    pub fn new() -> Store {{\n        Store\n    }}\n\n    pub fn save(&self) -> u32 {{\n        {n}\n    }}\n}}\n"
+        )
+    };
+    let (repo, _) = branch_with(
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"m\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            ("src/lib.rs", lib),
+            ("src/store.rs", &store(1)),
+        ],
+        &[("src/store.rs", &store(2))],
+        &[],
+    );
+
+    let result = impact(&repo, &[]);
+
+    let path = &result["paths"][0];
+    let source = path["edges"][0]["source"].as_str().unwrap_or("");
+    if source != "lsp" {
+        eprintln!("rust-analyzer did not answer ({source}); skipping");
+        return;
+    }
+    assert_eq!(
+        edge_lines(path, "run", "store::Store::save"),
+        [5],
+        "{result}"
+    );
+}
+
 #[test]
 fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
     if !has_gopls() {
@@ -1921,6 +2002,11 @@ fn impact_walks_through_unchanged_callers_and_interfaces_with_gopls() {
             "go:store.ErrDuplicate"
         ]),
         "changes reached through unchanged code share one path, in reading order, types and values below what uses them"
+    );
+    assert_eq!(
+        edge_lines(orders, "api.handleCreateOrder", "orders.Service.Create"),
+        [11],
+        "edges carry the lines of their calls"
     );
     assert_eq!(
         impact_trees(orders),
