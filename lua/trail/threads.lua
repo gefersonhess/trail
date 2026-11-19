@@ -25,18 +25,31 @@ end
 set_highlights()
 vim.api.nvim_create_autocmd("ColorScheme", { callback = set_highlights })
 
+local store = require("trail.state")
+
+---What the trail app's pane shows: one line of the code, with its thread, if
+---any, and the user's comments there.
+local in_pane
+local show_spot
+local hooks = {}
+
+---What the review does for the pane's keys: `reply(t)`, `resolve(t)`,
+---`send()`, and `changed()` after a comment changed.
+function M.hooks(h)
+  hooks = h
+end
+
 ---Replaces the pull request's review threads, as the engine's
 ---`review_threads` returns them.
-local in_pane
-
 function M.set(threads)
   list = threads or {}
+  M.refresh()
+end
+
+---Shows the pane's line again, after its thread or comments changed.
+function M.refresh()
   if in_pane and pane.win() and not pane.held() then
-    for _, t in ipairs(list) do
-      if t.id == in_pane.id then
-        M.show(t, in_pane.reply)
-      end
-    end
+    show_spot(in_pane)
   end
 end
 
@@ -80,12 +93,38 @@ local function rows_of(t)
   return rows
 end
 
+local function replies_to(t)
+  return vim.tbl_filter(function(c)
+    return c.reply_to == t.id and not c.sent
+  end, store.comments())
+end
+
+---The trail app's hint at the end of a thread's line, and its gutter mark.
+local function hint(t)
+  local first = t.comments[1] or { author = "?", body = "" }
+  local hl = t.resolved and "TrailThread" or "TrailThreadAuthor"
+  local chunks = {
+    { t.resolved and "✓ " or "● ", hl },
+    { first.author .. ": " .. comments.summary(first_line(first.body), 40), "TrailThread" },
+  }
+  if #t.comments > 1 then
+    table.insert(chunks, { " · " .. #t.comments, "TrailThread" })
+  end
+  for _, c in ipairs(replies_to(t)) do
+    table.insert(chunks, { "  ↳ reply " .. comments.check_mark(c), c.unselected and "TrailThread" or "WarningMsg" })
+  end
+  return chunks, { t.resolved and "✓" or "●", hl }
+end
+
 ---One line per thread under its line in the diff; <CR> opens the whole
----thread in a popup.
+---thread in a popup. In the trail app, a hint at the end of the line.
 function M.notes(old_path, new_path)
   local notes = {}
   for _, t in ipairs(list) do
-    if in_file(t, old_path, new_path) then
+    if in_file(t, old_path, new_path) and vim.g.trail_app then
+      local chunks, sign = hint(t)
+      table.insert(notes, { side = t.side, line = t.line, hint = chunks, sign = sign })
+    elseif in_file(t, old_path, new_path) then
       local first = t.comments[1] or { author = "?", body = "" }
       local summary = first_line(first.body)
       if vim.fn.strdisplaywidth(summary) > 60 then
@@ -106,38 +145,197 @@ function M.notes(old_path, new_path)
   return notes
 end
 
-local show_in_pane
-
 ---Whether the trail app's side pane is open.
 function M.pane_open()
   return pane.win() ~= nil
 end
 
----The trail app shows a thread in the side pane, with the focus left where it was.
-show_in_pane = function(t, buf, where, reply)
+local function thread_by_id(id)
+  for _, t in ipairs(list) do
+    if t.id == id then
+      return t
+    end
+  end
+end
+
+---The user's comments on a spot: those on its line, and unsent replies to its thread.
+local function mine_at(spot, t)
+  return vim.tbl_filter(function(c)
+    if c.reply_to then
+      return t ~= nil and c.reply_to == t.id and not c.sent
+    end
+    return c.file == spot.file and c.side == spot.side and c.line == spot.line
+  end, store.comments())
+end
+
+local function draw(buf, rows)
+  local lines = {}
+  for _, row in ipairs(rows) do
+    local text, col = " ", 1
+    for _, chunk in ipairs(row) do
+      chunk.col = col
+      text = text .. chunk[1]
+      col = col + #chunk[1]
+    end
+    table.insert(lines, text)
+  end
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  for r, row in ipairs(rows) do
+    for _, chunk in ipairs(row) do
+      if chunk[2] and #chunk[1] > 0 then
+        vim.api.nvim_buf_set_extmark(buf, ns, r - 1, chunk.col, { end_col = chunk.col + #chunk[1], hl_group = chunk[2] })
+      end
+    end
+  end
+end
+
+---The trail app's pane on a spot: its thread, then the user's comments there,
+---each with whether `S` sends it, and the keys acting on them.
+show_spot = function(spot)
+  local t = spot.thread and thread_by_id(spot.thread)
+  local mine = mine_at(spot, t)
+  if not t and #mine == 0 then
+    in_pane = nil
+    if pane.win() and not pane.held() and #vim.api.nvim_tabpage_list_wins(0) > 1 then
+      vim.api.nvim_win_close(pane.win(), true)
+    end
+    return
+  end
+  local rows, owner = t and rows_of(t) or {}, {}
+  for _, c in ipairs(mine) do
+    if #rows > 0 then
+      table.insert(rows, { { "" } })
+    end
+    local what = c.reply_to and "reply" or c.kind
+    local mark = c.sent and " " or comments.check_mark(c)
+    table.insert(rows, {
+      { mark .. " ", "WarningMsg" },
+      { "you", "TrailThreadAuthor" },
+      { " · " .. what .. " · " .. (c.sent and "sent" or "not sent"), c.sent and "TrailThread" or "WarningMsg" },
+    })
+    owner[#rows] = c
+    for _, body_line in ipairs(comments.wrap(c.body)) do
+      table.insert(rows, { { "  " .. body_line } })
+      owner[#rows] = c
+    end
+  end
+  table.insert(rows, { { "" } })
+  if #vim.tbl_filter(function(c)
+    return not c.sent
+  end, mine) > 0 then
+    table.insert(rows, { { "e edit · d delete · s select", "TrailThread" } })
+    table.insert(rows, { { "S send " .. #comments.to_send() .. " selected", "TrailThread" } })
+  end
+  table.insert(rows, { { t and "r reply · R resolve · q close" or "q close", "TrailThread" } })
+
   local back = vim.api.nvim_get_current_win()
-  in_pane = { id = t.id, reply = reply }
-  local win = pane.show(buf, function()
-    M.show(t, reply)
-  end)
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", " r reply · q close" })
+  in_pane = spot
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.b[buf].trail_screen = "thread"
+  vim.bo[buf].bufhidden = "wipe"
+  draw(buf, rows)
   vim.bo[buf].modifiable = false
-  vim.api.nvim_buf_set_extmark(buf, ns, vim.api.nvim_buf_line_count(buf) - 1, 0, { end_col = 18, hl_group = "TrailThread" })
-  local hl = t.resolved and "TrailThreadResolved" or "TrailThreadAuthor"
-  vim.wo[win].winbar = "%#" .. hl .. "#" .. where:gsub("%%", "%%%%")
-  vim.keymap.set("n", "q", function()
+  local win = pane.show(buf, function()
+    show_spot(spot)
+  end)
+  if t then
+    local where = string.format(" %s %s:%d ", t.resolved and "✓ resolved ·" or "●", t.path, t.line ~= vim.NIL and t.line or t.original_line)
+    vim.wo[win].winbar = "%#" .. (t.resolved and "TrailThreadResolved" or "TrailThreadAuthor") .. "#" .. where:gsub("%%", "%%%%")
+  else
+    local first = mine[1]
+    vim.wo[win].winbar = "%#" .. comments.highlight(first.kind) .. "# ◆ " .. first.kind .. " %#WarningMsg#· "
+      .. (first.sent and "sent" or "not sent") .. "  %#TrailThread#" .. (spot.file .. ":" .. spot.line):gsub("%%", "%%%%")
+  end
+
+  local function target()
+    local here = owner[vim.api.nvim_win_get_cursor(0)[1]]
+    if here and not here.sent then
+      return here
+    end
+    for _, c in ipairs(mine) do
+      if not c.sent then
+        return c
+      end
+    end
+  end
+  local function changed()
+    if hooks.changed then
+      hooks.changed()
+    end
+    M.refresh()
+  end
+  local function map(lhs, fn)
+    vim.keymap.set("n", lhs, fn, { buffer = buf, nowait = true })
+  end
+  map("q", function()
     if vim.api.nvim_win_is_valid(win) then
       vim.api.nvim_win_close(win, true)
     end
-  end, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "r", function()
-    reply(t)
-  end, { buffer = buf, nowait = true })
+  end)
+  map("s", function()
+    local c = target()
+    if c then
+      c.unselected = not c.unselected or nil
+      store.save()
+      changed()
+    end
+  end)
+  map("d", function()
+    local c = target()
+    if c then
+      local all = store.comments()
+      for k = #all, 1, -1 do
+        if all[k] == c then
+          table.remove(all, k)
+        end
+      end
+      store.save()
+      changed()
+    end
+  end)
+  map("e", function()
+    local c = target()
+    if c then
+      comments.edit_one(c, changed)
+    end
+  end)
+  map("S", function()
+    if hooks.send then
+      hooks.send()
+    end
+  end)
+  if t then
+    map("r", function()
+      if hooks.reply then
+        hooks.reply(t)
+      end
+    end)
+    map("R", function()
+      if hooks.resolve then
+        hooks.resolve(t)
+      end
+    end)
+  end
   if vim.api.nvim_win_is_valid(back) then
     vim.api.nvim_set_current_win(back)
   end
   return win
+end
+
+local function spot_of(t)
+  return { thread = t.id, file = t.path, side = t.side, line = t.line ~= vim.NIL and t.line or t.original_line }
+end
+
+---In the trail app, shows what is on a line of the file shown in the pane:
+---its thread and the user's comments. Nothing there leaves the pane as it is.
+function M.show_line(old_path, new_path, side, line)
+  local t = M.at(old_path, new_path, side, line)
+  local spot = t and spot_of(t)
+    or { file = side == "old" and (old_path or new_path) or (new_path or old_path), side = side, line = line }
+  if t or #mine_at(spot, nil) > 0 then
+    show_spot(spot)
+  end
 end
 
 ---Opens a thread in a popup under the cursor: every comment in full, `r`
@@ -166,7 +364,8 @@ function M.show(t, reply)
   end
   local where = string.format(" %s %s:%d ", t.resolved and "✓ resolved ·" or "●", t.path, t.line ~= vim.NIL and t.line or t.original_line)
   if vim.g.trail_app and not pane.held() then
-    return show_in_pane(t, buf, where, reply)
+    vim.api.nvim_buf_delete(buf, { force = true })
+    return show_spot(spot_of(t))
   end
   local win = vim.api.nvim_open_win(buf, true, {
     -- Below the thread's own line, which stays in sight.

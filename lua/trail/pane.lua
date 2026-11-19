@@ -42,15 +42,16 @@ function M.show(buf, again)
   if not M.win() then
     vim.cmd("botright vsplit")
     win = vim.api.nvim_get_current_win()
-    local wo = vim.wo[win][0]
-    wo.number, wo.relativenumber, wo.signcolumn, wo.statuscolumn = false, false, "no", ""
-    wo.wrap, wo.linebreak, wo.cursorline = true, true, false
     M.place()
     restore = nil
   else
     vim.api.nvim_set_current_win(win)
   end
   vim.api.nvim_win_set_buf(win, buf)
+  -- Set for each buffer shown: a window's local options don't carry over to the next.
+  local wo = vim.wo[win][0]
+  wo.number, wo.relativenumber, wo.signcolumn, wo.statuscolumn = false, false, "no", ""
+  wo.wrap, wo.linebreak, wo.breakindent, wo.cursorline = true, true, true, false
   holder = nil
   restore = again or restore
   return win

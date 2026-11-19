@@ -291,7 +291,7 @@ local function toggle_seen(ids)
   return not reviewed
 end
 
-local reply_to, load_threads
+local reply_to, load_threads, comments_changed
 
 local function arrange()
   if not vim.g.trail_app then
@@ -636,9 +636,64 @@ local function enter(path, step, target)
   pathview.open(path_context(), path, step or store.position(path.id) or 1, target)
 end
 
+---Posts a reply to a review thread and resolves or reopens it, either or both.
+local function update_thread(t, body, change, done)
+  local replying = state
+  engine.request("update_thread", {
+    repo = state.repo,
+    url = state.pr_url,
+    number = state.pr,
+    thread = t.id,
+    body = body,
+    state = change,
+  }, function(err)
+    if err then
+      vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
+      return
+    end
+    local did = body ~= "" and (change and "replied and " .. change .. "d" or "replied") or change .. "d"
+    vim.notify(string.format("trail: %s the thread on %s:%d", did, t.path, t.line ~= vim.NIL and t.line or t.original_line), vim.log.levels.INFO)
+    if done then
+      done()
+    end
+    if state == replying then
+      load_threads()
+    end
+  end)
+end
+
+---In the trail app, a reply is written now and sent with the review's other
+---comments; its line's text is kept to find the line again.
+local function draft_reply(t)
+  compose.open({ kind = "reply", kinds = { "reply" }, highlight = function()
+    return "TrailThreadAuthor"
+  end }, function(body)
+    if body == "" then
+      return
+    end
+    local shown = state.shown
+    local text = shown and shown.new_path == t.path and shown.view.lines(t.side)[t.line] or ""
+    table.insert(store.comments(), {
+      id = tostring(vim.uv.hrtime()),
+      kind = "reply",
+      reply_to = t.id,
+      body = body,
+      file = t.path,
+      side = t.side,
+      line = t.line ~= vim.NIL and t.line or t.original_line,
+      text = text,
+    })
+    store.save()
+    comments_changed()
+  end)
+end
+
 ---Replies to a review thread, or resolves or reopens it, in the comment box:
 ---<Tab> picks the action, and any text written is posted as a reply.
 reply_to = function(t)
+  if vim.g.trail_app then
+    return draft_reply(t)
+  end
   local kinds = t.resolved and { "reply", "reopen" } or { "reply", "resolve" }
   compose.open({
     kind = "reply",
@@ -652,25 +707,7 @@ reply_to = function(t)
     if body == "" and not change then
       return
     end
-    local replying = state
-    engine.request("update_thread", {
-      repo = state.repo,
-      url = state.pr_url,
-      number = state.pr,
-      thread = t.id,
-      body = body,
-      state = change,
-    }, function(err)
-      if err then
-        vim.notify("trail: " .. err.message, vim.log.levels.ERROR)
-        return
-      end
-      local done = body ~= "" and (change and "replied and " .. change .. "d" or "replied") or change .. "d"
-      vim.notify(string.format("trail: %s the thread on %s:%d", done, t.path, t.line ~= vim.NIL and t.line or t.original_line), vim.log.levels.INFO)
-      if state == replying then
-        load_threads()
-      end
-    end)
+    update_thread(t, body, change)
   end)
 end
 
@@ -753,7 +790,10 @@ local function submit_review(done)
     footer = " <C-s> submit to GitHub  <Tab> verdict  q cancel ",
   }, function(body, verdict)
     local pending = vim.tbl_filter(function(c)
-      return not c.sent
+      return comments.selected(c) and not c.reply_to
+    end, store.comments())
+    local replies = vim.tbl_filter(function(c)
+      return comments.selected(c) and c.reply_to ~= nil
     end, store.comments())
     local list = vim.tbl_map(function(c)
       return { path = c.file, side = c.side, line = c.line, last = c.last, body = string.format("**%s:** %s", c.kind, c.body) }
@@ -799,11 +839,39 @@ local function submit_review(done)
       end
       store.set_submitted({ commit = commit, url = result.url, verdict = verdict })
       load_threads()
+      -- Replies go to their threads one by one, each the thread's once posted.
+      local function post_reply(k)
+        local c = replies[k]
+        if not c or state ~= submitting then
+          return
+        end
+        update_thread({ id = c.reply_to, path = c.file, line = c.line }, c.body, nil, function()
+          local all = store.comments()
+          for j = #all, 1, -1 do
+            if all[j] == c then
+              table.remove(all, j)
+            end
+          end
+          store.save()
+          comments_changed()
+          post_reply(k + 1)
+        end)
+      end
+      post_reply(1)
       vim.notify(string.format("trail: %s submitted, %d inline, %d in the overall comment: %s",
         verdict == "draft" and "pending review" or "review", result.inline, result.in_body, result.url), vim.log.levels.INFO)
       done()
     end)
   end)
+end
+
+comments_changed = function()
+  if state.reannotate then
+    state.reannotate()
+  end
+  M.refresh_home()
+  threads.refresh()
+  vim.cmd("redrawtabline")
 end
 
 local function open_send()
@@ -840,6 +908,25 @@ local function open_send()
     window = review_window,
   })
 end
+
+threads.hooks({
+  reply = function(t)
+    reply_to(t)
+  end,
+  resolve = function(t)
+    update_thread(t, "", t.resolved and "reopen" or "resolve")
+  end,
+  send = function()
+    if state.pr then
+      submit_review(function() end)
+    else
+      open_send()
+    end
+  end,
+  changed = function()
+    comments_changed()
+  end,
+})
 
 function M.switch_path()
   local list = all_paths()
@@ -1328,7 +1415,8 @@ function M.tabline()
     end, threads.all())
     table.insert(tabs, { "Threads" .. (open > 0 and " " .. open or ""), screen == "threads" })
   end
-  table.insert(tabs, { "Send", screen == "send" })
+  local to_send = state.review and #comments.to_send() or 0
+  table.insert(tabs, { "Send" .. (to_send > 0 and " " .. to_send or ""), screen == "send" })
   local out = "%#TrailTabBrand# trail "
   for _, tab in ipairs(tabs) do
     out = out .. (tab[2] and "%#TabLineSel#" or "%#TabLine#") .. " " .. escape(tab[1]) .. " "
@@ -1372,9 +1460,8 @@ function M.follow_thread()
     return
   end
   local here = shown.view.line_at_cursor()
-  local t = here and threads.at(shown.old_path, shown.new_path, here.side, here.line)
-  if t then
-    threads.show(t, reply_to)
+  if here then
+    threads.show_line(shown.old_path, shown.new_path, here.side, here.line)
   end
 end
 
