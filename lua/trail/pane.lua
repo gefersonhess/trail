@@ -1,6 +1,8 @@
 ---The trail app's side pane: one window beside the review that shows a thread
 ---or the comment box being written. Writing a comment holds the pane, so a
 ---thread can't replace a draft.
+local sizes = require("trail.sizes")
+
 local M = {}
 
 local win, holder, restore
@@ -29,10 +31,18 @@ function M.place()
   end)
   local wo = vim.wo[win]
   wo.winfixwidth, wo.winfixheight = not below, below
-  if below then
-    vim.api.nvim_win_set_height(win, 10)
+  M.resize()
+end
+
+---Gives the pane its size where it is: the one the user gave it there, or the default.
+function M.resize()
+  if not M.win() then
+    return
+  end
+  if require("trail.diffview").side_by_side() then
+    sizes.apply(win, "pane.bottom", "height", 10)
   else
-    vim.api.nvim_win_set_width(win, math.min(46, math.floor(vim.o.columns * 0.3)))
+    sizes.apply(win, "pane.right", "width", math.min(46, math.floor(vim.o.columns * 0.3)))
   end
 end
 

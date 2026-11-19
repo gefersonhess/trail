@@ -1596,6 +1596,45 @@ check(the_pane() and vim.api.nvim_win_get_position(the_pane())[2] > vim.api.nvim
   and vim.api.nvim_win_get_position(the_pane())[1] == vim.api.nvim_win_get_position(diff_win)[1],
   "and the thread pane to the right")
 
+-- Sizes the user sets survive the app laying its windows out again.
+-- Headless Neovim has no screen to send WinResized after a drag; it is sent here.
+vim.api.nvim_win_set_width(tree_win, 30)
+vim.api.nvim_win_set_width(the_pane(), 20)
+vim.api.nvim_exec_autocmds("WinResized", {})
+vim.api.nvim_set_current_win(diff_win)
+vim.api.nvim_feedkeys("t", "x", false)
+tree_win = vim.fn.bufwinid("trail://path")
+vim.api.nvim_win_set_height(tree_win, 3)
+vim.api.nvim_win_set_height(the_pane(), 6)
+vim.api.nvim_exec_autocmds("WinResized", {})
+vim.api.nvim_set_current_win(win_of("^trail://head/"))
+vim.api.nvim_feedkeys("t", "x", false)
+diff_win = win_of("^trail://diff/")
+tree_win = vim.fn.bufwinid("trail://path")
+check(vim.api.nvim_win_get_width(tree_win) == 30 and vim.api.nvim_win_get_width(the_pane()) == 20,
+  "the tree and pane keep the widths set on them: " .. vim.api.nvim_win_get_width(tree_win) .. ", " .. vim.api.nvim_win_get_width(the_pane()))
+vim.api.nvim_feedkeys("t", "x", false)
+tree_win = vim.fn.bufwinid("trail://path")
+check(vim.api.nvim_win_get_height(tree_win) == 3 and vim.api.nvim_win_get_height(the_pane()) == 6,
+  "and in side by side the heights set there: " .. vim.api.nvim_win_get_height(tree_win) .. ", " .. vim.api.nvim_win_get_height(the_pane()))
+vim.api.nvim_set_current_win(win_of("^trail://head/"))
+vim.api.nvim_feedkeys("t", "x", false)
+diff_win = win_of("^trail://diff/")
+vim.api.nvim_win_close(the_pane(), true)
+athreads.show(athreads.all()[1], function() end)
+check(vim.api.nvim_win_get_width(the_pane()) == 20, "a pane closed and opened again keeps its width")
+vim.api.nvim_set_current_win(diff_win)
+vim.api.nvim_feedkeys("]s", "x", false)
+check(vim.wait(5000, function()
+  return vim.fn.bufwinid("trail://path") ~= -1 and vim.api.nvim_win_get_width(vim.fn.bufwinid("trail://path")) == 30
+end), "and moving to another step keeps the tree's")
+vim.api.nvim_feedkeys("[s", "x", false)
+vim.wait(2000, function()
+  return win_of("^trail://diff/") ~= nil
+end)
+diff_win = win_of("^trail://diff/")
+tree_win = vim.fn.bufwinid("trail://path")
+
 -- In the app every comment, the user's own included, is a hint at the end of
 -- its line and a mark in the gutter; the pane is where it is read and acted on.
 local cstore = require("trail.state")

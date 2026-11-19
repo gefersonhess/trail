@@ -1,6 +1,8 @@
 local tree = require("trail.tree")
 local help = require("trail.help")
 
+local sizes = require("trail.sizes")
+
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("trail.pathview")
@@ -88,7 +90,7 @@ local function render_tree(keep_cursor)
     vim.api.nvim_buf_set_extmark(buf, ns, h[1] + 1, h[2], { end_col = h[3], hl_group = h[4] })
   end
   if not tree_on_left() then
-    vim.api.nvim_win_set_height(view.tree_win, tree_height(#lines))
+    sizes.apply(view.tree_win, "tree.top", "height", tree_height(#lines))
   end
   if cursor then
     pcall(vim.api.nvim_win_set_cursor, view.tree_win, cursor)
@@ -199,11 +201,11 @@ function M.place()
   local wo = vim.wo[view.tree_win]
   wo.winfixwidth, wo.winfixheight = left, not left
   if left then
-    vim.api.nvim_win_set_width(view.tree_win, TREE_WIDTH)
+    sizes.apply(view.tree_win, "tree.left", "width", TREE_WIDTH)
   else
     local lines = vim.api.nvim_buf_line_count(view.tree_buf)
-    vim.api.nvim_win_set_height(view.tree_win, tree_height(lines))
-    if lines <= tree_height(lines) then
+    sizes.apply(view.tree_win, "tree.top", "height", tree_height(lines))
+    if lines <= vim.api.nvim_win_get_height(view.tree_win) then
       vim.api.nvim_win_call(view.tree_win, function()
         vim.fn.winrestview({ topline = 1 })
       end)
@@ -233,7 +235,7 @@ function M.open(ctx, path, step, target)
     vim.api.nvim_win_set_buf(tree_win, buf)
     local wo = vim.wo[tree_win][0]
     if tree_on_left() then
-      vim.api.nvim_win_set_width(tree_win, TREE_WIDTH)
+      sizes.apply(tree_win, "tree.left", "width", TREE_WIDTH)
       wo.winfixwidth = true
     else
       wo.winfixheight = true
