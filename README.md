@@ -13,15 +13,18 @@ trail groups a change into paths: from the entry points that reach a change, dow
 
 ## Install
 
-With lazy.nvim:
+With lazy.nvim, on the latest [release](https://github.com/gefersonhess/trail/releases):
 
 ```lua
 {
   "gefersonhess/trail",
+  version = "*",
   build = "cd engine && cargo build --release",
   cmd = "Trail",
 }
 ```
+
+Drop `version` to follow `main` instead.
 
 ## Run
 
