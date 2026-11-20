@@ -5,7 +5,8 @@ A git code review tool: a Rust engine (`engine/`, `trail serve`, JSON-RPC over s
 Read before changing behavior:
 - `docs/decisions.md`: what was decided and why, including approaches that were tried and dropped.
 - `docs/design.md`: how trail works.
-- `README.md`: install and keys.
+- `README.md`: install, run, and the `]s` review path.
+- `docs/usage.md`: every screen, key and setting.
 
 Before calling work done, all of these must pass:
 - `cd engine && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
