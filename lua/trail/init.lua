@@ -5,7 +5,7 @@ local peek = require("trail.peek")
 local tree = require("trail.tree")
 local pane = require("trail.pane")
 local pathview = require("trail.pathview")
-local lanes = require("trail.lanes")
+local pathmap = require("trail.map")
 local finder = require("trail.finder")
 local store = require("trail.state")
 local calls = require("trail.calls")
@@ -1021,7 +1021,7 @@ function M.find()
   end
   local items, by_id = {}, {}
   for _, entry in ipairs(order) do
-    local nodes = lanes.graph(entry.path.impact).nodes
+    local nodes = pathmap.graph(entry.path.impact).nodes
     for s, step in ipairs(entry.path.steps) do
       local id = step.node.id
       if not by_id[id] then
@@ -1198,27 +1198,22 @@ local function build_home(review)
       { "Comment", #head, -1 },
     })
     if open[key] then
-      local g = lanes.graph(p.impact)
-      local seen = M.done_steps(p)
       local step_of = {}
       for s, step in ipairs(p.steps) do
         step_of[step.node.id] = s
       end
-      local at = state.last_path == p.id and p.steps[store.position(p.id) or 1]
-      local rows = lanes.rows(g)
-      local drawn, drawn_hls = lanes.render(g, rows, {
+      local drawn, drawn_hls, item_of_row = tree.render(p.impact, {
         indent = "     ",
-        current = at and at.node and at.node.id or nil,
-        done = function(id)
-          return step_of[id] ~= nil and seen[step_of[id]] == true
-        end,
+        current = state.last_path == p.id and (store.position(p.id) or 1) or nil,
+        done = M.done_steps(p),
         threads = function(id)
           return threads[id] or 0
         end,
       })
       local first = #lines
       for r, line in ipairs(drawn) do
-        add(line, { path = p, step = step_of[rows[r].id], fold_path = key })
+        local it = item_of_row[r] or {}
+        add(line, { path = p, step = it.node and step_of[it.node.id], fold_path = key })
       end
       for _, h in ipairs(drawn_hls) do
         table.insert(hls, { first + h[1], h[2], h[3], h[4] })
@@ -1579,7 +1574,7 @@ function M.open(arg)
   map("gm", function()
     local item = state.items and state.items[vim.api.nvim_win_get_cursor(0)[1]]
     if item and item.path and item.path.impact then
-      require("trail.map").open(lanes.graph(item.path.impact), {
+      pathmap.open(pathmap.graph(item.path.impact), {
         title = item.path.title,
         done = function(id)
           for s, step in ipairs(item.path.steps) do

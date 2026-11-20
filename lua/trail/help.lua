@@ -41,8 +41,10 @@ local screens = {
       { "]s", "step" }, { "[s", "step" }, { "n", "step" }, { "p", "step" }, { "]c", "change" }, { "[c", "change" },
       { "]t", "thread" }, { "[t", "thread" }, { "gp", "switch path" }, { "<C-P>", "find function" },
     }, back) },
-    { "Lanes", { { "gm", "map" }, { "gt", "lanes or tree" } } },
-    { "Tree", { { "<CR>", "open" }, { "a", "every function" }, { "c", "fold back" }, { "K", "peek function" } } },
+    { "Tree", {
+      { "<CR>", "open" }, { "za", "fold or unfold row" }, { "zR", "open everything" }, { "a", "every function" },
+      { "c", "fold back" }, { "K", "peek function" }, { "gm", "map" },
+    } },
     { "Review", { { "mr", "mark path" } } },
   },
   diff = {

@@ -1,5 +1,4 @@
 local tree = require("trail.tree")
-local lanes = require("trail.lanes")
 local pathmap = require("trail.map")
 local help = require("trail.help")
 
@@ -14,23 +13,16 @@ local function valid()
   return view and vim.api.nvim_win_is_valid(view.tree_win) and vim.api.nvim_win_get_buf(view.tree_win) == view.tree_buf
 end
 
----Whether `path` shows as lanes rather than a tree: impact paths do, unless
----`vim.g.trail_graph = "tree"` (`gt` switches).
-local function laned(path)
-  return vim.g.trail_graph ~= "tree" and path ~= nil and path.impact ~= nil
-end
-
 ---Whether the tree sits on the left of the diff (`vim.g.trail_tree = "left"`)
----rather than above it. Side by side needs the width, so the tree goes on top,
----and so do the lanes, whose names need it too.
-local function tree_on_left(path)
-  return vim.g.trail_tree == "left" and not require("trail.diffview").side_by_side() and not laned(path)
+---rather than above it. Side by side needs the width, so the tree goes on top.
+local function tree_on_left()
+  return vim.g.trail_tree == "left" and not require("trail.diffview").side_by_side()
 end
 
 local TREE_WIDTH = 38
 
 local function tree_height(lines)
-  local strip = vim.g.trail_tree == "left" and not (view and laned(view.path))
+  local strip = vim.g.trail_tree == "left"
   local most = strip and 8 or math.floor(vim.o.lines / 3)
   return math.max(1, math.min(lines, most))
 end
@@ -71,71 +63,25 @@ local function step_of_node(path, id)
   end
 end
 
----The function shown: the step's, or an unchanged entry point opened from
----the lanes.
-local function here(g)
-  if view.station and g.nodes[view.station] then
-    return view.station
-  end
-  local node = view.path.steps[view.step].node
-  return node and node.id or g.roots[1]
-end
+local details_ns = vim.api.nvim_create_namespace("trail.pathview.details")
 
----Every change of the path, one per row with the calls between them drawn
----in the gutter, under a line saying where the review is. The function shown
----is marked and the cursor sits on it, unless `keep_cursor`.
-local function render_lanes(keep_cursor)
-  local path = view.path
-  local g = lanes.graph(path.impact)
-  local current = here(g)
-  view.station = current
-  local done = view.ctx.done_steps(path)
-  local threads = view.ctx.threads(path)
-  local rows = lanes.rows(g, expanded_by_path[path.id])
-  local lines, hls = lanes.render(g, rows, {
-    current = current,
-    done = function(id)
-      local i = step_of_node(path, id)
-      return i ~= nil and done[i] == true
-    end,
-    threads = function(id)
-      return threads[id] or 0
-    end,
-  })
-  local header = string.format(" %s  ·  step %d of %d", path.title, view.step, #path.steps)
-  table.insert(lines, 1, header)
-  view.row_ids, view.lane_folds = {}, {}
-  local cursor = 1
-  for i, r in ipairs(rows) do
-    view.row_ids[i + 1] = r.id
-    view.lane_folds[i + 1] = r.fold
-    if r.id == current and not r.again then
-      cursor = i + 1
-    end
+---Shows the cursor row's details (step, interface, tests, package) at its end.
+local function show_details()
+  if not valid() then
+    return
   end
-  if keep_cursor then
-    cursor = math.min(vim.api.nvim_win_get_cursor(view.tree_win)[1], #lines)
+  vim.api.nvim_buf_clear_namespace(view.tree_buf, details_ns, 0, -1)
+  local row = vim.api.nvim_win_get_cursor(view.tree_win)[1]
+  local it = view.item_of_row[row]
+  if it and it.details and it.details ~= "" then
+    vim.api.nvim_buf_set_extmark(view.tree_buf, details_ns, row - 1, 0,
+      { virt_text = { { "   " .. it.details, "Comment" } }, virt_text_pos = "eol" })
   end
-  local buf = view.tree_buf
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-  vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, { end_col = #header, hl_group = "Title" })
-  for _, h in ipairs(hls) do
-    vim.api.nvim_buf_set_extmark(buf, ns, h[1] + 1, h[2], { end_col = h[3], hl_group = h[4] })
-  end
-  view.item_of_row = {}
-  sizes.apply(view.tree_win, "tree.top", "height", tree_height(#lines))
-  vim.api.nvim_win_set_cursor(view.tree_win, { cursor, 0 })
 end
 
 local function render_tree(keep_cursor)
   local ctx, path = view.ctx, view.path
   vim.wo[view.tree_win].cursorline = true
-  if laned(path) then
-    return render_lanes()
-  end
   local expanded = expanded_by_path[path.id] or {}
   local lines, hls, item_of_row
   if path.impact then
@@ -143,7 +89,11 @@ local function render_tree(keep_cursor)
       expanded = expanded,
       all = all_by_path[path.id],
       current = view.step,
+      station = view.station,
       done = ctx.done_steps(path),
+      threads = function(id)
+        return ctx.threads(path)[id] or 0
+      end,
     })
   else
     lines, hls, item_of_row = list_lines(path, view.step, ctx.done_steps(path))
@@ -156,11 +106,22 @@ local function render_tree(keep_cursor)
     header = header .. string.format("  ·  %d functions", functions)
   end
   table.insert(lines, 1, header)
+  local cursor = keep_cursor and vim.api.nvim_win_get_cursor(view.tree_win)
+  local before = cursor and view.item_of_row and view.item_of_row[cursor[1]]
   view.item_of_row = {}
   for row, item in pairs(item_of_row) do
     view.item_of_row[row + 1] = item
   end
-  local cursor = keep_cursor and vim.api.nvim_win_get_cursor(view.tree_win)
+  -- The cursor stays on the row it was on, wherever opening a fold moved it.
+  if before and before.node then
+    for row = 1, #lines do
+      local item = view.item_of_row[row]
+      if item and item.node and item.node.id == before.node.id and item.again == before.again then
+        cursor = { row, 0 }
+        break
+      end
+    end
+  end
   local buf = view.tree_buf
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -170,19 +131,20 @@ local function render_tree(keep_cursor)
   for _, h in ipairs(hls) do
     vim.api.nvim_buf_set_extmark(buf, ns, h[1] + 1, h[2], { end_col = h[3], hl_group = h[4] })
   end
-  if not tree_on_left(path) then
+  if not tree_on_left() then
     sizes.apply(view.tree_win, "tree.top", "height", tree_height(#lines))
   end
   if cursor then
     pcall(vim.api.nvim_win_set_cursor, view.tree_win, cursor)
-    return
-  end
-  for row, item in pairs(view.item_of_row) do
-    if item.step == view.step then
-      vim.api.nvim_win_set_cursor(view.tree_win, { row, 0 })
-      break
+  else
+    for row, item in pairs(view.item_of_row) do
+      if item.step == view.step then
+        vim.api.nvim_win_set_cursor(view.tree_win, { row, 0 })
+        break
+      end
     end
   end
+  show_details()
 end
 
 local function show_step(i, focus_tree, hunk)
@@ -220,12 +182,12 @@ end
 
 ---Shows the change `id` of the path: its step, or its function when it is
 ---an unchanged entry point.
-local function show_change(id, focus_lanes)
+local function show_change(id, focus_tree)
   local i = step_of_node(view.path, id)
   if i then
-    show_step(i, focus_lanes)
+    show_step(i, focus_tree)
   else
-    show_function(lanes.graph(view.path.impact).nodes[id])
+    show_function(pathmap.graph(view.path.impact).nodes[id])
   end
 end
 
@@ -235,11 +197,12 @@ function M.map()
     return
   end
   local path = view.path
-  local g = lanes.graph(path.impact)
+  local g = pathmap.graph(path.impact)
   local done = view.ctx.done_steps(path)
+  local node = path.steps[view.step].node
   pathmap.open(g, {
     title = path.title,
-    current = here(g),
+    current = view.station or (node and node.id) or g.roots[1],
     done = function(id)
       local i = step_of_node(path, id)
       return i ~= nil and done[i] == true
@@ -323,10 +286,10 @@ end
 ---Moves the tree to where the layout wants it: the left of a unified diff,
 ---or across the top of a side-by-side one.
 function M.place()
-  if not valid() or (vim.g.trail_tree ~= "left" and not laned(view.path)) then
+  if not valid() or vim.g.trail_tree ~= "left" then
     return
   end
-  local left = tree_on_left(view.path)
+  local left = tree_on_left()
   vim.api.nvim_win_call(view.tree_win, function()
     vim.cmd.wincmd(left and "H" or "K")
   end)
@@ -362,11 +325,11 @@ function M.open(ctx, path, step, target)
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].bufhidden = "wipe"
     vim.api.nvim_buf_set_name(buf, "trail://path")
-    vim.cmd(tree_on_left(path) and "topleft vsplit" or "aboveleft split")
+    vim.cmd(tree_on_left() and "topleft vsplit" or "aboveleft split")
     local tree_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(tree_win, buf)
     local wo = vim.wo[tree_win][0]
-    if tree_on_left(path) then
+    if tree_on_left() then
       sizes.apply(tree_win, "tree.left", "width", TREE_WIDTH)
       wo.winfixwidth = true
     else
@@ -379,11 +342,6 @@ function M.open(ctx, path, step, target)
     local function map(lhs, fn, desc)
       vim.keymap.set("n", lhs, fn, { buffer = buf, desc = desc, nowait = true })
     end
-    map("gt", function()
-      vim.g.trail_graph = laned(view.path) and "tree" or "lanes"
-      M.place()
-      render_tree()
-    end, "Switch between the lanes and the tree")
     map("gm", M.map, "Map of the path's changes")
     map("<C-p>", function()
       view.ctx.find()
@@ -391,28 +349,33 @@ function M.open(ctx, path, step, target)
     local function item()
       return view.item_of_row[vim.api.nvim_win_get_cursor(0)[1]] or {}
     end
+    local function open_fold(key)
+      local expanded = expanded_by_path[view.path.id] or {}
+      expanded[key] = not expanded[key] or nil
+      expanded_by_path[view.path.id] = expanded
+      render_tree(true)
+    end
     map("<CR>", function()
-      local row = vim.api.nvim_win_get_cursor(0)[1]
-      local it = laned(view.path) and { fold = view.lane_folds[row] } or item()
-      if laned(view.path) and not it.fold then
-        local id = view.row_ids[row]
-        return id and show_change(id, true)
-      end
+      local it = item()
       if it.fold then
-        local expanded = expanded_by_path[view.path.id] or {}
-        expanded[it.fold] = true
-        expanded_by_path[view.path.id] = expanded
-        if laned(view.path) then
-          render_lanes(true)
-        else
-          render_tree(true)
-        end
+        open_fold(it.fold)
       elseif it.step then
         show_step(it.step, true)
       elseif it.node then
-        show_function(it.node)
+        show_change(it.node.id, true)
       end
     end, "Open the fold, or show this function below")
+    map("za", function()
+      local it = item()
+      if it.fold or it.toggle then
+        open_fold(it.fold or it.toggle)
+      end
+    end, "Open or close what this row folds")
+    map("zR", function()
+      expanded_by_path[view.path.id] = { ["*"] = true }
+      render_tree(true)
+    end, "Open everything")
+    vim.api.nvim_create_autocmd("CursorMoved", { buffer = buf, callback = show_details })
     map("c", function()
       expanded_by_path[view.path.id] = nil
       all_by_path[view.path.id] = nil

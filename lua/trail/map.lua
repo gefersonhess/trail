@@ -4,6 +4,90 @@
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("trail.map")
+
+local graphs = setmetatable({}, { __mode = "k" })
+
+---The stations of an impact path (its entry points and steps) and which
+---reaches which, in the order the trees show them.
+function M.graph(impact)
+  if graphs[impact] then
+    return graphs[impact]
+  end
+  local nodes, step_of = {}, {}
+  for _, n in ipairs(impact.nodes) do
+    nodes[n.id] = n
+  end
+  for i, id in ipairs(impact.steps) do
+    step_of[id] = i
+  end
+  local parents, children, linked = {}, {}, {}
+  local function link(from, to)
+    local key = from .. "\0" .. to
+    if from == to or linked[key] then
+      return
+    end
+    linked[key] = true
+    parents[to] = parents[to] or {}
+    children[from] = children[from] or {}
+    table.insert(parents[to], from)
+    table.insert(children[from], to)
+  end
+  local entries = {}
+  for _, tree in ipairs(impact.trees) do
+    local above = {}
+    for k, row in ipairs(tree.rows) do
+      for d = #above, row.depth + 1, -1 do
+        above[d] = nil
+      end
+      local station = k == 1 or step_of[row.id] ~= nil
+      if k == 1 then
+        table.insert(entries, row.id)
+      elseif station then
+        for d = row.depth, 1, -1 do
+          if above[d] and above[d].station then
+            link(above[d].id, row.id)
+            break
+          end
+        end
+      end
+      above[row.depth + 1] = { id = row.id, station = station and not row.join }
+    end
+  end
+  local g = { nodes = nodes, step_of = step_of, parents = parents, children = children, entries = entries }
+  g.roots, g.kids = M.spanning(g)
+  graphs[impact] = g
+  return g
+end
+
+---Each change once, under the first caller to reach it depth first: the
+---roots and each station's children. An entry point reaching only changes
+---already placed is not a root.
+function M.spanning(g)
+  local visited, kids, roots = {}, {}, {}
+  local function visit(id)
+    kids[id] = {}
+    for _, c in ipairs(g.children[id] or {}) do
+      if not visited[c] then
+        visited[c] = true
+        table.insert(kids[id], c)
+        visit(c)
+      end
+    end
+  end
+  for _, entry in ipairs(g.entries) do
+    if not visited[entry] then
+      local own = g.step_of[entry] ~= nil or vim.iter(g.children[entry] or {}):any(function(c)
+        return not visited[c]
+      end)
+      if own then
+        visited[entry] = true
+        table.insert(roots, entry)
+        visit(entry)
+      end
+    end
+  end
+  return roots, kids
+end
 local GAP = 3
 
 ---Lays the spanning tree out as boxes: each subtree as wide as its widest

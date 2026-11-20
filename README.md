@@ -37,7 +37,7 @@ The plugin looks for `engine/target/release/trail`, then `debug`, then `trail` o
 
 `:Trail` alone lists the repository's open pull requests, those asking for your review first, and opens the one you pick (through `vim.ui.select`, so your picker plugin if you have one). `#123`, or the pull request's URL, reviews a GitHub pull request: `gh` finds its base and head, both are fetched, and the review runs locally like a branch. The pull request's review threads show as one line under their lines, `<CR>` opens one in a popup, and `T` lists them all, outdated ones included. `P` on the send screen submits it back as one GitHub review: an overall comment and a verdict (comment, approve, request changes, or draft for a pending review) written in a box, plus every comment not sent before, inline where GitHub's diff has the line and listed in the overall comment otherwise.
 
-The review opens in its own tab, on the overview: the pull request's title, author and description (folded), a progress bar over every hunk, what needs your attention (unresolved threads, your blocking comments, changes no test reaches), and the paths, each one folded line with its progress and threads: `za` unfolds a path into its lanes, one row per change with the calls between them drawn in the gutter, `●` reviewed and `○` not yet, and `gm` draws it as a map of boxes. The changed test files, hunks in no path and hidden files are folded below; `<CR>` opens any folded line. Working out the paths runs in the background and can take a minute on a big change.
+The review opens in its own tab, on the overview: the pull request's title, author and description (folded), a progress bar over every hunk, what needs your attention (unresolved threads, your blocking comments, changes no test reaches), and the paths, each one folded line with its progress and threads: `za` unfolds a path into its tree, each change under the change it is reached from, `●` reviewed and `○` not yet, and `gm` draws it as a map of boxes. The changed test files, hunks in no path and hidden files are folded below; `<CR>` opens any folded line. Working out the paths runs in the background and can take a minute on a big change.
 
 Progress is per function: a hunk is seen once its last line has been on screen, or when you mark it with `mh`, and a function is done when all its hunks are seen, in every path that has it. Reviewed hunks show a `▎` between the gutter and the code. Review state (seen hunks, positions, comments, verdict) lives in `.git/trail/<review>.json` and survives new commits, because hunk ids hash their content and comments find their line again by its text.
 
@@ -47,7 +47,7 @@ Press `?` anywhere for the keys that work there.
 
 ## The trail app
 
-`trail` also runs on its own, as Neovim with trail's own config: the lanes on top (`gt` swaps in the tree, on the left), the diff in the middle, threads and the comment box in a pane on the right (side by side moves the tree to the top and the pane to the bottom), the screens in the tabline and the keys in the status line. Resize the tree or the pane and it keeps that size, separately on the left and on top, at the right and at the bottom. Comments and threads don't sit between the code lines there: each shows as a mark in the gutter and a hint at the end of its line, and the pane shows the line's thread with your unsent comments and replies under it. A reply is written now and sent later. Everything you add is selected for sending (☑): `s` in the pane takes a comment out or puts it back, `e` and `d` edit and delete it, and `S` sends the selected ones as one review, replies going to their threads. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
+`trail` also runs on its own, as Neovim with trail's own config: the path's tree on the left, the diff in the middle, threads and the comment box in a pane on the right (side by side moves the tree to the top and the pane to the bottom), the screens in the tabline and the keys in the status line. Resize the tree or the pane and it keeps that size, separately on the left and on top, at the right and at the bottom. Comments and threads don't sit between the code lines there: each shows as a mark in the gutter and a hint at the end of its line, and the pane shows the line's thread with your unsent comments and replies under it. A reply is written now and sent later. Everything you add is selected for sending (☑): `s` in the pane takes a comment out or puts it back, `e` and `d` edit and delete it, and `S` sends the selected ones as one review, replies going to their threads. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
 
 ```sh
 trail                     # pick an open pull request
@@ -63,8 +63,8 @@ Paths screen
 
 | Key | Action |
 | --- | --- |
-| `<CR>`, `1`–`9` | Enter a path, or on a lane row, enter it at that change |
-| `za` | Unfold a path into its lanes, or fold it |
+| `<CR>`, `1`–`9` | Enter a path, or on a row of its tree, enter it at that change |
+| `za` | Unfold a path into its tree, or fold it |
 | `gm` | Map of the path under the cursor |
 | `r` | Resume the path last reviewed, where it was |
 | `<C-p>` | Find a changed function by name and open it |
@@ -75,15 +75,18 @@ Paths screen
 | `R` | Reload |
 | `q` | Quit |
 
-Inside a path (lanes on top, diff below)
+Inside a path (tree on top, diff below)
 
 | Key | Action |
 | --- | --- |
-| `<CR>` in the lanes | Show the function on the row (move there with any motion) |
+| `<CR>` in the tree | Show the function on the row, or open the fold |
+| `za` in the tree | Open or close what the row folds: the functions between it and its caller (`┄2`), or a reviewed branch (`✓ 6 changes`) |
+| `zR` / `c` in the tree | Open everything / fold back to the changes |
+| `a` in the tree | Show every function between the changes |
+| `K` in the tree | Show the row's code in a popup |
 | `gm` | Map of the path's changes as boxes, in a float |
-| `gt` | Swap the lanes for the path's tree, and back |
 | `<C-p>` | Find a changed function by name and open it |
-| `]s` `[s` (also `n` `p` in the lanes or tree) | Next / previous step: the next row of the lanes |
+| `]s` `[s` (also `n` `p` in the tree) | Next / previous step: the next change in the tree |
 | `]c` `[c` | Next / previous change of this path, across steps |
 | `]h` `[h` | Next / previous hunk in the file shown |
 | `]t` `[t` | Next / previous review thread of this path |
@@ -91,8 +94,6 @@ Inside a path (lanes on top, diff below)
 | `[[` | Back to the call `]]` followed; with none, up to the line calling this function |
 | `<CR>` in the diff | Open the review thread on the line in a popup |
 | `r` | Reply to the review thread on the line (also in the `T` list); `<Tab>` resolves or reopens it too |
-| `<CR>` in the tree | Open a fold, show a step or function |
-| `a` / `c` in the tree | Show every function on the way / fold back to the changes |
 | `t` | Unified or side by side |
 | `o` | On a step: fold away what is outside its function, which is otherwise shown dimmed. Elsewhere: fold unchanged code, or show the whole file |
 | `K` | Show the function's code in a popup |
