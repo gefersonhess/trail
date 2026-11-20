@@ -458,4 +458,32 @@ function M.render(path, opts)
   return lines, hls, item_of_row
 end
 
+---The rows a walk through the path stops at, in the order the tree shows
+---them: each entry point and change where it first shows, with the index of
+---the row it sits under.
+---@return { id: string, parent: integer|nil }[]
+function M.walk(path)
+  local steps = {}
+  for _, id in ipairs(path.steps) do
+    steps[id] = true
+  end
+  local out = {}
+  local function visit(node, parent)
+    if node.again or node.fold or node.quiet then
+      return
+    end
+    table.insert(out, { id = node.id, parent = parent })
+    local here = #out
+    for _, c in ipairs(node.children) do
+      visit(c, here)
+    end
+  end
+  for _, root in ipairs(build(path, function(id)
+    return steps[id] ~= nil
+  end, {})) do
+    visit(root, nil)
+  end
+  return out
+end
+
 return M
