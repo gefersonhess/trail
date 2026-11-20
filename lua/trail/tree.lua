@@ -1,144 +1,254 @@
+---A path drawn as a tree: one per entry point, each change under the change
+---it is reached from. Unchanged functions on the way are drawn in the
+---connector (`┄`) until opened, a change reached again repeats under each
+---caller with the changes below it, and a branch fully reviewed folds to one
+---row. Each row's details (step, interface, tests, package) are kept for the
+---cursor row only.
 local M = {}
 
-vim.api.nvim_set_hl(0, "TrailModified", { link = "Function", default = true })
 vim.api.nvim_set_hl(0, "TrailCurrentStep", { link = "Visual", default = true })
-vim.api.nvim_set_hl(0, "TrailEntry", { link = "Special", default = true })
 
-local function subtree_end(rows, i)
-  local j = i + 1
-  while j <= #rows and rows[j].depth > rows[i].depth do
-    j = j + 1
-  end
-  return j
-end
-
----The rows to draw for one tree: every row on the way to one of the path's
----steps, and a fold line for each run of rows that leads to none.
-local function visible(rows, tree_index, is_step, expanded)
-  local function has_step(from, to)
-    for k = from, to - 1 do
-      if is_step(rows[k]) then
-        return true
-      end
-    end
-    return false
-  end
-  local out = {}
-  local function raw(from, to)
-    for k = from, to - 1 do
-      table.insert(out, { row = rows[k] })
-    end
-  end
-  local i = 1
-  while i <= #rows do
-    local row, last = rows[i], subtree_end(rows, i)
-    if has_step(i, last) then
-      table.insert(out, { row = row })
-      if last > i + 1 and not has_step(i + 1, last) then
-        local key = tree_index .. ":" .. (i + 1)
-        if expanded[key] then
-          raw(i + 1, last)
-        else
-          table.insert(out, { fold = key, depth = row.depth + 1, count = last - i - 1 })
-        end
-        i = last
-      else
-        i = i + 1
-      end
-    else
-      -- Sibling branches with no step fold into one line at their level.
-      local j = last
-      while j <= #rows and rows[j].depth == row.depth and not has_step(j, subtree_end(rows, j)) do
-        j = subtree_end(rows, j)
-      end
-      local key = tree_index .. ":" .. i
-      if expanded[key] then
-        raw(i, j)
-      else
-        table.insert(out, { fold = key, depth = row.depth, count = j - i })
-      end
-      i = j
-    end
-  end
-  return out
-end
-
----The rows to draw for one tree in the changes view: its entry point and the
----path's changes, each under the change above it, with a link line standing
----for the unchanged functions the call goes through until opened.
-local function changes_only(rows, tree_index, is_step, expanded)
-  local out = {}
-  -- The row on each depth above the current one, to find a row's ancestors.
-  local above = {}
-  -- Rows already drawn, with the depth they were drawn at.
-  local drawn = {}
-  -- Changes drawn in this tree, or joined to: a join is kept only once, and
-  -- only for a change shown in an earlier tree.
-  local here = {}
-  for k, row in ipairs(rows) do
-    for d = #above, row.depth + 1, -1 do
-      above[d] = nil
-    end
-    above[row.depth + 1] = k
-    local keep = k == 1 or is_step(row) or (row.join and is_step({ id = row.id }) and not here[row.id])
-    if keep then
-      here[row.id] = true
-    end
-    if keep and k > 1 then
-      -- The nearest ancestor already drawn, and the unchanged rows between.
-      local parent, chain = nil, {}
-      for d = row.depth, 1, -1 do
-        local a = above[d]
-        if drawn[a] then
-          parent = a
-          break
-        end
-        table.insert(chain, 1, rows[a])
-      end
-      local depth = parent and drawn[parent] + 1 or 0
-      local key = tree_index .. ":link:" .. k
-      if #chain > 0 and not expanded[key] then
-        table.insert(out, {
-          fold = key,
-          depth = depth,
-          label = #chain .. " function" .. (#chain == 1 and "" or "s"),
-        })
-        depth = depth + 1
-      elseif #chain > 0 then
-        for _, link in ipairs(chain) do
-          table.insert(out, { row = link, depth = depth })
-          depth = depth + 1
-        end
-      end
-      -- The call's interface belongs to the hop just above, hidden while the link is folded.
-      local shown = row
-      if #chain > 0 and not expanded[key] then
-        shown = { id = row.id, depth = row.depth, join = row.join }
-      end
-      table.insert(out, { row = shown, depth = depth })
-      drawn[k] = depth
-    elseif keep then
-      table.insert(out, { row = row, depth = 0 })
-      drawn[k] = 0
-    end
-  end
-  return out
-end
+local FOLD = 5
 
 local function plural(n, word)
   return n .. " " .. word .. (n == 1 and "" or "s")
 end
 
----Draws an impact path from its entry points down. By default it shows only
----the changes and how they connect; `opts.all` shows every function on the
----way, stopping at the last change. What leads to no change is folded until
----`expanded` opens it.
+---What the trees say about the path: each function's callees in the order
+---the trees show them, which functions lead to a step, and the first steps
+---each unchanged function reaches.
+local function calls(path, is_step)
+  local callees, callers = {}, {}
+  for _, tree in ipairs(path.trees) do
+    local above = {}
+    for k, row in ipairs(tree.rows) do
+      for d = #above, row.depth + 1, -1 do
+        above[d] = nil
+      end
+      local parent = above[row.depth]
+      if k > 1 and parent and not parent.join then
+        table.insert(callees[parent.id], { id = row.id, via = row.via })
+        callers[row.id] = callers[row.id] or {}
+        table.insert(callers[row.id], parent.id)
+      end
+      if not row.join then
+        callees[row.id] = callees[row.id] or {}
+      end
+      above[row.depth + 1] = row
+    end
+  end
+  local leads, queue = {}, {}
+  for id in pairs(callees) do
+    if is_step(id) then
+      leads[id] = true
+      table.insert(queue, id)
+    end
+  end
+  while #queue > 0 do
+    for _, p in ipairs(callers[table.remove(queue)] or {}) do
+      if not leads[p] then
+        leads[p] = true
+        table.insert(queue, p)
+      end
+    end
+  end
+  local nearest = {}
+  local function first_steps(id)
+    if nearest[id] then
+      return nearest[id]
+    end
+    local out, seen, level = {}, { [id] = true }, { id }
+    local hops = 0
+    while #level > 0 do
+      local next_level = {}
+      for _, u in ipairs(level) do
+        for _, c in ipairs(callees[u] or {}) do
+          if leads[c.id] and not seen[c.id] then
+            seen[c.id] = true
+            if is_step(c.id) then
+              table.insert(out, { id = c.id, hops = hops, via = c.via })
+            else
+              table.insert(next_level, c.id)
+            end
+          end
+        end
+      end
+      level, hops = next_level, hops + 1
+    end
+    nearest[id] = out
+    return out
+  end
+  return callees, leads, first_steps
+end
+
+---The steps a repeated change leads to, counted once each.
+local function count_below(id, callees, is_step, leads)
+  local seen, queue, n = { [id] = true }, { id }, 0
+  while #queue > 0 do
+    for _, c in ipairs(callees[table.remove(queue)] or {}) do
+      if leads[c.id] and not seen[c.id] then
+        seen[c.id] = true
+        n = n + (is_step(c.id) and 1 or 0)
+        table.insert(queue, c.id)
+      end
+    end
+  end
+  return n
+end
+
+---Builds the trees as nested nodes: `{ id, key, children, again, chain,
+---hops, via }`, plus `{ fold, count }` rows for a repeat with many changes
+---below it and the `{ quiet }` row for entry points that only reach changes
+---shown elsewhere.
+local function build(path, is_step, expanded)
+  local callees, leads, first_steps = calls(path, is_step)
+  local placed, walked = {}, {}
+  local open_all = expanded["*"]
+
+  local function repeat_of(id, key, on_branch, budget)
+    local node = { id = id, key = key, again = true, children = {} }
+    budget.left = budget.left - 1
+    on_branch[id] = true
+    local seen = {}
+    local function add(c, hops, via)
+      if on_branch[c] or seen[c] or budget.left <= 0 then
+        budget.over = budget.over or (budget.left <= 0 and not on_branch[c] and not seen[c])
+        return
+      end
+      seen[c] = true
+      local child = repeat_of(c, key .. ">" .. c, on_branch, budget)
+      child.hops, child.via = hops, via
+      table.insert(node.children, child)
+    end
+    for _, c in ipairs(callees[id] or {}) do
+      if is_step(c.id) then
+        add(c.id, 0, c.via)
+      elseif leads[c.id] then
+        for _, n in ipairs(first_steps(c.id)) do
+          add(n.id, n.hops + 1, n.via)
+        end
+      end
+    end
+    on_branch[id] = nil
+    return node
+  end
+
+  ---A change shown again: folded to one row past FOLD changes below it.
+  local function again(id, key, on_branch)
+    local opened = open_all or expanded[key]
+    local budget = { left = opened and 500 or FOLD + 2 }
+    local node = repeat_of(id, key, on_branch, budget)
+    local rows = -1
+    local function size(n)
+      rows = rows + 1
+      for _, c in ipairs(n.children) do
+        size(c)
+      end
+    end
+    size(node)
+    if not opened and (budget.over or rows > FOLD) then
+      node.children = { { fold = key, count = count_below(id, callees, is_step, leads) } }
+    end
+    return node
+  end
+
+  local function home(id, key, on_branch)
+    local node = { id = id, key = key, children = {} }
+    if is_step(id) then
+      placed[id] = true
+    end
+    on_branch[id] = true
+    local seen = {}
+    local function add(child)
+      if not seen[child.id] then
+        seen[child.id] = true
+        table.insert(node.children, child)
+      end
+    end
+    local function through(c, chain, via)
+      if on_branch[c] or seen[c] then
+        return
+      end
+      local child_key = key .. ">" .. c
+      if is_step(c) then
+        local child = placed[c] and again(c, child_key, on_branch) or home(c, child_key, on_branch)
+        child.chain, child.hops, child.via = chain, #chain, via
+        add(child)
+      elseif leads[c] then
+        if walked[c] then
+          for _, n in ipairs(first_steps(c)) do
+            if not on_branch[n.id] and not seen[n.id] then
+              local child = again(n.id, key .. ">" .. n.id, on_branch)
+              child.hops, child.via = #chain + 1 + n.hops, n.via
+              add(child)
+            end
+          end
+        else
+          walked[c] = true
+          local next_chain = vim.list_extend(vim.list_extend({}, chain), { { id = c, via = via } })
+          for _, cc in ipairs(callees[c] or {}) do
+            through(cc.id, next_chain, cc.via)
+          end
+        end
+      end
+    end
+    for _, c in ipairs(callees[id] or {}) do
+      through(c.id, {}, c.via)
+    end
+    on_branch[id] = nil
+    return node
+  end
+
+  local trees, quiet = {}, {}
+  for _, tree in ipairs(path.trees) do
+    local root = tree.rows[1].id
+    if tree.changes then
+      walked[root] = true
+      table.insert(trees, home(root, root, {}))
+    else
+      table.insert(quiet, root)
+    end
+  end
+  if #quiet > 0 then
+    if open_all or expanded.entries then
+      for _, root in ipairs(quiet) do
+        local node = { id = root, key = root, children = {} }
+        for _, n in ipairs(first_steps(root)) do
+          local child = again(n.id, root .. ">" .. n.id, { [root] = true })
+          child.hops, child.via = n.hops, n.via
+          table.insert(node.children, child)
+        end
+        table.insert(trees, node)
+      end
+    else
+      table.insert(trees, {
+        quiet = true,
+        text = "▸ " .. plural(#quiet, "more entry point") .. (#quiet == 1 and " reaches" or " reach")
+          .. " this path without other changes",
+      })
+    end
+  end
+  return trees
+end
+
+---Draws an impact path's trees. `opts.current` is the step shown and
+---`opts.station` an unchanged function shown instead; `opts.done[i]` says
+---step `i` is reviewed. A branch fully reviewed folds to one row until
+---`expanded[key .. ":done"]`; unchanged functions on the way show as rows
+---under `opts.all` or `expanded[key .. ":hops"]`; `expanded["*"]` opens
+---everything.
 ---@param path table the engine's impact path
----@param opts { expanded: table<string, boolean>|nil, all: boolean|nil, current: integer|nil, done: table<integer, boolean>|nil }
+---@param opts { expanded: table<string, boolean>|nil, all: boolean|nil, current: integer|nil, station: string|nil, done: table<integer, boolean>|nil, threads: (fun(id): integer)|nil, indent: string|nil }
 ---@return string[] lines, table[] highlights, table<integer, table> item_of_row
 function M.render(path, opts)
   opts = opts or {}
   local expanded = opts.expanded or {}
+  local open_all = expanded["*"]
+  local done = opts.done or {}
+  local indent = opts.indent or ""
+  local threads = opts.threads or function()
+    return 0
+  end
   local nodes, step_of, tests = {}, {}, {}
   for _, n in ipairs(path.nodes) do
     nodes[n.id] = n
@@ -147,185 +257,202 @@ function M.render(path, opts)
     step_of[id] = i
   end
   for _, e in ipairs(path.edges) do
-    if nodes[e.from].is_test then
+    if nodes[e.from] and nodes[e.from].is_test then
       tests[e.to] = tests[e.to] or {}
       tests[e.to][e.from] = true
     end
   end
-  local function is_step(row)
-    return step_of[row.id] ~= nil and not row.join
+  local function is_step(id)
+    return step_of[id] ~= nil
+  end
+  local current = opts.station or (opts.current and path.steps[opts.current])
+
+  -- A branch whose changes are all reviewed, none of them shown now.
+  local function reviewed(node)
+    if node.fold or node.id == current or (is_step(node.id) and not done[step_of[node.id]]) then
+      return false, 0
+    end
+    local n = is_step(node.id) and 1 or 0
+    for _, c in ipairs(node.children) do
+      local ok, below = reviewed(c)
+      if not ok then
+        return false, 0
+      end
+      n = n + below
+    end
+    return true, n
   end
 
-  local items = {}
-  local quiet = {}
-  for t, tree in ipairs(path.trees) do
-    if tree.changes or expanded.entries then
-      local shown
-      if not tree.changes then
-        shown = vim.tbl_map(function(row)
-          return { row = row }
-        end, tree.rows)
-      elseif opts.all then
-        shown = visible(tree.rows, t, is_step, expanded)
+  local trees = build(path, is_step, expanded)
+  local rows = {}
+  local function guide(guides)
+    local prefix = ""
+    for _, open in ipairs(guides) do
+      prefix = prefix .. (open and "│ " or "  ")
+    end
+    return prefix
+  end
+  local function deeper(guides, last)
+    return vim.list_extend(vim.list_extend({}, guides), { not last })
+  end
+  local function flatten(node, guides, last, depth)
+    if node.fold then
+      table.insert(rows, { prefix = guide(guides) .. (last and "└─" or "├─"), fold = node.fold, count = node.count })
+      return
+    end
+    local hops_open = node.chain and #node.chain > 0 and (opts.all or open_all or expanded[node.key .. ":hops"])
+    if hops_open then
+      -- The unchanged functions on the way, one row each, the change under the last.
+      for _, link in ipairs(node.chain) do
+        table.insert(rows, { prefix = guide(guides) .. (last and "└─" or "├─"), id = link.id, via = link.via, hop = true,
+          toggle = node.key .. ":hops" })
+        guides, last = deeper(guides, last), true
+      end
+    end
+    local connector = ""
+    if depth > 0 then
+      local dotted = (node.hops or 0) > 0 and not hops_open
+      connector = (last and "└" or "├") .. (dotted and "┄" or "─")
+    end
+    local row = {
+      prefix = guide(guides) .. connector,
+      id = node.id,
+      again = node.again,
+      hops = not hops_open and node.hops or 0,
+      via = node.via,
+      toggle = node.chain and #node.chain > 0 and (node.key .. ":hops") or nil,
+    }
+    table.insert(rows, row)
+    local children = node.children
+    if not node.again and #children > 0 and not open_all then
+      if expanded[node.key .. ":done"] then
+        row.toggle = node.key .. ":done"
       else
-        shown = changes_only(tree.rows, t, is_step, expanded)
+        local ok, n = reviewed(node)
+        n = n - (is_step(node.id) and 1 or 0)
+        if ok and n > 0 then
+          row.done_below, row.toggle, children = n, node.key .. ":done", {}
+        end
       end
-      if #items > 0 then
-        table.insert(items, { blank = true })
-      end
-      vim.list_extend(items, shown)
-    else
-      table.insert(quiet, tree)
+    end
+    local below = depth > 0 and deeper(guides, last) or {}
+    for i, c in ipairs(children) do
+      flatten(c, below, i == #children, depth + 1)
     end
   end
-  if #quiet > 0 then
-    table.insert(items, { blank = true })
-    table.insert(items, {
-      fold = "entries",
-      depth = 0,
-      text = "▸ " .. plural(#quiet, "more entry point") .. (#quiet == 1 and " reaches" or " reach") .. " this path without other changes",
-    })
-  end
-
-  -- Whether each item is the last child of its parent, for the connectors.
-  local function depth(item)
-    return item.depth or item.row.depth
-  end
-  local last = {}
-  for k, item in ipairs(items) do
-    if not item.blank then
-      local next_depth = -1
-      for m = k + 1, #items do
-        if items[m].blank then
-          break
-        end
-        if depth(items[m]) <= depth(item) then
-          next_depth = depth(items[m])
-          break
-        end
-      end
-      last[k] = next_depth < depth(item)
+  for t, tree in ipairs(trees) do
+    if t > 1 then
+      table.insert(rows, { blank = true })
     end
-  end
-
-  local rendered, open_levels = {}, {}
-  for k, item in ipairs(items) do
-    if item.blank then
-      open_levels = {}
-      table.insert(rendered, { text = "" })
+    if tree.quiet then
+      table.insert(rows, { prefix = "", quiet = true, text = tree.text })
     else
-      local d = depth(item)
-      while #open_levels > d do
-        table.remove(open_levels)
-      end
-      local prefix = ""
-      for level = 2, #open_levels do
-        prefix = prefix .. (open_levels[level] and "   " or "│  ")
-      end
-      if d > 0 then
-        prefix = prefix .. (last[k] and "└─ " or "├─ ")
-      end
-      if item.fold then
-        table.insert(rendered, {
-          text = item.text or (prefix .. "▸ " .. (item.label or (item.count .. " more"))),
-          fold = item.fold,
-        })
-      else
-        local row = item.row
-        local n = nodes[row.id]
-        local step = is_step(row) and step_of[row.id] or nil
-        local mark, mark_hl = "○", "Comment"
-        if n.status == "added" then
-          mark, mark_hl = "✚", "TrailAdd"
-        elseif n.status == "modified" then
-          mark, mark_hl = "●", "TrailModified"
-        elseif n.entry then
-          mark, mark_hl = "◆", "TrailEntry"
-        end
-        local tags = {}
-        if step then
-          table.insert(tags, "step " .. step)
-        elseif n.status ~= "unchanged" then
-          table.insert(tags, n.status)
-        end
-        if n.entry and d == 0 then
-          table.insert(tags, "entry")
-        end
-        if row.via then
-          local parts = vim.split(row.via, ".", { plain = true })
-          table.insert(tags, "via " .. (parts[#parts - 1] or row.via))
-        end
-        if row.join then
-          table.insert(tags, "↑ joins above")
-        elseif tests[row.id] then
-          table.insert(tags, "◇ " .. plural(vim.tbl_count(tests[row.id]), "test"))
-        end
-        local name = prefix .. mark .. " " .. n.short
-        table.insert(rendered, {
-          name = name,
-          tags = #tags > 0 and ("   " .. table.concat(tags, " · ")) or "",
-          package = n.package,
-          node = n,
-          step = step,
-          mark_col = #prefix,
-          mark_len = #mark,
-          mark_hl = mark_hl,
-        })
-      end
-      table.insert(open_levels, last[k])
+      flatten(tree, {}, true, 0)
     end
   end
 
   local width = 0
-  for _, r in ipairs(rendered) do
-    if r.node then
-      width = math.max(width, vim.fn.strdisplaywidth(r.name .. r.tags))
+  local function label(r)
+    local text = nodes[r.id].short
+    if r.hops and r.hops > 0 then
+      text = text .. "  ┄" .. r.hops
+    end
+    if r.done_below then
+      text = text .. "  ✓ " .. plural(r.done_below, "change")
+    end
+    return text
+  end
+  for _, r in ipairs(rows) do
+    if r.id then
+      width = math.max(width, vim.fn.strdisplaywidth(r.prefix .. label(r)))
     end
   end
+
   local lines, hls, item_of_row = {}, {}, {}
-  local previous
-  for _, r in ipairs(rendered) do
-    local marker = "  "
-    if r.step and r.step == opts.current then
-      marker = "▶ "
-    elseif r.step and opts.done and opts.done[r.step] then
-      marker = "✓ "
-    end
+  for _, r in ipairs(rows) do
     local row = #lines
-    if r.node then
-      local left = r.name .. r.tags
-      local package = r.package ~= previous and r.package or ""
-      previous = r.package
-      local line = marker .. left
-      if package ~= "" then
-        line = line .. string.rep(" ", width - vim.fn.strdisplaywidth(left) + 3) .. package
-      end
+    local head = indent .. (r.prefix or "")
+    if r.blank then
+      table.insert(lines, "")
+    elseif r.quiet then
+      table.insert(lines, indent .. r.text)
+      table.insert(hls, { row, 0, #lines[#lines], "Comment" })
+      item_of_row[row + 1] = { fold = "entries" }
+    elseif r.fold then
+      local line = head .. "▸ " .. plural(r.count, "change")
       table.insert(lines, line)
-      local mark_at = #marker + r.mark_col
-      table.insert(hls, { row, mark_at, mark_at + r.mark_len, r.mark_hl })
-      local tags_at = #marker + #r.name
-      if r.tags ~= "" then
-        table.insert(hls, { row, tags_at, tags_at + #r.tags, "Comment" })
-      end
-      if package ~= "" then
-        table.insert(hls, { row, #line - #package, #line, "Comment" })
-      end
-      if r.node.status == "unchanged" then
-        table.insert(hls, { row, mark_at + r.mark_len, tags_at, "Comment" })
-      end
-      if r.step and r.step == opts.current then
-        table.insert(hls, { row, 0, #line, "TrailCurrentStep" })
-      elseif r.step and opts.done and opts.done[r.step] then
-        table.insert(hls, { row, 0, #marker, "TrailAdd" })
-      end
-      item_of_row[row + 1] = { node = r.node, step = r.step }
+      table.insert(hls, { row, #indent, #line, "Comment" })
+      item_of_row[row + 1] = { fold = r.fold }
     else
-      local line = r.text == "" and "" or (marker .. r.text)
-      table.insert(lines, line)
-      if r.fold then
-        table.insert(hls, { row, 0, #line, "Comment" })
-        item_of_row[row + 1] = { fold = r.fold }
+      local n = nodes[r.id]
+      local step = step_of[r.id]
+      local shown = r.id == current and not r.again and not r.hop
+      local mark, mark_hl = "◇", "Comment"
+      if shown then
+        mark, mark_hl = "▶", "TrailCurrentStep"
+      elseif step then
+        if done[step] then
+          mark, mark_hl = "●", "TrailAddText"
+        else
+          mark, mark_hl = "○", "Comment"
+        end
       end
+      local line = head .. mark .. " "
+      table.insert(hls, { row, #indent, #head, "Comment" })
+      table.insert(hls, { row, #head, #head + #mark, mark_hl })
+      local name_at = #line
+      line = line .. n.short
+      local name_hl = shown and "TrailCurrentStep"
+        or n.status == "added" and "TrailAddText"
+        or n.status == "removed" and "TrailDeleteText"
+        or n.status == "unchanged" and "Comment"
+        or nil
+      if name_hl then
+        table.insert(hls, { row, name_at, #line, name_hl })
+      end
+      local rest = label(r):sub(#n.short + 1)
+      if rest ~= "" then
+        table.insert(hls, { row, #line, #line + #rest, "Comment" })
+        line = line .. rest
+      end
+      local count = threads(r.id)
+      if count > 0 then
+        line = line .. string.rep(" ", width - vim.fn.strdisplaywidth(r.prefix .. label(r)) + 3)
+        local text = plural(count, "thread")
+        table.insert(hls, { row, #line, #line + #text, "TrailThreadAuthor" })
+        line = line .. text
+      end
+      table.insert(lines, line)
+
+      local details = {}
+      if step then
+        table.insert(details, "step " .. step)
+      elseif n.status ~= "unchanged" then
+        table.insert(details, n.status)
+      end
+      if r.again then
+        table.insert(details, "shown above")
+      end
+      if r.hops and r.hops > 0 then
+        table.insert(details, "through " .. plural(r.hops, "function"))
+      end
+      if r.via then
+        local parts = vim.split(r.via, ".", { plain = true })
+        table.insert(details, "via " .. (parts[#parts - 1] or r.via))
+      end
+      if tests[r.id] then
+        table.insert(details, "◇ " .. plural(vim.tbl_count(tests[r.id]), "test"))
+      end
+      if n.package and n.package ~= "" then
+        table.insert(details, n.package)
+      end
+      item_of_row[row + 1] = {
+        node = n,
+        step = not r.again and not r.hop and step or nil,
+        again = r.again,
+        toggle = r.toggle,
+        details = table.concat(details, " · "),
+      }
     end
   end
   return lines, hls, item_of_row
