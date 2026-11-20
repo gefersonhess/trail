@@ -197,11 +197,12 @@ local function show_step(i, focus_tree, hunk)
   end)
 end
 
----Shows an unchanged function from the tree in the diff window, in its file.
-local function show_function(node)
+---Shows an unchanged function from the tree in the diff window, in its file,
+---at `line` or its first line.
+local function show_function(node, line)
   view.station = node.id
   render_tree(true)
-  view.ctx.show_target({ file = node.file, new = { start = node.line, len = 1 } }, true, view.diff_win, view.keys,
+  view.ctx.show_target({ file = node.file, new = { start = line or node.line, len = 1 } }, true, view.diff_win, view.keys,
     function()
       if vim.api.nvim_win_is_valid(view.tree_win) then
         vim.api.nvim_set_current_win(view.tree_win)
@@ -210,14 +211,28 @@ local function show_function(node)
 end
 
 ---Shows the change `id` of the path: its step, or its function when it is
----an unchanged entry point.
-local function show_change(id, focus_tree)
+---an unchanged entry point; at `line` of its file, or its first change.
+local function show_change(id, focus_tree, line)
   local i = step_of_node(view.path, id)
+  local node = pathmap.graph(view.path.impact).nodes[id]
   if i then
-    show_step(i, focus_tree)
+    show_step(i, focus_tree, line and { file = node.file, new = { start = line, len = 1 }, old = { start = 0, len = 0 } })
   else
-    show_function(pathmap.graph(view.path.impact).nodes[id])
+    show_function(node, line)
   end
+end
+
+---The first line where `from` calls `to`, if it calls it by name.
+local function call_line(from, to)
+  local first
+  for _, e in ipairs(view.path.impact.edges) do
+    if e.from == from and e.to == to then
+      for _, l in ipairs(e.lines or {}) do
+        first = math.min(first or l, l)
+      end
+    end
+  end
+  return first
 end
 
 ---Opens the path's map: its changes as boxes in a float.
@@ -244,9 +259,11 @@ function M.map()
   })
 end
 
----Moves to the next or previous step. Going forward follows the tree: when
----the next step is outside the branch just finished, the walk stops first at
----the row the two branches share, then goes on to it.
+---Moves to the next or previous step. Going forward follows the tree: on the
+---way from one branch to the next, the walk stops first at the row they hang
+---from, on the line calling the next one, then goes into it. A branch it
+---doesn't call by name (a type it uses) follows the one before directly,
+---unless the walk is climbing out of a deeper branch.
 function M.step(delta)
   if not valid() then
     return
@@ -271,7 +288,7 @@ function M.step(delta)
   end
   local pending = view.pending
   view.pending = nil
-  if pending and pending.at == view.station then
+  if pending and pending.path == path and pending.at == view.station then
     return show_change(pending.to, focus_tree)
   end
   local to
@@ -305,9 +322,10 @@ function M.step(delta)
       stop = order[stop].parent
     end
   end
-  if stop ~= from and order[from].parent ~= stop then
-    view.pending = { at = order[stop].id, to = order[to].id }
-    return show_change(order[stop].id, focus_tree)
+  local line = shared and call_line(order[shared].id, order[to].call)
+  if stop ~= from and (order[from].parent ~= stop or line) then
+    view.pending = { path = path, at = order[stop].id, to = order[to].id }
+    return show_change(order[stop].id, focus_tree, line)
   end
   show_change(order[to].id, focus_tree)
 end

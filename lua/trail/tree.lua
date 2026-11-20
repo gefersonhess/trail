@@ -460,8 +460,9 @@ end
 
 ---The rows a walk through the path stops at, in the order the tree shows
 ---them: each entry point and change where it first shows, with the index of
----the row it sits under.
----@return { id: string, parent: integer|nil }[]
+---the row it sits under and the function that row calls to reach it (the
+---first unchanged function on the way, or itself).
+---@return { id: string, parent: integer|nil, call: string }[]
 function M.walk(path)
   local steps = {}
   for _, id in ipairs(path.steps) do
@@ -472,7 +473,8 @@ function M.walk(path)
     if node.again or node.fold or node.quiet then
       return
     end
-    table.insert(out, { id = node.id, parent = parent })
+    local first = node.chain and node.chain[1]
+    table.insert(out, { id = node.id, parent = parent, call = first and first.id or node.id })
     local here = #out
     for _, c in ipairs(node.children) do
       visit(c, here)
