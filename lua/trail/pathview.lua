@@ -147,6 +147,34 @@ local function render_tree(keep_cursor)
   show_details()
 end
 
+---The step's first change: its first hunk, on the side the function is on,
+---from the function's first line when the hunk starts above it (a new file,
+---a changed doc comment).
+local function first_change(step)
+  local h = view.ctx.hunks_of(step)[1]
+  local node = step.node
+  if not (h and node) then
+    return h
+  end
+  local function inside(side)
+    local r, own = h[side], node[side]
+    if not own or r.len == 0 or r.start >= own.start + own.len or own.start >= r.start + r.len then
+      return nil
+    end
+    local start = math.max(r.start, own.start)
+    return { start = start, len = r.len - (start - r.start) }
+  end
+  local old = inside("old")
+  if old then
+    return vim.tbl_extend("force", h, { old = old })
+  end
+  local new = inside("new")
+  if new then
+    return vim.tbl_extend("force", h, { old = { start = h.old.start, len = 0 }, new = new })
+  end
+  return h
+end
+
 local function show_step(i, focus_tree, hunk)
   local path = view.path
   i = math.max(1, math.min(i, #path.steps))
@@ -155,6 +183,7 @@ local function show_step(i, focus_tree, hunk)
   view.ctx.on_step(path, i)
   render_tree()
   local target = path.steps[i]
+  hunk = hunk or (target.node and first_change(target))
   local shown = hunk and vim.tbl_extend("force", hunk, { at_start = true }) or target.node or target.hunk
   -- Moving to a line of the step's file keeps the step's function in focus.
   local node = target.node
@@ -215,21 +244,74 @@ function M.map()
   })
 end
 
+---Moves to the next or previous step. Going forward follows the tree: when
+---the next step is outside the branch just finished, the walk stops first at
+---the row the two branches share, then goes on to it.
 function M.step(delta)
   if not valid() then
     return
   end
-  local target = view.step + delta
-  if target < 1 or target > #view.path.steps then
+  local path = view.path
+  local function last()
     vim.notify(delta > 0 and "trail: last step of this path" or "trail: first step of this path", vim.log.levels.INFO)
-    return
   end
-  show_step(target, vim.api.nvim_get_current_win() == view.tree_win)
+  local focus_tree = vim.api.nvim_get_current_win() == view.tree_win
+  local order = delta > 0 and path.impact and tree.walk(path.impact) or {}
+  local index = {}
+  for k, r in ipairs(order) do
+    index[r.id] = index[r.id] or k
+  end
+  local from = index[view.station]
+  if not from then
+    local target = view.step + delta
+    if target < 1 or target > #path.steps then
+      return last()
+    end
+    return show_step(target, focus_tree)
+  end
+  local pending = view.pending
+  view.pending = nil
+  if pending and pending.at == view.station then
+    return show_change(pending.to, focus_tree)
+  end
+  local to
+  for k = from + 1, #order do
+    if step_of_node(path, order[k].id) then
+      to = k
+      break
+    end
+  end
+  if not to then
+    return last()
+  end
+  local function chain(k)
+    local out = {}
+    while k do
+      out[k] = true
+      k = order[k].parent
+    end
+    return out
+  end
+  local above_to = chain(to)
+  local shared = from
+  while shared and not above_to[shared] do
+    shared = order[shared].parent
+  end
+  -- With no row in common, the branch just finished is the whole tree.
+  local stop = shared
+  if not stop then
+    stop = from
+    while order[stop].parent do
+      stop = order[stop].parent
+    end
+  end
+  if stop ~= from and order[from].parent ~= stop then
+    view.pending = { at = order[stop].id, to = order[to].id }
+    return show_change(order[stop].id, focus_tree)
+  end
+  show_change(order[to].id, focus_tree)
 end
 
----Moves to the next change of the path (dir 1) or the previous one (dir -1):
----the hunks of its steps only, continuing into the next step when this one
----has none left.
 function M.change(dir)
   if not valid() then
     return

@@ -483,14 +483,23 @@ function M.show(diff, opts)
   end
 
   local view = {}
-  function view.focus(side, line)
+  ---Puts the cursor on `line`, centred, or with `near_top` a few lines below
+  ---the top so as much of a change starting there shows as fits.
+  function view.focus(side, line, near_top)
     local p = panes[1]
     if #panes == 2 and side == "new" then
       p = panes[2]
     end
     vim.api.nvim_set_current_win(p.win)
-    vim.api.nvim_win_set_cursor(p.win, { row_for(p.view, side, line), 0 })
-    vim.cmd("normal! zvzz")
+    local row = row_for(p.view, side, line)
+    vim.api.nvim_win_set_cursor(p.win, { row, 0 })
+    if near_top then
+      vim.cmd("normal! zv")
+      local context = math.min(3, math.floor(vim.api.nvim_win_get_height(p.win) / 4))
+      vim.fn.winrestview({ topline = math.max(1, row - context) })
+    else
+      vim.cmd("normal! zvzz")
+    end
     report_seen()
   end
 

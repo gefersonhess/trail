@@ -144,9 +144,19 @@ function M.back(view, file)
     return
   end
   local inside
-  for _, n in pairs(nodes) do
-    if n.file == file and n.line <= here.line and (not inside or n.line > inside.line) then
-      inside = n
+  if here.side == "old" then
+    -- A removed line has no place at head: its function is the step whose old lines hold it.
+    for _, s in ipairs(path.steps) do
+      local old = s.node and s.node.file == file and s.node.old
+      if old and here.line >= old.start and here.line < old.start + old.len then
+        inside = nodes[s.node.id]
+      end
+    end
+  else
+    for _, n in pairs(nodes) do
+      if n.file == file and n.line <= here.line and (not inside or n.line > inside.line) then
+        inside = n
+      end
     end
   end
   local up = {}

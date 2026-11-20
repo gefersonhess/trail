@@ -468,7 +468,8 @@ local function show_target(target, is_node, win, keys, after)
     state.reannotate = annotate
     annotate()
     if target.at_start then
-      view.focus(hunk_start(target))
+      local side, line = hunk_start(target)
+      view.focus(side, line, true)
     else
       local on_new = target.new and (is_node or target.new.len > 0)
       view.focus(on_new and "new" or "old", math.max((on_new and target.new or target.old).start, 1))

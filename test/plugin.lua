@@ -197,14 +197,14 @@ local function has_span(b, row, hl, from, to)
 end
 
 vim.api.nvim_feedkeys("1", "x", false)
-check(wait_diff_line("func Login(user string) bool {"), "1 enters the first path at its first step")
+check(wait_diff_line("func Login(u string) bool {"), "1 enters the first path at its first step, on its first change")
 check(graph_buf(), "the path view shows the path's tree")
 local gbuf, gwin = graph_buf()
 check(vim.api.nvim_buf_get_lines(gbuf, 0, 1, false)[1]:match("^ Login  ·  step 1 of 3  ·  3 functions$"), "the tree's header shows the step")
 check(current_step_line() == "▶ Login", "the current step is marked in the tree: " .. tostring(current_step_line()))
 
 vim.api.nvim_feedkeys("]s", "x", false)
-check(wait_diff_line("func VerifyHash(h string) bool {"), "]s moves to the next step")
+check(wait_diff_line('\treturn h != ""'), "]s moves to the next step, on its first change")
 check(current_step_line():match("VerifyHash"), "the tree follows the step")
 
 -- ]c and [c move through the path's own changes, across steps.
@@ -215,7 +215,7 @@ local function press_until(keys, pred)
   end)
 end
 vim.api.nvim_feedkeys("[s", "x", false)
-check(wait_diff_line("func Login(user string) bool {"), "back at Login for ]c")
+check(wait_diff_line("func Login(u string) bool {"), "back at Login for ]c")
 check(press_until("]c", function()
   return current_step_line():match("VerifyHash") and vim.api.nvim_get_current_line() == '\treturn h != ""'
 end), "]c goes to the next step's first change, at its first line: " .. vim.api.nvim_get_current_line())
@@ -235,11 +235,12 @@ vim.wait(300)
 check(current_step_line():match("Login") and vim.api.nvim_get_current_line() ~= "import (",
   "[c stops at the first change and skips hunks outside the path")
 vim.api.nvim_feedkeys("]s", "x", false)
-check(wait_diff_line("func VerifyHash(h string) bool {"), "]s still moves by step")
+check(wait_diff_line('\treturn h != ""'), "]s still moves by step")
 check(#panes() == 1, "unified is the default layout")
 check(vim.go.statuscolumn == "" and vim.go.winbar == "" and not vim.go.scrollbind and vim.go.foldmethod == "manual" and vim.go.number == false,
   "the diff's window options do not leak into the user's global settings")
 local uwin, ubuf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+vim.api.nvim_win_set_cursor(uwin, { row_with(ubuf, "func VerifyHash(h string) bool {"), 0 })
 local urow = vim.api.nvim_win_get_cursor(uwin)[1]
 check(vim.api.nvim_get_current_line() == "func VerifyHash(h string) bool {", "unified: cursor at VerifyHash")
 check(gutter(uwin, urow):match("^%s*10%s+12%s+$"), "unified gutter shows old and new numbers, got " .. gutter(uwin, urow))
@@ -667,7 +668,9 @@ vim.wait(10000, function()
 end)
 engine_mod.request = real_request
 vim.api.nvim_feedkeys("1", "x", false)
-check(wait_diff_line("func Login(user string) bool {"), "a path without a saved step starts at step 1")
+check(wait_diff_line("func Login(u string) bool {"), "a path without a saved step starts at step 1")
+vim.api.nvim_feedkeys("5j", "x", false)
+vim.api.nvim_exec_autocmds("CursorMoved", { buffer = 0 })
 vim.api.nvim_feedkeys("-", "x", false)
 local partial = home_line("^%S+ 1  Login .-  (%d)/3$")
 local done = partial and tonumber(partial:match("  (%d)/3$"))
@@ -724,7 +727,8 @@ vim.wait(10000, function()
   return vim.api.nvim_buf_get_name(0):match("^trail://diff/") ~= nil
 end)
 vim.api.nvim_feedkeys("[s[s[s", "x", false)
-check(wait_diff_line("func Login(user string) bool {"), "back at the Login step")
+check(wait_diff_line("func Login(u string) bool {"), "back at the Login step, on its first change")
+vim.api.nvim_win_set_cursor(0, { row_with(0, "func Login(user string) bool {"), 0 })
 local function notes_on(b, text)
   local row = row_with(b, text)
   if not row then
@@ -956,8 +960,8 @@ check(vim.wait(15000, function()
 end), "a changed type gets a path: " .. table.concat(vim.api.nvim_buf_get_lines(tbuf, 0, -1, false), "\n"))
 vim.api.nvim_feedkeys("1", "x", false)
 check(vim.wait(10000, function()
-  return vim.api.nvim_buf_get_name(0):match("^trail://diff/store/store%.go$") and vim.api.nvim_get_current_line() == "type Store struct {"
-end), "the type's step opens its diff: " .. vim.api.nvim_buf_get_name(0))
+  return vim.api.nvim_buf_get_name(0):match("^trail://diff/store/store%.go$") and vim.api.nvim_get_current_line() == "\tname string"
+end), "the type's step opens its diff at its first change: " .. vim.api.nvim_buf_get_name(0) .. " " .. vim.api.nvim_get_current_line())
 local type_tree = table.concat(vim.api.nvim_buf_get_lines((graph_buf()), 0, -1, false), "\n")
 check(type_tree:match("\n◇ Run\n"), "the path starts at the unchanged code using the type: " .. type_tree)
 check(type_tree:match("\n└─▶ Store$"), "and reaches the type: " .. type_tree)
@@ -1124,7 +1128,7 @@ do
   end
   vim.api.nvim_feedkeys(vim.keycode("<C-p>"), "x", false)
   vim.ui.select = real_select
-  check(offered and offered[1] == "● Work   path 1" and offered[2] == "○ Lone   path 2",
+  check(offered and offered[1] == "● Work   path 1" and offered[2]:match(" Lone   path 2$"),
     "<C-p> lists every changed function and its paths: " .. vim.inspect(offered))
   check(vim.wait(10000, function()
     return diff_top():match("func Lone%(%) int {") ~= nil
@@ -1252,7 +1256,8 @@ do
   check(#l >= b + 7 and l[b + 2] == "  │ ├─○ C1" and l[b + 7] == "  │ └─○ C6" and not row("changes$")
     and vim.api.nvim_win_get_cursor(win)[1] == b + 2,
     "<CR> opens the fold where the cursor is: " .. table.concat(l, "\n"))
-  for _, want in ipairs({ "A", "C1", "C2", "C3", "C4", "C5", "C6", "E", "F", "B" }) do
+  -- Done with a branch, ]s goes back up to the row it hangs from before the next branch.
+  for _, want in ipairs({ "A", "C1", "C2", "C3", "C4", "C5", "C6", "Entry", "E", "F", "Entry", "B" }) do
     vim.api.nvim_feedkeys("]s", "x", false)
     check(vim.wait(10000, function()
       return row("▶%s+" .. want .. "$") == vim.api.nvim_win_get_cursor(win)[1]
@@ -1926,8 +1931,8 @@ vim.api.nvim_set_current_win(win_of("^trail://diff/"))
 vim.api.nvim_win_set_cursor(0, { diff_text_row("\treturn VerifyHash(user)"), 0 })
 vim.api.nvim_feedkeys("]]", "x", false)
 check(vim.wait(5000, function()
-  return step_now() == 2 and cursor_text() == "func VerifyHash(h string) bool {"
-end), "]] on a call follows it into the step it calls: step " .. tostring(step_now()) .. ", " .. cursor_text())
+  return step_now() == 2 and cursor_text() == '\treturn h != ""'
+end), "]] on a call follows it into the step it calls, at its first change: step " .. tostring(step_now()) .. ", " .. cursor_text())
 check(hint_on("func VerifyHash(h string) bool {"):match("← called by Login line 9"),
   "the function says where it is called from: " .. hint_on("func VerifyHash(h string) bool {"))
 local function folded(text)
@@ -1967,7 +1972,7 @@ check(vim.wait(5000, function()
 end), "and again, further back: " .. cursor_text())
 vim.api.nvim_feedkeys("]s", "x", false)
 vim.wait(5000, function()
-  return step_now() == 2 and cursor_text() == "func VerifyHash(h string) bool {"
+  return step_now() == 2 and cursor_text() == '\treturn h != ""'
 end)
 vim.api.nvim_feedkeys("[[", "x", false)
 check(vim.wait(5000, function()
