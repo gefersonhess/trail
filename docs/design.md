@@ -29,7 +29,7 @@ Two levels, like a file explorer.
 - `gm` opens the map: the same changes as boxes in a floating window, callers above what they call, the function shown and its neighbours standing out and the rest dimmed. `<CR>` on a box shows that function.
 - Test files and hunks in no path show as a list.
 - A scrollable diff below, unified by default and side by side with `t`, with unchanged stretches folded.
-- `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen. `]s` follows the tree, stopping at a branch's parent when the branch is done before going on. A step opens on its function's first change.
+- `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen. `]s` follows the tree: between two branches it stops at the row they hang from, on the line calling the next one, before going into it. A step opens on its function's first change.
 - `<CR>` on a node in the graph jumps the diff to it.
 - `K` shows a function's code in a popup. `gd` opens it in a separate Neovim in a floating terminal, with the user's own config and LSP.
 

@@ -86,7 +86,7 @@ Inside a path (tree on top, diff below)
 | `K` in the tree | Show the row's code in a popup |
 | `gm` | Map of the path's changes as boxes, in a float |
 | `<C-p>` | Find a changed function by name and open it |
-| `]s` `[s` (also `n` `p` in the tree) | Next / previous step, on its first change. `]s` follows the tree: after the last change of a branch it goes back up to the row the branch hangs from, then on to the next branch |
+| `]s` `[s` (also `n` `p` in the tree) | Next / previous step, on its first change. `]s` follows the tree: between two branches it goes back to the function they hang from, on the line calling the next one, then into it |
 | `]c` `[c` | Next / previous change of this path, across steps |
 | `]h` `[h` | Next / previous hunk in the file shown |
 | `]t` `[t` | Next / previous review thread of this path |

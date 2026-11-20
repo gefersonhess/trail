@@ -1187,7 +1187,7 @@ do
     local l = lines()
     return l[2] == "▶ Entry" and l[3] == "├─○ First" and l[4] == "└─○ Second" and l[6] == "▸ 1 more entry point reaches this path without other changes"
   end), "every change has a row, an entry point reaching only them folded below: " .. table.concat(lines(), "\n"))
-  for _, want in ipairs({ { "]s", 3, "First" }, { "]s", 4, "Second" }, { "[s", 3, "First" } }) do
+  for _, want in ipairs({ { "]s", 3, "First" }, { "]s", 2, "Entry" }, { "]s", 4, "Second" }, { "[s", 3, "First" } }) do
     vim.api.nvim_feedkeys(want[1], "x", false)
     check(vim.wait(10000, function()
       return lines()[want[2]]:match("▶ " .. want[3]) ~= nil and vim.api.nvim_win_get_cursor(vim.fn.bufwinid(tree_buf))[1] == want[2]
@@ -1256,12 +1256,24 @@ do
   check(#l >= b + 7 and l[b + 2] == "  │ ├─○ C1" and l[b + 7] == "  │ └─○ C6" and not row("changes$")
     and vim.api.nvim_win_get_cursor(win)[1] == b + 2,
     "<CR> opens the fold where the cursor is: " .. table.concat(l, "\n"))
-  -- Done with a branch, ]s goes back up to the row it hangs from before the next branch.
-  for _, want in ipairs({ "A", "C1", "C2", "C3", "C4", "C5", "C6", "Entry", "E", "F", "Entry", "B" }) do
+  -- Between two branches ]s goes back up to the row they hang from, on the line calling the next one.
+  local function diff_line()
+    local w = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+      return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match("^trail://diff/")
+    end)
+    return w and vim.api.nvim_win_call(w, vim.api.nvim_get_current_line) or ""
+  end
+  local walk = { { "A" }, { "C1" } }
+  for i = 2, 6 do
+    vim.list_extend(walk, { { "A", "\tC" .. i .. "()" }, { "C" .. i } })
+  end
+  vim.list_extend(walk, { { "Entry", "\tE()" }, { "E" }, { "F" }, { "Entry", "\tB()" }, { "B" } })
+  for _, want in ipairs(walk) do
     vim.api.nvim_feedkeys("]s", "x", false)
     check(vim.wait(10000, function()
-      return row("▶%s+" .. want .. "$") == vim.api.nvim_win_get_cursor(win)[1]
-    end), "]s goes to " .. want .. " where it first shows, never to a repeat: " .. table.concat(lines(), "\n"))
+      return row("▶%s+" .. want[1] .. "$") == vim.api.nvim_win_get_cursor(win)[1] and (not want[2] or diff_line() == want[2])
+    end), "]s goes to " .. want[1] .. (want[2] and (" on " .. want[2]) or "") .. ", never to a repeat: " .. diff_line() .. "\n"
+      .. table.concat(lines(), "\n"))
   end
   vim.api.nvim_feedkeys("mr", "x", false)
   check(vim.wait(5000, function()
