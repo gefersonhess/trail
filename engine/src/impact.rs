@@ -687,13 +687,13 @@ struct Changed {
 struct Walked {
     reaches: Vec<(Key, Reach)>,
     entries: HashSet<Key>,
-    /// `lsp`, or `name_match` when no language server answered.
+    /// `lsp`, or `name_match` when the language server is turned off.
     source: &'static str,
     sources: Sources,
 }
 
 /// Walks every changed function of one language, with its language server
-/// when `lsp` is set and one answers, else by name.
+/// unless `lsp` is off, then by name. A server that fails fails the walk.
 fn walk_language(
     repo: &Path,
     head_commit: &str,
@@ -826,12 +826,10 @@ fn walk_language(
             run(&mut server, "lsp")
         })
     });
-    served.or_else(|e| {
-        log(&format!(
-            "impact: {language} language server unavailable, matching by name: {e}"
-        ));
-        let mut names = Names::new(language, deadline);
-        run(&mut names, "name_match")
+    served.map_err(|e| {
+        let message = format!("{language} language server failed: {e}");
+        log(&format!("impact: {message}"));
+        message
     })
 }
 
