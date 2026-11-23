@@ -2395,6 +2395,37 @@ fn a_language_server_that_never_finds_anything_fails_the_impact_and_says_so() {
 }
 
 #[test]
+fn waiting_for_the_language_server_to_load_does_not_count_against_the_walk_time_limit() {
+    let repo = impact_repo();
+    let tools = Repo::new();
+    let server = tools.path().join("empty-lsp");
+    std::fs::write(&server, EMPTY_LSP).unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&server)
+        .status()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let response = impact_response(
+        &repo,
+        true,
+        &[
+            ("TRAIL_GOPLS", server.to_str().unwrap()),
+            ("TRAIL_LSP_TIMEOUT", "3"),
+            ("TRAIL_IMPACT_TIMEOUT", "1"),
+        ],
+    );
+
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(3),
+        "waited {:?} for the language server, not its own 3 s",
+        started.elapsed()
+    );
+    assert!(response["error"]["message"].is_string(), "{response}");
+}
+
+#[test]
 fn a_missing_language_server_fails_the_impact_and_says_so() {
     let repo = impact_repo();
 

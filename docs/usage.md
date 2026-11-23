@@ -106,6 +106,6 @@ Send screen
 | `vim.g.trail_lsp` | `true` | `false` to skip `gopls` and `rust-analyzer` and match calls by name (marked `?`) |
 | `vim.g.trail_engine` | | Path to the engine binary; otherwise `engine/target/release/trail`, then `debug`, then `trail` on your `PATH` |
 
-Environment: `TRAIL_GOPLS`, `TRAIL_RUST_ANALYZER`, `TRAIL_DIFFT` and `TRAIL_GH` override the programs used; `TRAIL_LSP_TIMEOUT` (60 s, after which a language server that found nothing fails the impact), `TRAIL_IMPACT_LIMIT` (2000 functions) and `TRAIL_IMPACT_TIMEOUT` (120 s) cap the analysis.
+Environment: `TRAIL_GOPLS`, `TRAIL_RUST_ANALYZER`, `TRAIL_DIFFT` and `TRAIL_GH` override the programs used; `TRAIL_LSP_TIMEOUT` (300 s, how long gopls or rust-analyzer may take to load before the impact fails), `TRAIL_IMPACT_LIMIT` (2000 functions) and `TRAIL_IMPACT_TIMEOUT` (120 s, counted once the language server has loaded) cap the analysis.
 
 Highlight groups: `TrailAdd`, `TrailDelete` (markers), `TrailAddText`, `TrailDeleteText` (changed tokens), `TrailContext` (unchanged text), `TrailReviewed` (the gutter mark on reviewed hunks), `TrailFiller`, `TrailBlocking`, `TrailQuestion`, `TrailNit` and their `…Block` backgrounds for saved comments.

@@ -709,7 +709,10 @@ fn walk_language(
         .map(|(k, _)| k.clone())
         .collect();
     roots.sort();
-    let run = |calls: &mut dyn Calls, source: &'static str| -> Result<Walked, String> {
+    let run = |calls: &mut dyn Calls,
+               source: &'static str,
+               deadline: Instant|
+     -> Result<Walked, String> {
         let mut sources = Sources {
             repo: repo.to_path_buf(),
             commit: head_commit.to_string(),
@@ -782,7 +785,7 @@ fn walk_language(
     if !lsp {
         log(&format!("impact: {language}: language server turned off"));
         let mut names = Names::new(language, deadline);
-        return run(&mut names, "name_match");
+        return run(&mut names, "name_match", deadline);
     }
     let served = worktree::checkout(repo, head_commit).and_then(|checkout| {
         lsp::with_client(language, &checkout.path, head_commit, |client| {
@@ -790,13 +793,15 @@ fn walk_language(
                 client,
                 root: checkout.path.clone(),
                 items: HashMap::new(),
-                deadline,
+                deadline: Instant::now() + Duration::from_secs(setting("TRAIL_LSP_TIMEOUT", 300)),
             };
-            // Wait for the workspace to load only until the first function is found.
+            // Wait for the workspace to load only until the first function is found,
+            // and start the walk's time limit after it.
             log(&format!(
                 "impact: {language}: waiting for the language server to load the workspace"
             ));
-            let loading = Instant::now() + Duration::from_secs(setting("TRAIL_LSP_TIMEOUT", 60));
+            let waiting = Instant::now();
+            let loading = server.deadline;
             let mut loaded = false;
             // A changed type or constant is walked from the functions using it.
             let starts: Vec<(Key, usize)> = roots
@@ -807,11 +812,7 @@ fn walk_language(
                 })
                 .collect();
             for (start, character) in &starts {
-                let until = if loaded {
-                    Instant::now()
-                } else {
-                    loading.min(deadline)
-                };
+                let until = if loaded { Instant::now() } else { loading };
                 match server.prepare(start, *character, until) {
                     Ok(found) => loaded |= found,
                     // A file the build leaves out has no package for the server to place it in.
@@ -823,7 +824,9 @@ fn walk_language(
                     "{language} language server found none of the changed functions"
                 ));
             }
-            run(&mut server, "lsp")
+            let deadline = deadline + waiting.elapsed();
+            server.deadline = deadline;
+            run(&mut server, "lsp", deadline)
         })
     });
     served.map_err(|e| {
