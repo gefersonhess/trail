@@ -116,15 +116,9 @@ pub fn layout(files: &[File], hunks: &[Hunk], nodes: &[Node], edges: &[Edge]) ->
         }
         map
     };
-    let mut covered: HashSet<&str> = HashSet::new();
-    let mut tests: Vec<TestFile> = Vec::new();
-    for file in files.iter().filter(|f| f.is_test) {
-        let test_nodes: Vec<&Node> = nodes
-            .iter()
-            .filter(|n| n.is_test && n.file == file.path)
-            .collect();
+    let reach = |tests: &[&Node]| -> Vec<&str> {
         let mut reached = Vec::new();
-        let mut stack: Vec<&str> = test_nodes.iter().map(|n| n.id.as_str()).collect();
+        let mut stack: Vec<&str> = tests.iter().map(|n| n.id.as_str()).collect();
         let mut seen: HashSet<&str> = HashSet::new();
         while let Some(id) = stack.pop() {
             for to in live_callees.get(id).into_iter().flatten() {
@@ -136,8 +130,18 @@ pub fn layout(files: &[File], hunks: &[Hunk], nodes: &[Node], edges: &[Edge]) ->
                 }
             }
         }
-        covered.extend(reached.iter().copied());
         reached.sort_by_key(|id| order[id]);
+        reached
+    };
+    let mut covered: HashSet<&str> = HashSet::new();
+    let mut tests: Vec<TestFile> = Vec::new();
+    for file in files.iter().filter(|f| f.is_test) {
+        let test_nodes: Vec<&Node> = nodes
+            .iter()
+            .filter(|n| n.is_test && n.file == file.path)
+            .collect();
+        let reached = reach(&test_nodes);
+        covered.extend(reached.iter().copied());
         tests.push(TestFile {
             file: file.path.clone(),
             nodes: test_nodes.iter().map(|n| n.id.clone()).collect(),
@@ -149,18 +153,27 @@ pub fn layout(files: &[File], hunks: &[Hunk], nodes: &[Node], edges: &[Edge]) ->
             covers: reached.iter().map(|id| id.to_string()).collect(),
         });
     }
-    // Test functions in non-test files (Rust `mod tests`) join their file's entry.
+    // Test functions in non-test files (Rust `#[test]`, `#[cfg(test)]`) join their file's entry.
     for node in nodes.iter().filter(|n| n.is_test) {
-        if !tests.iter().any(|t| t.nodes.contains(&node.id)) {
-            match tests.iter_mut().find(|t| t.file == node.file) {
-                Some(t) => t.nodes.push(node.id.clone()),
-                None => tests.push(TestFile {
-                    file: node.file.clone(),
-                    nodes: vec![node.id.clone()],
-                    hunks: node.hunks.clone(),
-                    covers: Vec::new(),
-                }),
+        if tests.iter().any(|t| t.nodes.contains(&node.id)) {
+            continue;
+        }
+        let reached = reach(&[node]);
+        covered.extend(reached.iter().copied());
+        let reached = reached.into_iter().map(str::to_string);
+        match tests.iter_mut().find(|t| t.file == node.file) {
+            Some(t) => {
+                t.nodes.push(node.id.clone());
+                t.covers.extend(reached);
+                t.covers.sort_by_key(|id| order[id.as_str()]);
+                t.covers.dedup();
             }
+            None => tests.push(TestFile {
+                file: node.file.clone(),
+                nodes: vec![node.id.clone()],
+                hunks: node.hunks.clone(),
+                covers: reached.collect(),
+            }),
         }
     }
 

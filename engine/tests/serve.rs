@@ -1271,6 +1271,92 @@ fn paths_share_callees_between_entry_points_and_survive_cycles() {
     assert_eq!(ids(&tests[0]["nodes"]), ["rust:tests::runs"]);
 }
 
+#[test]
+fn rust_tests_are_found_by_their_attributes_and_file_names() {
+    let lib = "pub fn run() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod unit {\n    fn setup() {}\n\n    #[test]\n    fn runs() {\n        setup();\n        super::run();\n    }\n}\n\n#[test]\nfn top_level() {\n    run();\n}\n\n#[tokio::test]\nasync fn async_runs() {\n    run();\n}\n";
+    let caller = "fn checks() {\n    crate::run();\n}\n";
+    let changed = |s: &str| {
+        s.replace("    1\n", "    2\n")
+            .replace("fn setup() {}", "fn setup() {\n        let _ = 1;\n    }")
+            .replace("run();\n", "run();\n    let _ = 1;\n")
+    };
+    let (repo, _) = branch_with(
+        &[
+            ("src/lib.rs", lib),
+            ("src/hash_test.rs", caller),
+            ("src/store/tests.rs", caller),
+        ],
+        &[
+            ("src/lib.rs", &changed(lib)),
+            ("src/hash_test.rs", &changed(caller)),
+            ("src/store/tests.rs", &changed(caller)),
+        ],
+        &[],
+    );
+
+    let result = &open(&repo, "main", "feature")["result"];
+    assert_eq!(file(result, "src/lib.rs")["is_test"], false);
+    assert_eq!(file(result, "src/hash_test.rs")["is_test"], true);
+    assert_eq!(file(result, "src/store/tests.rs")["is_test"], true);
+    let tests: Vec<String> = result["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["is_test"] == true)
+        .map(|n| n["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        sorted(tests),
+        [
+            "rust:async_runs",
+            "rust:hash_test::checks",
+            "rust:store::tests::checks",
+            "rust:top_level",
+            "rust:unit::runs",
+            "rust:unit::setup",
+        ],
+        "{result}"
+    );
+    assert_eq!(ids(&result["paths"][0]["entries"]), ["rust:run"]);
+    assert_eq!(result["paths"].as_array().unwrap().len(), 1);
+    let inline = result["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["file"] == "src/lib.rs")
+        .unwrap();
+    assert_eq!(inline["covers"], json!(["rust:run"]));
+    assert_eq!(result["uncovered"], json!([]));
+
+    let impact = impact(
+        &repo,
+        &[("TRAIL_RUST_ANALYZER", "/nonexistent/rust-analyzer")],
+    );
+    let nodes = impact["paths"][0]["nodes"].as_array().unwrap();
+    let flags: Vec<(&str, bool, bool)> = nodes
+        .iter()
+        .map(|n| {
+            (
+                n["short"].as_str().unwrap(),
+                n["entry"] == true,
+                n["is_test"] == true,
+            )
+        })
+        .collect();
+    assert_eq!(
+        sorted(flags),
+        [
+            ("async_runs", false, true),
+            ("checks", false, true),
+            ("checks", false, true),
+            ("run", true, false),
+            ("runs", false, true),
+            ("top_level", false, true),
+        ],
+        "{impact}"
+    );
+}
+
 /// A fake `gh` that answers `pr view` for pull request 7 of the bare
 /// repository at `remote`, whose head is `head`.
 fn fake_gh(dir: &Path, remote: &Path, head: &str) -> PathBuf {
