@@ -17,7 +17,7 @@ Two levels, like a file explorer.
 
 ### Paths screen (home)
 
-- A list of paths, one folded line each: its name, done/total and threads. `za` unfolds a path into its tree (below); the path last reviewed starts unfolded, with `▶` where the review was, and `r` resumes there. `gm` opens its map.
+- A list of paths, one folded line each: its name, done/total and threads. `za` unfolds a path into its tree (below); the path last reviewed starts unfolded, with `▶` where the review was, and `r` resumes there. `gm` opens the map.
 - "No test reaches": the changes no test calls, even through other code.
 - The changed test files, with the functions they cover.
 - A "Not in any path" section. Every changed hunk lands in a path, in Tests, or here.
@@ -26,7 +26,8 @@ Two levels, like a file explorer.
 ### Inside a path
 
 - The path's tree on top (or on the left): one tree per entry point, each change under the change it is reached from, in the order `]s` walks them. Each row has a mark (`▶` shown now, `●` reviewed, `○` not yet, `◇` unchanged), the name coloured by the kind of change, and its thread count on the right. Unchanged functions between two changes are drawn in the connector (`├┄● Store.Save  ┄2`); `za` opens them into rows, `a` opens all of them. A change reached again shows again under each caller, with the changes below it (more than 5 fold into `▸ N changes`); those rows are never steps. A branch whose changes are all reviewed folds to one row (`✓ 6 changes`); `za` opens it, `zR` opens everything and `c` folds back. The cursor row shows its step, interface, tests and package at its end. `<CR>` shows the row's function, and `]s`/`[s` move the cursor with the step. At most a third of the screen, scrolled to the current row.
-- `gm` opens the map: the same changes as boxes in a floating window, callers above what they call, the function shown and its neighbours standing out and the rest dimmed. `<CR>` on a box shows that function.
+- The diff's winbar shows where the function shown sits: the route from an entry point down to it (`Handler › Service.Create › ▶Store.Save`), unchanged functions on the way included, and `+N callers` when other functions of the path call it too. While its first line is scrolled off, that line stays pinned at the top of the diff.
+- `gm` opens the map: a floating window with the review's packages as boxes, callers above what they call, and every path as a numbered route (①, ②) through the packages it reaches. Only the selected path is in colour, the function shown is marked `▶`, and a call to a package already drawn elsewhere is listed in its caller's box (`→ store ②`). `n`/`p` select another path; `<CR>` on a box opens the selected path at its first change in that package.
 - Test files and hunks in no path show as a list.
 - A scrollable diff below, unified by default and side by side with `t`, with unchanged stretches folded.
 - `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen. `]s` follows the tree: between two branches it stops at the row they hang from, on the line calling the next one, before going into it. A step opens on its function's first change.

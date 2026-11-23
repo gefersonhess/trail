@@ -488,4 +488,53 @@ function M.walk(path)
   return out
 end
 
+---The route from an entry point down to where `id` first shows in the
+---trees, unchanged functions on the way included, and how many other
+---functions of the path call `id`.
+---@return string[] ids, integer others
+function M.chain(path, id)
+  local steps = {}
+  for _, s in ipairs(path.steps) do
+    steps[s] = true
+  end
+  local route
+  local function visit(node, above)
+    if route or node.fold or node.quiet then
+      return
+    end
+    local here = vim.list_extend({}, above)
+    for _, c in ipairs(node.chain or {}) do
+      table.insert(here, c.id)
+      if c.id == id then
+        route = here
+        return
+      end
+    end
+    table.insert(here, node.id)
+    if node.id == id then
+      route = here
+      return
+    end
+    for _, c in ipairs(node.children) do
+      visit(c, here)
+    end
+  end
+  for _, root in ipairs(build(path, function(n)
+    return steps[n] ~= nil
+  end, { ["*"] = true })) do
+    visit(root, {})
+  end
+  route = route or { id }
+  local tests, callers = {}, {}
+  for _, n in ipairs(path.nodes) do
+    tests[n.id] = n.is_test
+  end
+  for _, e in ipairs(path.edges) do
+    if e.to == id and e.from ~= route[#route - 1] and e.from ~= id and not tests[e.from] then
+      callers[e.from] = true
+    end
+  end
+  return route, vim.tbl_count(callers)
+end
+
 return M

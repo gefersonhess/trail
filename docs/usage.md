@@ -6,7 +6,7 @@ Everything beyond the quick start in the [README](../README.md).
 
 `:Trail` alone lists the repository's open pull requests, those asking for your review first, and opens the one you pick (through `vim.ui.select`, so your picker plugin if you have one). `#123`, or the pull request's URL, reviews a GitHub pull request: `gh` finds its base and head, both are fetched, and the review runs locally like a branch. The pull request's review threads show as one line under their lines, `<CR>` opens one in a popup, and `T` lists them all, outdated ones included. `P` on the send screen submits it back as one GitHub review: an overall comment and a verdict (comment, approve, request changes, or draft for a pending review) written in a box, plus every comment not sent before, inline where GitHub's diff has the line and listed in the overall comment otherwise.
 
-The review opens in its own tab, on the overview: the pull request's title, author and description (folded), a progress bar over every hunk, what needs your attention (unresolved threads, your blocking comments, changes no test reaches), and the paths, each one folded line with its progress and threads: `za` unfolds a path into its tree, each change under the change it is reached from, `●` reviewed and `○` not yet, and `gm` draws it as a map of boxes. The changed test files, hunks in no path and hidden files are folded below; `<CR>` opens any folded line. Working out the paths runs in the background and can take a minute on a big change.
+The review opens in its own tab, on the overview: the pull request's title, author and description (folded), a progress bar over every hunk, what needs your attention (unresolved threads, your blocking comments, changes no test reaches), and the paths, each one folded line with its progress and threads: `za` unfolds a path into its tree, each change under the change it is reached from, `●` reviewed and `○` not yet, and `gm` draws the map of every path through the packages they reach. The changed test files, hunks in no path and hidden files are folded below; `<CR>` opens any folded line. Working out the paths runs in the background and can take a minute on a big change.
 
 Progress is per function: a hunk is seen once its last line has been on screen, or when you mark it with `mh`, and a function is done when all its hunks are seen, in every path that has it. Reviewed hunks show a `▎` between the gutter and the code. Review state (seen hunks, positions, comments, verdict) lives in `.git/trail/<review>.json` and survives new commits, because hunk ids hash their content and comments find their line again by its text.
 
@@ -16,7 +16,7 @@ Press `?` anywhere for the keys that work there.
 
 ## The trail app
 
-`trail` also runs on its own, as Neovim with trail's own config: the path's tree on the left, the diff in the middle, threads and the comment box in a pane on the right (side by side moves the tree to the top and the pane to the bottom), the screens in the tabline and the keys in the status line. Resize the tree or the pane and it keeps that size, separately on the left and on top, at the right and at the bottom. Comments and threads don't sit between the code lines there: each shows as a mark in the gutter and a hint at the end of its line, and the pane shows the line's thread with your unsent comments and replies under it. A reply is written now and sent later. Everything you add is selected for sending (☑): `s` in the pane takes a comment out or puts it back, `e` and `d` edit and delete it, and `S` sends the selected ones as one review, replies going to their threads. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
+`trail` also runs on its own, as Neovim with trail's own config: the path's tree on the left, the diff in the middle, threads and the comment box in a pane on the right (side by side hides the tree, leaving the call chain in the diff's winbar, and moves the pane to the bottom), the screens in the tabline and the keys in the status line. Resize the tree or the pane and it keeps that size, the pane separately at the right and at the bottom. Comments and threads don't sit between the code lines there: each shows as a mark in the gutter and a hint at the end of its line, and the pane shows the line's thread with your unsent comments and replies under it. A reply is written now and sent later. Everything you add is selected for sending (☑): `s` in the pane takes a comment out or puts it back, `e` and `d` edit and delete it, and `S` sends the selected ones as one review, replies going to their threads. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
 
 ```sh
 trail                     # pick an open pull request
@@ -34,7 +34,7 @@ Paths screen
 | --- | --- |
 | `<CR>`, `1`–`9` | Enter a path, or on a row of its tree, enter it at that change |
 | `za` | Unfold a path into its tree, or fold it |
-| `gm` | Map of the path under the cursor |
+| `gm` | Map of every path through its packages, the one under the cursor in colour |
 | `r` | Resume the path last reviewed, where it was |
 | `<C-p>` | Find a changed function by name and open it |
 | `mr` | Mark the path as reviewed, or unmark it |
@@ -53,7 +53,7 @@ Inside a path (tree on top, diff below)
 | `zR` / `c` in the tree | Open everything / fold back to the changes |
 | `a` in the tree | Show every function between the changes |
 | `K` in the tree | Show the row's code in a popup |
-| `gm` | Map of the path's changes as boxes, in a float |
+| `gm` | Map of every path through its packages, this one in colour and the function shown marked `▶`; `n`/`p` colour another path, `<CR>` on a box opens the coloured path at its change there |
 | `<C-p>` | Find a changed function by name and open it |
 | `]s` `[s` (also `n` `p` in the tree) | Next / previous step, on its first change. `]s` follows the tree: between two branches it goes back to the function they hang from, on the line calling the next one, then into it |
 | `]c` `[c` | Next / previous change of this path, across steps |

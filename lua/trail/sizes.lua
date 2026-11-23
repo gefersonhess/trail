@@ -32,6 +32,12 @@ function M.apply(win, place, dim, default)
   applied[win] = { place = place, dim = dim, value = size(win, dim) }
 end
 
+---Stops watching `win`'s size, for when trail hides it: its hidden size is
+---not one the user gave it.
+function M.forget(win)
+  applied[win] = nil
+end
+
 local screen = vim.o.columns .. "x" .. vim.o.lines
 
 vim.api.nvim_create_autocmd("WinResized", {
