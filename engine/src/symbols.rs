@@ -11,6 +11,9 @@ pub struct Symbol {
     /// Names of types and values a function mentions, for linking it to
     /// changed types and constants.
     pub refs: Vec<String>,
+    /// Marked by attributes as test code, like a Rust `#[test]` function or
+    /// anything in a `#[cfg(test)]` module. Test files are told by their path.
+    pub is_test: bool,
 }
 
 #[derive(Clone)]
@@ -65,6 +68,7 @@ pub fn extract(language: &str, path: &str, source: &str) -> Vec<Symbol> {
             src,
             &mut rust_module(path),
             false,
+            false,
             &mut out,
         );
     }
@@ -103,6 +107,7 @@ fn go(root: Node, path: &str, src: &[u8], out: &mut Vec<Symbol>) {
                         name,
                         format!("{package}.{}", text(name, src)),
                         kind,
+                        false,
                     );
                 }
             }
@@ -117,11 +122,17 @@ fn go(root: Node, path: &str, src: &[u8], out: &mut Vec<Symbol>) {
                 node,
                 format!("{package}.init@{file}"),
                 Kind::Function,
+                false,
                 src,
             ),
-            "function_declaration" => {
-                push(out, node, format!("{package}.{name}"), Kind::Function, src)
-            }
+            "function_declaration" => push(
+                out,
+                node,
+                format!("{package}.{name}"),
+                Kind::Function,
+                false,
+                src,
+            ),
             "method_declaration" => {
                 let receiver = node
                     .child_by_field_name("receiver")
@@ -133,6 +144,7 @@ fn go(root: Node, path: &str, src: &[u8], out: &mut Vec<Symbol>) {
                     node,
                     format!("{package}.{receiver}.{name}"),
                     Kind::Method,
+                    false,
                     src,
                 );
             }
@@ -141,9 +153,28 @@ fn go(root: Node, path: &str, src: &[u8], out: &mut Vec<Symbol>) {
     }
 }
 
-fn rust(node: Node, src: &[u8], path: &mut Vec<String>, in_impl: bool, out: &mut Vec<Symbol>) {
+fn rust(
+    node: Node,
+    src: &[u8],
+    path: &mut Vec<String>,
+    in_impl: bool,
+    in_test: bool,
+    out: &mut Vec<Symbol>,
+) {
     let mut cursor = node.walk();
+    let mut test_attribute = false;
     for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "attribute_item" => {
+                test_attribute |= child
+                    .named_child(0)
+                    .is_some_and(|a| is_test_attribute(text(a, src)));
+                continue;
+            }
+            "line_comment" | "block_comment" => continue,
+            _ => {}
+        }
+        let is_test = in_test || std::mem::take(&mut test_attribute);
         let scope = match child.kind() {
             "function_item" => {
                 if let Some(name) = child.child_by_field_name("name") {
@@ -154,7 +185,7 @@ fn rust(node: Node, src: &[u8], path: &mut Vec<String>, in_impl: bool, out: &mut
                     } else {
                         Kind::Function
                     };
-                    push(out, child, full.join("::"), kind, src);
+                    push(out, child, full.join("::"), kind, is_test, src);
                 }
                 continue;
             }
@@ -168,7 +199,7 @@ fn rust(node: Node, src: &[u8], path: &mut Vec<String>, in_impl: bool, out: &mut
                     } else {
                         Kind::Type
                     };
-                    push_decl(out, child, name, full.join("::"), kind);
+                    push_decl(out, child, name, full.join("::"), kind, is_test);
                 }
                 continue;
             }
@@ -179,10 +210,27 @@ fn rust(node: Node, src: &[u8], path: &mut Vec<String>, in_impl: bool, out: &mut
         let (Some(scope), Some(body)) = (scope, child.child_by_field_name("body")) else {
             continue;
         };
-        path.push(text(scope, src).to_string());
-        rust(body, src, path, child.kind() != "mod_item", out);
+        let name = text(scope, src);
+        let is_test = is_test || (child.kind() == "mod_item" && name == "tests");
+        path.push(name.to_string());
+        rust(body, src, path, child.kind() != "mod_item", is_test, out);
         path.pop();
     }
+}
+
+/// `#[test]`, `#[tokio::test]`, `#[rstest]`, `#[test_case(..)]` and
+/// `#[cfg(test)]`, given the attribute's text inside `#[...]`.
+fn is_test_attribute(attribute: &str) -> bool {
+    let (name, arguments) = attribute.split_once('(').unwrap_or((attribute, ""));
+    let name = name.trim();
+    if name == "cfg" {
+        let words: Vec<&str> = arguments
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .collect();
+        return words.contains(&"test") && !words.contains(&"not");
+    }
+    let last = name.rsplit("::").next().unwrap_or(name);
+    matches!(last, "test" | "rstest" | "test_case")
 }
 
 fn base_type(node: Node) -> Node {
@@ -207,7 +255,7 @@ fn rust_module(path: &str) -> Vec<String> {
     segments
 }
 
-fn push(out: &mut Vec<Symbol>, node: Node, name: String, kind: Kind, src: &[u8]) {
+fn push(out: &mut Vec<Symbol>, node: Node, name: String, kind: Kind, is_test: bool, src: &[u8]) {
     let mut calls = Vec::new();
     collect_calls(node, src, &mut calls);
     let name_node = node.child_by_field_name("name").unwrap_or(node);
@@ -223,10 +271,18 @@ fn push(out: &mut Vec<Symbol>, node: Node, name: String, kind: Kind, src: &[u8])
         name_at: (at.row as u32, column),
         calls,
         refs: refs(node, src),
+        is_test,
     });
 }
 
-fn push_decl(out: &mut Vec<Symbol>, node: Node, name: Node, full: String, kind: Kind) {
+fn push_decl(
+    out: &mut Vec<Symbol>,
+    node: Node,
+    name: Node,
+    full: String,
+    kind: Kind,
+    is_test: bool,
+) {
     let at = name.start_position();
     out.push(Symbol {
         name: full,
@@ -236,6 +292,7 @@ fn push_decl(out: &mut Vec<Symbol>, node: Node, name: Node, full: String, kind: 
         name_at: (at.row as u32, at.column),
         calls: Vec::new(),
         refs: Vec::new(),
+        is_test,
     });
 }
 

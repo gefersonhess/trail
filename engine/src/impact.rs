@@ -127,6 +127,11 @@ impl Sources {
             .find(|s| is_function(s) && s.name_at.0 + 1 == key.1)
     }
 
+    /// In a test file, or a test function by its attributes.
+    fn is_test(&mut self, key: &Key) -> bool {
+        diff::is_test(&key.0) || self.function(key).is_some_and(|s| s.is_test)
+    }
+
     /// The named function around a function literal on `key`'s line, or
     /// `None` when `key` is a named function or outside any.
     fn enclosing(&mut self, key: &Key) -> Option<Key> {
@@ -627,7 +632,10 @@ impl Walker<'_> {
                 }
                 Err(e) => return Err(e),
             };
-            if up && !diff::is_test(&key.0) && links.iter().all(|l| diff::is_test(&l.key.0)) {
+            if up
+                && !self.sources.is_test(&key)
+                && links.iter().all(|l| self.sources.is_test(&l.key))
+            {
                 self.entries.insert(key.clone());
             }
             for Link {
@@ -1007,7 +1015,7 @@ fn group(walked: &mut Walked, changed: &HashMap<Key, Changed>) -> Vec<ImpactPath
             .iter()
             .map(|key| {
                 let (name, package, short) = sources.names(key);
-                let is_test = diff::is_test(&key.0);
+                let is_test = sources.is_test(key);
                 ImpactNode {
                     id: id_of(key),
                     name,

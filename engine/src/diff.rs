@@ -400,5 +400,10 @@ fn language(path: &str) -> Option<&'static str> {
 }
 
 pub fn is_test(path: &str) -> bool {
-    path.ends_with("_test.go") || path.split('/').any(|segment| segment == "tests")
+    let file = path.rsplit('/').next().unwrap_or(path);
+    path.ends_with("_test.go")
+        || path.ends_with("_test.rs")
+        || path.ends_with("_tests.rs")
+        || file == "tests.rs"
+        || path.split('/').any(|segment| segment == "tests")
 }

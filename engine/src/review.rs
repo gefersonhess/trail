@@ -207,7 +207,7 @@ fn changed_nodes(
         |name: &str, kind, status, old: Option<&Symbol>, new: Option<&Symbol>, hunks: &[&Hunk]| {
             let id = format!("{language}:{name}");
             Node {
-                is_test: file.is_test || name.split("::").any(|s| s == "tests"),
+                is_test: file.is_test || new.or(old).is_some_and(|s| s.is_test),
                 id,
                 kind,
                 status,
@@ -730,7 +730,7 @@ fn context_nodes(repo: &Path, head_commit: &str, nodes: &[Node]) -> Result<Vec<N
                     len: symbol.end - symbol.start + 1,
                 };
                 out.push(Node {
-                    is_test: diff::is_test(&path) || name.split("::").any(|s| s == "tests"),
+                    is_test: diff::is_test(&path) || symbol.is_test,
                     id,
                     kind: symbol.kind,
                     status: NodeStatus::Context,
