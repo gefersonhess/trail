@@ -106,8 +106,8 @@ do
     return vim.api.nvim_win_get_config(w).relative ~= ""
   end)
   local map_text = map_win and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(map_win), 0, -1, false), "\n") or ""
-  check(map_text:match("│ ○ Login │") and map_text:match("│ ○ VerifyHash │") and map_text:match("│ ○ hashOf │"),
-    "gm draws the path's changes as boxes in a float: " .. map_text)
+  check(map_text:match("│ auth ① [^\n]*│") and map_text:match("\n▶ ① Login  0/3"),
+    "gm draws the review's packages as boxes, with the path under the cursor selected: " .. map_text)
   if map_win then
     vim.api.nvim_win_close(map_win, true)
   end
@@ -1094,22 +1094,68 @@ do
   check(vim.wait(10000, function()
     return lane_lines()[3] == "└┄▶ Work  ┄2"
   end), "<CR> on the change goes back to it: " .. table.concat(lane_lines(), "\n"))
+  local work_win = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match("^trail://diff/")
+  end)
+  local chain = vim.api.nvim_eval_statusline(vim.wo[work_win].winbar, { winid = work_win, maxwidth = 200 }).str
+  check(chain:match("^Entry › hop1 › hop2 › ▶Work  %+2 callers .*a/a%.go"),
+    "the diff's winbar shows the route to the function and its other callers: " .. chain)
+  local function pinned_text()
+    local w = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(f)
+      local c = vim.api.nvim_win_get_config(f)
+      return c.relative == "win" and c.win == work_win
+    end)
+    return w and vim.trim(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, 1, false)[1])
+  end
+  check(pinned_text() == nil, "nothing is pinned while the function's first line is on screen")
+  local work_buf = vim.api.nvim_win_get_buf(work_win)
+  local sig = vim.iter(ipairs(vim.api.nvim_buf_get_lines(work_buf, 0, -1, false))):find(function(_, l)
+    return l == "func Work() int {"
+  end)
+  vim.api.nvim_win_call(work_win, function()
+    vim.fn.winrestview({ topline = sig + 2 })
+  end)
+  vim.api.nvim_exec_autocmds("WinScrolled", { buffer = work_buf })
+  check(pinned_text() == "func Work() int {", "scrolled into the function, its first line is pinned on top: " .. tostring(pinned_text()))
+  vim.api.nvim_win_call(work_win, function()
+    vim.fn.winrestview({ topline = sig })
+  end)
+  vim.api.nvim_exec_autocmds("WinScrolled", { buffer = work_buf })
+  check(pinned_text() == nil, "and unpinned once the first line is back on screen")
+  vim.api.nvim_set_current_win(fold_win)
 
   vim.api.nvim_feedkeys("gm", "x", false)
   local map_win = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
     return vim.api.nvim_win_get_config(w).relative ~= ""
   end)
   local map_lines = map_win and vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(map_win), 0, -1, false) or {}
-  check(map_lines[2] and map_lines[2]:match("│ Entry │") and table.concat(map_lines, "\n"):match("│ ▶ Work │")
+  local function map_text()
+    return map_win and table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(map_win), 0, -1, false), "\n") or ""
+  end
+  check(map_lines[2] == "│ a ▶① ② │" and map_text():match("\n▶ ① Work  1/1\n  ② Lone  %d/1$")
     and vim.api.nvim_get_current_win() == map_win,
-    "gm opens the map: callers above what they call, the function shown marked: " .. table.concat(map_lines, "\n"))
+    "gm opens the map: every path through its packages, this one selected and the function shown marked: " .. map_text())
+  local function route_marks()
+    local marks = vim.api.nvim_buf_get_extmarks(vim.api.nvim_win_get_buf(map_win), -1, { 1, 0 }, { 1, -1 }, { details = true })
+    return table.concat(vim.tbl_map(function(m)
+      return map_lines[2]:sub(m[3] + 1, m[4].end_col)
+    end, vim.tbl_filter(function(m)
+      return m[4].hl_group == "TrailMapRoute"
+    end, marks)))
+  end
+  check(route_marks() == "▶①", "only the selected path is in colour: " .. route_marks())
   if map_win then
+    vim.api.nvim_feedkeys("n", "x", false)
+    map_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(map_win), 0, -1, false)
+    check(map_lines[2] == "│ a ① ② │" and map_text():match("\n  ① Work  1/1\n▶ ② Lone  %d/1$")
+      and route_marks() == "②", "n selects the next path: " .. map_text())
+    vim.api.nvim_feedkeys("p", "x", false)
     vim.api.nvim_win_set_cursor(map_win, { 2, #"│ " })
     vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
   end
   check(vim.wait(10000, function()
-    return not vim.api.nvim_win_is_valid(map_win or -1) and lane_lines()[2] == "▶ Entry"
-  end), "<CR> on a box closes the map and shows that function: " .. table.concat(lane_lines(), "\n"))
+    return not vim.api.nvim_win_is_valid(map_win or -1) and lane_lines()[3] == "└┄▶ Work  ┄2"
+  end), "<CR> on a box closes the map and shows the selected path's change there: " .. table.concat(lane_lines(), "\n"))
 
   vim.api.nvim_set_current_win(fold_win)
   vim.api.nvim_feedkeys("-", "x", false)
@@ -1754,6 +1800,82 @@ end), "the engine's output goes to the log file")
 vim.g.trail_engine = nil
 vim.fn.delete(stopping)
 
+-- The map: packages as boxes, every path through them, the selected one in colour.
+do
+  local pk = vim.fn.tempname()
+  vim.fn.mkdir(pk, "p")
+  local function psh(cmd)
+    local out = vim.system({ "sh", "-c", cmd }, { cwd = pk, text = true }):wait()
+    assert(out.code == 0, cmd .. ": " .. out.stderr)
+  end
+  local function pwrite(path, content)
+    vim.fn.mkdir(vim.fs.dirname(pk .. "/" .. path), "p")
+    vim.fn.writefile(vim.split(content, "\n"), pk .. "/" .. path)
+  end
+  local function pfiles(n)
+    pwrite("go.mod", "module m\n\ngo 1.22")
+    pwrite("api/api.go", "package api\n\nimport \"m/svc\"\n\nfunc Handler() int {\n\treturn svc.Create() + " .. n .. "\n}")
+    pwrite("svc/svc.go", "package svc\n\nimport \"m/store\"\n\nfunc Create() int {\n\treturn store.Save()\n}")
+    pwrite("store/store.go", "package store\n\nfunc Save() int {\n\treturn " .. n .. "\n}\n\nfunc Load() int {\n\treturn " .. n .. "\n}")
+    pwrite("worker/worker.go", "package worker\n\nimport \"m/store\"\n\nfunc Sync() int {\n\treturn store.Load() * " .. n .. "\n}")
+  end
+  psh("git init -q -b main && git config user.email t@t && git config user.name t")
+  pfiles(1)
+  psh("git add -A && git commit -qm base && git checkout -qb feature")
+  pfiles(2)
+  psh("git add -A && git commit -qm feature")
+  vim.cmd.cd(pk)
+  vim.cmd("Trail main..feature")
+  local pbuf = vim.api.nvim_get_current_buf()
+  check(vim.wait(15000, function()
+    return vim.iter(vim.api.nvim_buf_get_lines(pbuf, 0, -1, false)):any(function(l)
+      return l:match("^%S+ 2  Sync")
+    end)
+  end), "the packages review loads: " .. table.concat(vim.api.nvim_buf_get_lines(pbuf, 0, -1, false), "\n"))
+  vim.api.nvim_feedkeys("gm", "x", false)
+  local mbuf = vim.api.nvim_get_current_buf()
+  local function drawn()
+    return table.concat(vim.api.nvim_buf_get_lines(mbuf, 0, -1, false), "\n")
+  end
+  local function coloured()
+    local out = {}
+    local lines = vim.api.nvim_buf_get_lines(mbuf, 0, -1, false)
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(mbuf, -1, 0, -1, { details = true })) do
+      if m[4].hl_group == "TrailMapRoute" then
+        table.insert(out, lines[m[2] + 1]:sub(m[3] + 1, m[4].end_col))
+      end
+    end
+    return table.concat(out)
+  end
+  local expected = table.concat({
+    "  ┌───────┐     ┌───────────┐",
+    "  │ api ① │     │ worker ②  │",
+    "  └───┬───┘     │ → store ② │",
+    "      │         └───────────┘",
+    "      │",
+    "  ┌───────┐",
+    "  │ svc ① │",
+    "  └───┬───┘",
+    "      │",
+    "┌───────────┐",
+    "│ store ① ② │",
+    "└───────────┘",
+    "",
+    "▶ ① Handler  0/2",
+    "  ② Sync  0/2",
+  }, "\n")
+  check(drawn() == expected, "the map draws each package once, callers above, with the unchanged package on the way "
+    .. "and a call to a package drawn elsewhere listed in its caller:\n" .. drawn())
+  check(coloured() == "①┬││①┬│①▶ ① Handler  0/2", "the selected path's marks and calls are in colour: " .. coloured())
+  vim.api.nvim_feedkeys("n", "x", false)
+  check(coloured() == "②②②▶ ② Sync  0/2", "n colours the next path instead: " .. coloured())
+  vim.api.nvim_win_set_cursor(0, { 11, #"│ " })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+  check(vim.wait(10000, function()
+    return vim.api.nvim_buf_get_name(0):match("^trail://diff/store/store%.go$") ~= nil
+  end), "<CR> on a box opens the selected path at its change in that package: " .. vim.api.nvim_buf_get_name(0))
+end
+
 -- The trail app: the tree on the left, a tabline of screens, a status line
 -- with the mode and keys, and threads in a pane on the right.
 vim.g.trail_app, vim.g.trail_tree = true, "left"
@@ -1882,11 +2004,15 @@ vim.api.nvim_feedkeys("t", "x", false)
 local base_win, head_win = win_of("^trail://base/"), win_of("^trail://head/")
 tree_win = vim.fn.bufwinid("trail://path")
 local full = vim.o.columns
-check(base_win and head_win and vim.api.nvim_win_get_position(tree_win)[1] < vim.api.nvim_win_get_position(base_win)[1]
-  and vim.api.nvim_win_get_width(tree_win) == full
-  and vim.api.nvim_win_get_height(tree_win) == math.min(8, vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(tree_win))),
-  "side by side puts the tree across the top at a fixed height")
-check(vim.fn.line("w0", tree_win) == 1, "a tree that fits shows from its header")
+check(base_win and head_win and vim.api.nvim_win_get_config(tree_win).hide == true
+  and not vim.list_contains(vim.tbl_map(function(w)
+    return vim.api.nvim_win_get_config(w).relative == "" and w or nil
+  end, vim.api.nvim_tabpage_list_wins(0)), tree_win),
+  "side by side hides the tree, leaving its rows to the code")
+do
+  local base_bar = evaluated(vim.wo[base_win].winbar, { winid = base_win, maxwidth = 200 })
+  check(base_bar:match("^▶Login .*base  auth/auth%.go"), "and shows the route to the function in the diff's winbar: " .. base_bar)
+end
 check(the_pane() and vim.api.nvim_win_get_width(the_pane()) == full
   and vim.api.nvim_win_get_position(the_pane())[1] > vim.api.nvim_win_get_position(head_win)[1],
   "side by side puts the thread pane across the bottom")
@@ -2000,8 +2126,6 @@ vim.api.nvim_win_set_width(the_pane(), 20)
 vim.api.nvim_exec_autocmds("WinResized", {})
 vim.api.nvim_set_current_win(diff_win)
 vim.api.nvim_feedkeys("t", "x", false)
-tree_win = vim.fn.bufwinid("trail://path")
-vim.api.nvim_win_set_height(tree_win, 3)
 vim.api.nvim_win_set_height(the_pane(), 6)
 vim.api.nvim_exec_autocmds("WinResized", {})
 vim.api.nvim_set_current_win(win_of("^trail://head/"))
@@ -2011,16 +2135,14 @@ tree_win = vim.fn.bufwinid("trail://path")
 check(vim.api.nvim_win_get_width(tree_win) == 30 and vim.api.nvim_win_get_width(the_pane()) == 20,
   "the tree and pane keep the widths set on them: " .. vim.api.nvim_win_get_width(tree_win) .. ", " .. vim.api.nvim_win_get_width(the_pane()))
 vim.api.nvim_feedkeys("t", "x", false)
-tree_win = vim.fn.bufwinid("trail://path")
-check(vim.api.nvim_win_get_height(tree_win) == 3 and vim.api.nvim_win_get_height(the_pane()) == 6,
-  "and in side by side the heights set there: " .. vim.api.nvim_win_get_height(tree_win) .. ", " .. vim.api.nvim_win_get_height(the_pane()))
+check(vim.api.nvim_win_get_height(the_pane()) == 6,
+  "and in side by side the height set there: " .. vim.api.nvim_win_get_height(the_pane()))
 vim.api.nvim_win_close(the_pane(), true)
 local halves = vim.api.nvim_win_get_width(win_of("^trail://head/"))
 athreads.show(athreads.all()[1], function() end)
-check(vim.api.nvim_win_get_height(tree_win) == 3 and the_pane() and vim.api.nvim_win_get_height(the_pane()) == 6
+check(the_pane() and vim.api.nvim_win_get_height(the_pane()) == 6
   and math.abs(vim.api.nvim_win_get_width(win_of("^trail://head/")) - halves) <= 1,
-  "opening the pane leaves the other windows as they were: tree " .. vim.api.nvim_win_get_height(tree_win)
-  .. ", pane " .. (the_pane() and vim.api.nvim_win_get_height(the_pane()) or "none"))
+  "opening the pane leaves the other windows as they were: pane " .. (the_pane() and vim.api.nvim_win_get_height(the_pane()) or "none"))
 vim.api.nvim_set_current_win(win_of("^trail://head/"))
 vim.api.nvim_feedkeys("t", "x", false)
 diff_win = win_of("^trail://diff/")

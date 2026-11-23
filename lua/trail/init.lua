@@ -411,6 +411,7 @@ local function show_target(target, is_node, win, keys, after)
       and { old = target.old, new = target.new }) or nil
     local view = diffview.show(diff, {
       focus = focus,
+      header = target.header,
       win = win,
       keys = all_keys,
       on_redraw = function(again)
@@ -521,6 +522,7 @@ local function peek_node(node)
 end
 
 local toggle_reviewed
+local enter
 
 local function path_context()
   return {
@@ -540,6 +542,12 @@ local function path_context()
     end,
     find = function()
       M.find()
+    end,
+    paths = function()
+      return state.code or {}
+    end,
+    enter = function(path, step)
+      enter(path, step)
     end,
     threads = thread_counts,
     toggle_reviewed = function(path)
@@ -664,7 +672,7 @@ local function row_path(item)
   return { title = file, steps = steps }
 end
 
-local function enter(path, step, target)
+function enter(path, step, target)
   if #path.steps == 0 then
     return
   end
@@ -1574,28 +1582,22 @@ function M.open(arg)
   end, "Fold or unfold the line")
   map("gm", function()
     local item = state.items and state.items[vim.api.nvim_win_get_cursor(0)[1]]
-    if item and item.path and item.path.impact then
-      pathmap.open(pathmap.graph(item.path.impact), {
-        title = item.path.title,
-        done = function(id)
-          for s, step in ipairs(item.path.steps) do
-            if step.node.id == id then
-              return M.done_steps(item.path)[s] == true
-            end
-          end
-          return false
+    local paths = state.code or {}
+    local selected = item and item.path and vim.iter(ipairs(paths)):find(function(_, p)
+      return p == item.path
+    end)
+    if #paths > 0 then
+      pathmap.open(paths, {
+        selected = selected or 1,
+        done = function(i)
+          return progress(paths[i])
         end,
-        pick = function(id)
-          for s, step in ipairs(item.path.steps) do
-            if step.node.id == id then
-              return enter(item.path, s)
-            end
-          end
-          enter(item.path)
+        pick = function(i, package)
+          enter(paths[i], package and pathmap.step_in(paths[i], package) or nil)
         end,
       })
     end
-  end, "Map of the path's changes")
+  end, "Map of the review's paths")
   map("r", function()
     for _, p in ipairs(state.code or {}) do
       if p.id == state.last_path then

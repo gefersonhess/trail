@@ -19,12 +19,16 @@ local function tree_on_left()
   return vim.g.trail_tree == "left" and not require("trail.diffview").side_by_side()
 end
 
+---Whether the tree is hidden: in the app, side by side shows the call chain
+---in the diff's winbar instead of the tree, giving its rows to the code.
+local function tree_hidden()
+  return vim.g.trail_tree == "left" and require("trail.diffview").side_by_side()
+end
+
 local TREE_WIDTH = 38
 
 local function tree_height(lines)
-  local strip = vim.g.trail_tree == "left"
-  local most = strip and 8 or math.floor(vim.o.lines / 3)
-  return math.max(1, math.min(lines, most))
+  return math.max(1, math.min(lines, math.floor(vim.o.lines / 3)))
 end
 
 ---A path with no impact tree (a test file, or hunks in no path) as a list of its steps.
@@ -131,7 +135,7 @@ local function render_tree(keep_cursor)
   for _, h in ipairs(hls) do
     vim.api.nvim_buf_set_extmark(buf, ns, h[1] + 1, h[2], { end_col = h[3], hl_group = h[4] })
   end
-  if not tree_on_left() then
+  if vim.g.trail_tree ~= "left" then
     sizes.apply(view.tree_win, "tree.top", "height", tree_height(#lines))
   end
   if cursor then
@@ -175,6 +179,26 @@ local function first_change(step)
   return h
 end
 
+---The diff's winbar for function `id`: the route to it from an entry point,
+---and how many other functions of the path call it.
+local function header(id)
+  local impact = view.path.impact
+  if not (impact and id) then
+    return nil
+  end
+  local nodes = pathmap.graph(impact).nodes
+  local route, others = tree.chain(impact, id)
+  local names = vim.tbl_map(function(n)
+    return (nodes[n] and nodes[n].short or n:gsub("^%w+:", "")):gsub("%%", "%%%%")
+  end, route)
+  names[#names] = "%#TrailChainCurrent#▶" .. names[#names] .. "%*"
+  local bar = "%#TrailChain#%<" .. table.concat(names, "%#TrailChain# › ")
+  if others > 0 then
+    bar = bar .. "%#Comment#  +" .. others .. (others == 1 and " caller" or " callers") .. "%*"
+  end
+  return bar
+end
+
 local function show_step(i, focus_tree, hunk)
   local path = view.path
   i = math.max(1, math.min(i, #path.steps))
@@ -190,8 +214,9 @@ local function show_step(i, focus_tree, hunk)
   if hunk and node and hunk.file == node.file then
     shown.focus = { old = node.old, new = node.new }
   end
+  shown = vim.tbl_extend("force", shown, { header = header(view.station) })
   view.ctx.show_target(shown, hunk == nil and target.node ~= nil, view.diff_win, view.keys, function()
-    if focus_tree and vim.api.nvim_win_is_valid(view.tree_win) then
+    if focus_tree and not tree_hidden() and vim.api.nvim_win_is_valid(view.tree_win) then
       vim.api.nvim_set_current_win(view.tree_win)
     end
   end)
@@ -202,9 +227,9 @@ end
 local function show_function(node, line)
   view.station = node.id
   render_tree(true)
-  view.ctx.show_target({ file = node.file, new = { start = line or node.line, len = 1 } }, true, view.diff_win, view.keys,
-    function()
-      if vim.api.nvim_win_is_valid(view.tree_win) then
+  view.ctx.show_target({ file = node.file, new = { start = line or node.line, len = 1 }, header = header(node.id) }, true,
+    view.diff_win, view.keys, function()
+      if not tree_hidden() and vim.api.nvim_win_is_valid(view.tree_win) then
         vim.api.nvim_set_current_win(view.tree_win)
       end
     end)
@@ -235,26 +260,40 @@ local function call_line(from, to)
   return first
 end
 
----Opens the path's map: its changes as boxes in a float.
+---Opens the review's map: every path through the packages it reaches, this
+---one in colour, with the function shown marked.
 function M.map()
   if not valid() or not view.path.impact then
     return
   end
-  local path = view.path
-  local g = pathmap.graph(path.impact)
-  local done = view.ctx.done_steps(path)
-  local node = path.steps[view.step].node
-  pathmap.open(g, {
-    title = path.title,
-    current = view.station or (node and node.id) or g.roots[1],
-    done = function(id)
-      local i = step_of_node(path, id)
-      return i ~= nil and done[i] == true
+  local ctx = view.ctx
+  local paths = ctx.paths()
+  local selected
+  for i, p in ipairs(paths) do
+    if p.id == view.path.id then
+      selected = i
+    end
+  end
+  if not selected then
+    return
+  end
+  local node = view.path.steps[view.step].node
+  pathmap.open(paths, {
+    selected = selected,
+    current = view.station or (node and node.id),
+    done = function(i)
+      return vim.tbl_count(vim.tbl_filter(function(d)
+        return d
+      end, ctx.done_steps(paths[i])))
     end,
-    pick = function(id)
-      if valid() then
-        show_change(id, false)
+    pick = function(i, package)
+      if not valid() then
+        return
       end
+      if i == selected and package and not pathmap.step_in(view.path, package) then
+        return
+      end
+      ctx.enter(paths[i], package and pathmap.step_in(paths[i], package) or nil)
     end,
   })
 end
@@ -383,29 +422,30 @@ function M.current()
   end
 end
 
----Moves the tree to where the layout wants it: the left of a unified diff,
----or across the top of a side-by-side one.
+---Moves the tree to where the layout wants it in the app: the left of a
+---unified diff, or hidden beside a side-by-side one.
 function M.place()
   if not valid() or vim.g.trail_tree ~= "left" then
     return
   end
-  local left = tree_on_left()
+  local floating = vim.api.nvim_win_get_config(view.tree_win).relative ~= ""
+  if tree_hidden() then
+    if not floating then
+      sizes.forget(view.tree_win)
+      vim.api.nvim_win_set_config(view.tree_win,
+        { relative = "editor", row = 0, col = 0, width = 1, height = 1, hide = true, focusable = false })
+    end
+    return
+  end
+  if floating then
+    vim.api.nvim_win_set_config(view.tree_win, { split = "left", win = -1 })
+  end
   vim.api.nvim_win_call(view.tree_win, function()
-    vim.cmd.wincmd(left and "H" or "K")
+    vim.cmd.wincmd("H")
   end)
   local wo = vim.wo[view.tree_win]
-  wo.winfixwidth, wo.winfixheight = left, not left
-  if left then
-    sizes.apply(view.tree_win, "tree.left", "width", TREE_WIDTH)
-  else
-    local lines = vim.api.nvim_buf_line_count(view.tree_buf)
-    sizes.apply(view.tree_win, "tree.top", "height", tree_height(lines))
-    if lines <= vim.api.nvim_win_get_height(view.tree_win) then
-      vim.api.nvim_win_call(view.tree_win, function()
-        vim.fn.winrestview({ topline = 1 })
-      end)
-    end
-  end
+  wo.winfixwidth, wo.winfixheight = true, false
+  sizes.apply(view.tree_win, "tree.left", "width", TREE_WIDTH)
 end
 
 function M.refresh_graph()
@@ -442,7 +482,7 @@ function M.open(ctx, path, step, target)
     local function map(lhs, fn, desc)
       vim.keymap.set("n", lhs, fn, { buffer = buf, desc = desc, nowait = true })
     end
-    map("gm", M.map, "Map of the path's changes")
+    map("gm", M.map, "Map of the review's paths")
     map("<C-p>", function()
       view.ctx.find()
     end, "Find a changed function")
@@ -545,7 +585,7 @@ function M.open(ctx, path, step, target)
     end, "Previous step" },
     { "gp", ctx.switch_path, "Switch path" },
     { "<C-p>", ctx.find, "Find a changed function" },
-    { "gm", M.map, "Map of the path's changes" },
+    { "gm", M.map, "Map of the review's paths" },
     { "mr", function()
       ctx.toggle_reviewed(view.path)
     end, "Mark the path as reviewed, or unmark it" },

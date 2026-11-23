@@ -38,6 +38,9 @@ local function set_highlights()
   local fallback = vim.o.background == "light" and 0x24292f or 0xc9d1d9
   vim.api.nvim_set_hl(0, "TrailContext", { fg = normal.fg or fallback, default = true })
   vim.api.nvim_set_hl(0, "TrailReviewed", { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, "TrailChain", { link = "WinBar", default = true })
+  vim.api.nvim_set_hl(0, "TrailChainCurrent", { link = "Title", default = true })
+  vim.api.nvim_set_hl(0, "TrailPinned", { link = "CursorLine", default = true })
   -- Code outside the function being reviewed: its colours faded halfway into the background.
   local bg = normal.bg or (vim.o.background == "light" and 0xffffff or 0x0d1117)
   local function fade(fg)
@@ -311,12 +314,13 @@ local function apply_folds(win, folds, kind)
   end)
 end
 
-local function setup_window(win, title, folds, unified, bind, kind)
+local function setup_window(win, title, folds, unified, bind, kind, header)
   local wo = vim.wo[win][0]
   wo.wrap, wo.number, wo.relativenumber, wo.list = false, false, false, false
   wo.signcolumn, wo.foldcolumn = "no", "0"
   wo.statuscolumn = "%!v:lua.require'trail.diffview'.statuscolumn()"
-  wo.winbar = title:gsub("%%", "%%%%") .. " %=%#Comment#? keys %*"
+  title = title:gsub("%%", "%%%%")
+  wo.winbar = header and (header .. " %=%#Comment#" .. title .. "  ? keys %*") or (title .. " %=%#Comment#? keys %*")
   wo.scrollbind, wo.cursorbind = bind, bind
   wo.foldmethod, wo.foldenable, wo.foldlevel = "manual", true, 0
   apply_folds(win, folds, kind)
@@ -336,6 +340,50 @@ local function row_for(view, side, line)
   return best or 1
 end
 
+-- Signature lines pinned at the top of the diff, closed when the next diff shows.
+local pinned = {}
+
+---Pins the first line of the function `range` covers on `side` at the top of
+---pane `p` while the function's own lines are scrolled past it, so the
+---function stays named when its signature is off screen.
+local function pin(p, side, range)
+  if not range or range.len == 0 then
+    return
+  end
+  local first = row_for(p.view, side, range.start)
+  local last = row_for(p.view, side, range.start + range.len - 1)
+  local fbuf, fwin
+  local function update()
+    local shown = vim.api.nvim_win_is_valid(p.win) and vim.api.nvim_win_get_buf(p.win) == p.buf
+    local top = shown and vim.fn.line("w0", p.win)
+    if not shown or top <= first or top > last then
+      if fwin and vim.api.nvim_win_is_valid(fwin) then
+        vim.api.nvim_win_close(fwin, true)
+      end
+      fwin = nil
+      return
+    end
+    local info = vim.fn.getwininfo(p.win)[1]
+    local code = vim.api.nvim_buf_get_lines(p.buf, first - 1, first, false)[1] or ""
+    if not (fbuf and vim.api.nvim_buf_is_valid(fbuf)) then
+      fbuf = vim.api.nvim_create_buf(false, true)
+      vim.bo[fbuf].bufhidden = "wipe"
+    end
+    vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { string.rep(" ", info.textoff) .. code })
+    local config = { relative = "win", win = p.win, row = 0, col = 0, width = info.width, height = 1 }
+    if fwin and vim.api.nvim_win_is_valid(fwin) then
+      vim.api.nvim_win_set_config(fwin, config)
+      return
+    end
+    fwin = vim.api.nvim_open_win(fbuf, false,
+      vim.tbl_extend("force", config, { focusable = false, style = "minimal", zindex = 40, noautocmd = true }))
+    vim.wo[fwin].winhighlight = "Normal:TrailPinned"
+    table.insert(pinned, fwin)
+  end
+  vim.api.nvim_create_autocmd({ "WinScrolled", "CursorMoved" }, { buffer = p.buf, callback = update })
+  update()
+end
+
 ---Shows `diff` (a file_diff result) in the current tab, replacing what is there.
 ---`t` switches between the unified and side-by-side layouts.
 ---@return { focus: fun(side: "old"|"new", line: integer) }
@@ -344,6 +392,10 @@ function M.show(diff, opts)
   local old_name = opts.old_path or "(added)"
   local new_name = opts.new_path or "(deleted)"
   local first_win = opts.win or vim.api.nvim_get_current_win()
+  for _, w in ipairs(pinned) do
+    pcall(vim.api.nvim_win_close, w, true)
+  end
+  pinned = {}
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(first_win))) do
     if w ~= first_win and vim.w[w].trail_pane then
       vim.api.nvim_win_close(w, true)
@@ -371,7 +423,7 @@ function M.show(diff, opts)
       end, #view.lines)
       dim(buf, folds)
     end
-    setup_window(first_win, new_name .. "  ·  " .. diff.engine, folds, true, false, kind)
+    setup_window(first_win, new_name .. "  ·  " .. diff.engine, folds, true, false, kind, opts.header)
     panes = { { win = first_win, buf = buf, view = view, starts = starts, folds = folds } }
   else
     local left, right, changed = side_by_side_views(diff, old_ch, new_ch)
@@ -391,7 +443,7 @@ function M.show(diff, opts)
       dim(left_buf, folds)
       dim(right_buf, folds)
     end
-    setup_window(first_win, "base  " .. old_name, folds, false, true, kind)
+    setup_window(first_win, "base  " .. old_name, folds, false, true, kind, opts.header)
     setup_window(right_win, "head  " .. new_name .. "  ·  " .. diff.engine, folds, false, true, kind)
     panes = {
       { win = first_win, buf = left_buf, view = left, starts = starts, folds = folds },
@@ -400,6 +452,13 @@ function M.show(diff, opts)
   end
   if vim.api.nvim_buf_is_valid(placeholder) and vim.fn.bufwinid(placeholder) == -1 then
     pcall(vim.api.nvim_buf_delete, placeholder, { force = true })
+  end
+  if focus and #panes == 1 then
+    local side = focus.new and focus.new.len > 0 and "new" or "old"
+    pin(panes[1], side, focus[side])
+  elseif focus then
+    pin(panes[1], "old", focus.old)
+    pin(panes[2], "new", focus.new)
   end
 
   local function pane_of(win)
