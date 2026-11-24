@@ -1176,6 +1176,7 @@ local function build_home(review)
   add("Paths", nil, { { "Title", 0, 5 } })
   if state.impact_error then
     add("  The impact could not be worked out: " .. state.impact_error, nil, { { "WarningMsg", 0, -1 } })
+    add(string.format("  (engine log: %s)", vim.fn.fnamemodify(engine.log_path, ":~")), nil, { { "Comment", 0, -1 } })
   elseif not state.impact then
     local waited = state.impact_started and math.floor((vim.uv.now() - state.impact_started) / 1000) or 0
     add(string.format("  Working out the paths… %ds  (engine log: %s)", waited,

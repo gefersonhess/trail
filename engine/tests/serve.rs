@@ -1328,10 +1328,7 @@ fn rust_tests_are_found_by_their_attributes_and_file_names() {
     assert_eq!(inline["covers"], json!(["rust:run"]));
     assert_eq!(result["uncovered"], json!([]));
 
-    let impact = impact(
-        &repo,
-        &[("TRAIL_RUST_ANALYZER", "/nonexistent/rust-analyzer")],
-    );
+    let impact = impact_by_name(&repo, &[]);
     let nodes = impact["paths"][0]["nodes"].as_array().unwrap();
     let flags: Vec<(&str, bool, bool)> = nodes
         .iter()
@@ -1875,18 +1872,31 @@ fn impact_repo() -> Repo {
     repo
 }
 
-fn impact(repo: &Repo, env: &[(&str, &str)]) -> Value {
-    let responses = serve_with_env(
+fn impact_response(repo: &Repo, lsp: bool, env: &[(&str, &str)]) -> Value {
+    serve_with_env(
         &[json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "impact",
-            "params": { "repo": repo.path(), "base": "main", "head": "feature" },
+            "params": { "repo": repo.path(), "base": "main", "head": "feature", "lsp": lsp },
         })],
         env,
-    );
-    let result = responses[0]["result"].clone();
-    assert!(result.is_object(), "{}", responses[0]);
+    )
+    .remove(0)
+}
+
+fn impact(repo: &Repo, env: &[(&str, &str)]) -> Value {
+    let response = impact_response(repo, true, env);
+    let result = response["result"].clone();
+    assert!(result.is_object(), "{response}");
+    result
+}
+
+/// The impact with the language server turned off, so calls are matched by name.
+fn impact_by_name(repo: &Repo, env: &[(&str, &str)]) -> Value {
+    let response = impact_response(repo, false, env);
+    let result = response["result"].clone();
+    assert!(result.is_object(), "{response}");
     result
 }
 
@@ -2007,7 +2017,7 @@ fn edge_lines(path: &Value, from: &str, to: &str) -> Vec<u64> {
 fn impact_edges_carry_the_lines_of_their_calls_when_matching_by_name() {
     let repo = impact_repo();
 
-    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+    let result = impact_by_name(&repo, &[]);
 
     let paths = &result["paths"];
     assert_eq!(
@@ -2024,10 +2034,10 @@ fn impact_edges_carry_the_lines_of_their_calls_when_matching_by_name() {
 
 #[test]
 fn impact_edges_carry_the_lines_of_their_calls_from_the_language_server() {
-    if Command::new("rust-analyzer")
+    if !Command::new("rust-analyzer")
         .arg("--version")
         .output()
-        .is_err()
+        .is_ok_and(|o| o.status.success())
     {
         eprintln!("rust-analyzer is not installed; skipping");
         return;
@@ -2236,10 +2246,10 @@ fn impact_with_lsp_off_never_starts_the_language_server() {
 }
 
 #[test]
-fn without_a_language_server_impact_matches_calls_by_name() {
+fn with_the_language_server_off_impact_matches_calls_by_name() {
     let repo = impact_repo();
 
-    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+    let result = impact_by_name(&repo, &[]);
 
     let paths = result["paths"].as_array().unwrap();
     assert_eq!(paths.len(), 3, "{result}");
@@ -2299,13 +2309,7 @@ fn without_a_language_server_impact_matches_calls_by_name() {
 fn the_impact_walk_stops_at_the_node_limit_and_says_so() {
     let repo = impact_repo();
 
-    let result = impact(
-        &repo,
-        &[
-            ("TRAIL_GOPLS", "/nonexistent/gopls"),
-            ("TRAIL_IMPACT_LIMIT", "2"),
-        ],
-    );
+    let result = impact_by_name(&repo, &[("TRAIL_IMPACT_LIMIT", "2")]);
 
     let paths = result["paths"].as_array().unwrap();
     let billing = paths
@@ -2327,13 +2331,7 @@ fn the_impact_walk_stops_at_the_node_limit_and_says_so() {
 fn the_impact_walk_stops_at_the_time_limit_and_says_so() {
     let repo = impact_repo();
 
-    let result = impact(
-        &repo,
-        &[
-            ("TRAIL_GOPLS", "/nonexistent/gopls"),
-            ("TRAIL_IMPACT_TIMEOUT", "0"),
-        ],
-    );
+    let result = impact_by_name(&repo, &[("TRAIL_IMPACT_TIMEOUT", "0")]);
 
     let paths = result["paths"].as_array().unwrap();
     assert!(!paths.is_empty(), "{result}");
@@ -2363,7 +2361,7 @@ done
 "#;
 
 #[test]
-fn a_language_server_that_never_finds_anything_falls_back_to_names() {
+fn a_language_server_that_never_finds_anything_fails_the_impact_and_says_so() {
     let repo = impact_repo();
     let tools = Repo::new();
     let server = tools.path().join("empty-lsp");
@@ -2375,8 +2373,9 @@ fn a_language_server_that_never_finds_anything_falls_back_to_names() {
         .unwrap();
 
     let started = std::time::Instant::now();
-    let result = impact(
+    let response = impact_response(
         &repo,
+        true,
         &[
             ("TRAIL_GOPLS", server.to_str().unwrap()),
             ("TRAIL_LSP_TIMEOUT", "2"),
@@ -2388,11 +2387,168 @@ fn a_language_server_that_never_finds_anything_falls_back_to_names() {
         started.elapsed() < std::time::Duration::from_secs(10),
         "gives up on the server after its own timeout, not the walk's"
     );
-    let sources: Vec<String> = impact_edges(&result["paths"][0])
-        .into_iter()
-        .map(|e| e.3)
-        .collect();
-    assert_eq!(sources, ["name_match"; 9], "{result}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.starts_with(
+            "go language server failed: go language server found none of the changed functions in "
+        ),
+        "{response}"
+    );
+}
+
+#[test]
+fn waiting_for_the_language_server_to_load_does_not_count_against_the_walk_time_limit() {
+    let repo = impact_repo();
+    let tools = Repo::new();
+    let server = tools.path().join("empty-lsp");
+    std::fs::write(&server, EMPTY_LSP).unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&server)
+        .status()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let response = impact_response(
+        &repo,
+        true,
+        &[
+            ("TRAIL_GOPLS", server.to_str().unwrap()),
+            ("TRAIL_LSP_TIMEOUT", "3"),
+            ("TRAIL_IMPACT_TIMEOUT", "1"),
+        ],
+    );
+
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(3),
+        "waited {:?} for the language server, not its own 3 s",
+        started.elapsed()
+    );
+    assert!(response["error"]["message"].is_string(), "{response}");
+}
+
+/// A language server still reading the workspace, like rust-analyzer right
+/// after it starts: it answers every file with an error.
+const LOADING_LSP: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    Content-Length:*) len=$(printf '%s' "${line#Content-Length: }" | tr -d '\r') ;;
+    "$(printf '\r')")
+      body=$(dd bs=1 count="$len" 2>/dev/null)
+      id=$(printf '%s' "$body" | sed -n 's/^{"id":\([0-9]*\).*/\1/p')
+      if [ -n "$id" ]; then
+        case "$body" in
+          *'"method":"initialize"'*) out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"capabilities\":{}}}" ;;
+          *prepareCallHierarchy*) out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32603,\"message\":\"file not found\"}}" ;;
+          *) out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":null}" ;;
+        esac
+        printf 'Content-Length: %d\r\n\r\n%s' "${#out}" "$out"
+      fi ;;
+  esac
+done
+"#;
+
+#[test]
+fn a_language_server_still_loading_is_waited_for_and_its_answer_reported() {
+    let repo = impact_repo();
+    let tools = Repo::new();
+    let server = tools.path().join("loading-lsp");
+    std::fs::write(&server, LOADING_LSP).unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&server)
+        .status()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let response = impact_response(
+        &repo,
+        true,
+        &[
+            ("TRAIL_GOPLS", server.to_str().unwrap()),
+            ("TRAIL_LSP_TIMEOUT", "2"),
+        ],
+    );
+
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(2),
+        "gave up after {:?}, before the server's 2 s to load",
+        started.elapsed()
+    );
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("file not found"), "{response}");
+}
+
+/// A language server busy settling after it loads, like rust-analyzer running
+/// build scripts: it cancels its first two answers for incoming calls with
+/// "content modified", which asks the client to send the request again.
+const BUSY_LSP: &str = r#"#!/bin/sh
+count="$(dirname "$0")/cancelled"
+while IFS= read -r line; do
+  case "$line" in
+    Content-Length:*) len=$(printf '%s' "${line#Content-Length: }" | tr -d '\r') ;;
+    "$(printf '\r')")
+      body=$(dd bs=1 count="$len" 2>/dev/null)
+      id=$(printf '%s' "$body" | sed -n 's/^{"id":\([0-9]*\).*/\1/p')
+      if [ -n "$id" ]; then
+        result=null
+        case "$body" in
+          *'"method":"initialize"'*) result='{"capabilities":{}}' ;;
+          *prepareCallHierarchy*) result='[{}]' ;;
+          *incomingCalls*)
+            n=$(cat "$count" 2>/dev/null || echo 0)
+            if [ "$n" -lt 2 ]; then
+              echo $((n + 1)) > "$count"
+              result=
+            fi ;;
+        esac
+        if [ -n "$result" ]; then
+          out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$result}"
+        else
+          out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32801,\"message\":\"content modified\"}}"
+        fi
+        printf 'Content-Length: %d\r\n\r\n%s' "${#out}" "$out"
+      fi ;;
+  esac
+done
+"#;
+
+#[test]
+fn a_request_the_language_server_cancels_as_content_modified_is_sent_again() {
+    let repo = impact_repo();
+    let tools = Repo::new();
+    let server = tools.path().join("busy-lsp");
+    std::fs::write(&server, BUSY_LSP).unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&server)
+        .status()
+        .unwrap();
+
+    let response = impact_response(&repo, true, &[("TRAIL_GOPLS", server.to_str().unwrap())]);
+
+    assert!(response["result"]["paths"].is_array(), "{response}");
+    assert_eq!(
+        std::fs::read_to_string(tools.path().join("cancelled"))
+            .unwrap()
+            .trim(),
+        "2",
+        "the server cancelled two requests"
+    );
+}
+
+#[test]
+fn a_missing_language_server_fails_the_impact_and_says_so() {
+    let repo = impact_repo();
+
+    let response = impact_response(&repo, true, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.starts_with("go language server failed: ")
+            && message.contains("/nonexistent/gopls"),
+        "{response}"
+    );
 }
 
 #[test]
@@ -2525,7 +2681,7 @@ fn a_later_tree_shows_its_own_change_before_it_joins() {
         &[],
     );
 
-    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+    let result = impact_by_name(&repo, &[]);
 
     let path = &result["paths"][0];
     assert_eq!(
@@ -2568,10 +2724,7 @@ fn impact_names_rust_functions_by_module_and_short_name() {
         &[],
     );
 
-    let result = impact(
-        &repo,
-        &[("TRAIL_RUST_ANALYZER", "/nonexistent/rust-analyzer")],
-    );
+    let result = impact_by_name(&repo, &[]);
 
     let path = &result["paths"][0];
     let named = |id: &str| {
@@ -2649,7 +2802,7 @@ fn a_changed_type_starts_its_path_at_the_functions_using_it() {
         &[],
     );
 
-    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+    let result = impact_by_name(&repo, &[]);
 
     let path = &result["paths"][0];
     assert_eq!(path["steps"], json!(["go:store.Store"]), "{result}");
@@ -3024,7 +3177,7 @@ fn a_function_s_calls_are_laid_out_in_the_order_its_body_makes_them() {
     );
     repo.commit("feature");
 
-    let result = impact(&repo, &[("TRAIL_GOPLS", "/nonexistent/gopls")]);
+    let result = impact_by_name(&repo, &[]);
 
     let path = &result["paths"][0];
     assert_eq!(

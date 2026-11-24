@@ -479,7 +479,7 @@ fn lsp_edges(
         std::env::var("TRAIL_LSP_TIMEOUT")
             .ok()
             .and_then(|t| t.parse().ok())
-            .unwrap_or(60),
+            .unwrap_or(300),
     );
     let mut head_pairs: Vec<(String, String)> = Vec::new();
     for language in languages {
