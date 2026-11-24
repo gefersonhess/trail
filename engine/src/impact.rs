@@ -253,25 +253,18 @@ impl Server<'_> {
         })
     }
 
-    /// Prepares the call hierarchy item at `key`, asking again until `until`
-    /// while the server is still loading the workspace and answers with nothing.
-    fn prepare(&mut self, key: &Key, character: usize, until: Instant) -> Result<bool, String> {
-        let params = self.position(key, character as u64);
-        loop {
-            let items = self.client.request(
-                "textDocument/prepareCallHierarchy",
-                params.clone(),
-                self.left(),
-            )?;
-            if let Some(item) = items.as_array().and_then(|a| a.first()) {
-                self.items.insert(key.clone(), item.clone());
-                return Ok(true);
-            }
-            if Instant::now() >= until {
-                return Ok(false);
-            }
-            std::thread::sleep(Duration::from_millis(300));
-        }
+    /// Prepares the call hierarchy item at `key`, telling whether the server found one.
+    fn prepare(&mut self, key: &Key, character: usize) -> Result<bool, String> {
+        let items = self.client.request(
+            "textDocument/prepareCallHierarchy",
+            self.position(key, character as u64),
+            self.left(),
+        )?;
+        let Some(item) = items.as_array().and_then(|a| a.first()) else {
+            return Ok(false);
+        };
+        self.items.insert(key.clone(), item.clone());
+        Ok(true)
     }
 
     /// The function a call hierarchy item counts as: the item itself, or for
@@ -284,7 +277,7 @@ impl Server<'_> {
         };
         if !self.items.contains_key(&outer) {
             let at = sources.function(&outer).map_or(0, |s| s.name_at.1);
-            self.prepare(&outer, at, Instant::now())?;
+            self.prepare(&outer, at)?;
         }
         Ok(outer)
     }
@@ -428,7 +421,7 @@ impl Calls for Server<'_> {
                 }
                 let at = range["start"]["character"].as_u64().unwrap_or(0) as usize;
                 if !self.items.contains_key(&implementation) {
-                    self.prepare(&implementation, at, Instant::now())?;
+                    self.prepare(&implementation, at)?;
                 }
                 implemented = true;
                 out.push(Link {
@@ -795,14 +788,15 @@ fn walk_language(
                 items: HashMap::new(),
                 deadline: Instant::now() + Duration::from_secs(setting("TRAIL_LSP_TIMEOUT", 300)),
             };
-            // Wait for the workspace to load only until the first function is found,
-            // and start the walk's time limit after it.
+            // The workspace has loaded once any changed function is found; until then
+            // an empty answer or an error (rust-analyzer's "file not found") means not
+            // yet. Every function is tried each round, since one the build leaves out
+            // never loads. The walk's time limit starts after.
             log(&format!(
                 "impact: {language}: waiting for the language server to load the workspace"
             ));
             let waiting = Instant::now();
             let loading = server.deadline;
-            let mut loaded = false;
             // A changed type or constant is walked from the functions using it.
             let starts: Vec<(Key, usize)> = roots
                 .iter()
@@ -811,18 +805,37 @@ fn walk_language(
                     None => vec![(root.clone(), changed[root].name_at.1)],
                 })
                 .collect();
-            for (start, character) in &starts {
-                let until = if loaded { Instant::now() } else { loading };
-                match server.prepare(start, *character, until) {
-                    Ok(found) => loaded |= found,
-                    // A file the build leaves out has no package for the server to place it in.
-                    Err(e) => log(&format!("impact: skipping {}:{}: {e}", start.0, start.1)),
+            let mut first_error = None;
+            'loading: loop {
+                for (start, character) in &starts {
+                    if Instant::now() >= loading {
+                        break;
+                    }
+                    match server.prepare(start, *character) {
+                        Ok(true) => break 'loading,
+                        Ok(false) => {}
+                        Err(e) => {
+                            first_error.get_or_insert(e);
+                        }
+                    }
                 }
+                if Instant::now() >= loading {
+                    let answer = first_error.map_or(String::new(), |e| format!("; it answered: {e}"));
+                    return Err(format!(
+                        "{language} language server found none of the changed functions in {}s{answer}",
+                        waiting.elapsed().as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(300));
             }
-            if !loaded {
-                return Err(format!(
-                    "{language} language server found none of the changed functions"
-                ));
+            for (start, character) in &starts {
+                if server.items.contains_key(start) {
+                    continue;
+                }
+                // A file the build leaves out has no package for the server to place it in.
+                if let Err(e) = server.prepare(start, *character) {
+                    log(&format!("impact: skipping {}:{}: {e}", start.0, start.1));
+                }
             }
             let deadline = deadline + waiting.elapsed();
             server.deadline = deadline;

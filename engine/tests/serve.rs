@@ -2387,9 +2387,11 @@ fn a_language_server_that_never_finds_anything_fails_the_impact_and_says_so() {
         started.elapsed() < std::time::Duration::from_secs(10),
         "gives up on the server after its own timeout, not the walk's"
     );
-    assert_eq!(
-        response["error"]["message"],
-        "go language server failed: go language server found none of the changed functions",
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.starts_with(
+            "go language server failed: go language server found none of the changed functions in "
+        ),
         "{response}"
     );
 }
@@ -2423,6 +2425,58 @@ fn waiting_for_the_language_server_to_load_does_not_count_against_the_walk_time_
         started.elapsed()
     );
     assert!(response["error"]["message"].is_string(), "{response}");
+}
+
+/// A language server still reading the workspace, like rust-analyzer right
+/// after it starts: it answers every file with an error.
+const LOADING_LSP: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    Content-Length:*) len=$(printf '%s' "${line#Content-Length: }" | tr -d '\r') ;;
+    "$(printf '\r')")
+      body=$(dd bs=1 count="$len" 2>/dev/null)
+      id=$(printf '%s' "$body" | sed -n 's/^{"id":\([0-9]*\).*/\1/p')
+      if [ -n "$id" ]; then
+        case "$body" in
+          *'"method":"initialize"'*) out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"capabilities\":{}}}" ;;
+          *prepareCallHierarchy*) out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32603,\"message\":\"file not found\"}}" ;;
+          *) out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":null}" ;;
+        esac
+        printf 'Content-Length: %d\r\n\r\n%s' "${#out}" "$out"
+      fi ;;
+  esac
+done
+"#;
+
+#[test]
+fn a_language_server_still_loading_is_waited_for_and_its_answer_reported() {
+    let repo = impact_repo();
+    let tools = Repo::new();
+    let server = tools.path().join("loading-lsp");
+    std::fs::write(&server, LOADING_LSP).unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&server)
+        .status()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let response = impact_response(
+        &repo,
+        true,
+        &[
+            ("TRAIL_GOPLS", server.to_str().unwrap()),
+            ("TRAIL_LSP_TIMEOUT", "2"),
+        ],
+    );
+
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(2),
+        "gave up after {:?}, before the server's 2 s to load",
+        started.elapsed()
+    );
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("file not found"), "{response}");
 }
 
 #[test]
