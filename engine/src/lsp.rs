@@ -10,6 +10,14 @@ use serde_json::{Value, json};
 
 use crate::rpc::log;
 
+/// The LSP error code for a request the server dropped because its state changed.
+const CONTENT_MODIFIED: i64 = -32801;
+
+enum Retry {
+    ContentModified(String),
+    Failed(String),
+}
+
 /// A language server process speaking LSP over stdio.
 pub struct Client {
     child: Child,
@@ -133,25 +141,51 @@ impl Client {
     }
 
     /// Sends a request and waits for its response, answering the server's own
-    /// requests (configuration, progress) on the way so it does not stall.
+    /// requests (configuration, progress) on the way so it does not stall. A
+    /// request the server drops as content modified, as rust-analyzer does while
+    /// it settles after loading, is sent again until `timeout`.
     pub fn request(
         &mut self,
         method: &str,
         params: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.request_once(method, &params, deadline) {
+                Err(Retry::ContentModified(e)) if Instant::now() < deadline => {
+                    log(&format!("{e}; asking again"));
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(Retry::ContentModified(e) | Retry::Failed(e)) => return Err(e),
+                Ok(result) => return Ok(result),
+            }
+        }
+    }
+
+    fn request_once(
+        &mut self,
+        method: &str,
+        params: &Value,
+        deadline: Instant,
+    ) -> Result<Value, Retry> {
         let id = self.next_id;
         self.next_id += 1;
-        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
-        let deadline = Instant::now() + timeout;
+        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            .map_err(Retry::Failed)?;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             let message = match self.messages.recv_timeout(left) {
                 Ok(m) => m,
                 Err(RecvTimeoutError::Timeout) => {
-                    return Err(format!("{} did not answer {method} in time", self.name));
+                    return Err(Retry::Failed(format!(
+                        "{} did not answer {method} in time",
+                        self.name
+                    )));
                 }
-                Err(RecvTimeoutError::Disconnected) => return Err(format!("{} exited", self.name)),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(Retry::Failed(format!("{} exited", self.name)));
+                }
             };
             if message.get("method").is_some() {
                 if let Some(server_id) = message.get("id") {
@@ -162,13 +196,19 @@ impl Client {
                         }
                         _ => Value::Null,
                     };
-                    self.send(json!({ "jsonrpc": "2.0", "id": server_id, "result": result }))?;
+                    self.send(json!({ "jsonrpc": "2.0", "id": server_id, "result": result }))
+                        .map_err(Retry::Failed)?;
                 }
                 continue;
             }
             if message.get("id") == Some(&json!(id)) {
                 if let Some(error) = message.get("error") {
-                    return Err(format!("{} {method}: {}", self.name, error["message"]));
+                    let e = format!("{} {method}: {}", self.name, error["message"]);
+                    return Err(if error["code"] == CONTENT_MODIFIED {
+                        Retry::ContentModified(e)
+                    } else {
+                        Retry::Failed(e)
+                    });
                 }
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
             }

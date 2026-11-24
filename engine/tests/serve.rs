@@ -2479,6 +2479,64 @@ fn a_language_server_still_loading_is_waited_for_and_its_answer_reported() {
     assert!(message.contains("file not found"), "{response}");
 }
 
+/// A language server busy settling after it loads, like rust-analyzer running
+/// build scripts: it cancels its first two answers for incoming calls with
+/// "content modified", which asks the client to send the request again.
+const BUSY_LSP: &str = r#"#!/bin/sh
+count="$(dirname "$0")/cancelled"
+while IFS= read -r line; do
+  case "$line" in
+    Content-Length:*) len=$(printf '%s' "${line#Content-Length: }" | tr -d '\r') ;;
+    "$(printf '\r')")
+      body=$(dd bs=1 count="$len" 2>/dev/null)
+      id=$(printf '%s' "$body" | sed -n 's/^{"id":\([0-9]*\).*/\1/p')
+      if [ -n "$id" ]; then
+        result=null
+        case "$body" in
+          *'"method":"initialize"'*) result='{"capabilities":{}}' ;;
+          *prepareCallHierarchy*) result='[{}]' ;;
+          *incomingCalls*)
+            n=$(cat "$count" 2>/dev/null || echo 0)
+            if [ "$n" -lt 2 ]; then
+              echo $((n + 1)) > "$count"
+              result=
+            fi ;;
+        esac
+        if [ -n "$result" ]; then
+          out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$result}"
+        else
+          out="{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32801,\"message\":\"content modified\"}}"
+        fi
+        printf 'Content-Length: %d\r\n\r\n%s' "${#out}" "$out"
+      fi ;;
+  esac
+done
+"#;
+
+#[test]
+fn a_request_the_language_server_cancels_as_content_modified_is_sent_again() {
+    let repo = impact_repo();
+    let tools = Repo::new();
+    let server = tools.path().join("busy-lsp");
+    std::fs::write(&server, BUSY_LSP).unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&server)
+        .status()
+        .unwrap();
+
+    let response = impact_response(&repo, true, &[("TRAIL_GOPLS", server.to_str().unwrap())]);
+
+    assert!(response["result"]["paths"].is_array(), "{response}");
+    assert_eq!(
+        std::fs::read_to_string(tools.path().join("cancelled"))
+            .unwrap()
+            .trim(),
+        "2",
+        "the server cancelled two requests"
+    );
+}
+
 #[test]
 fn a_missing_language_server_fails_the_impact_and_says_so() {
     let repo = impact_repo();
