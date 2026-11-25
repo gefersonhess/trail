@@ -1,11 +1,8 @@
----Calls between a path's functions: where each is made, shown in the diff on
----the calling line and on the called function's first line, and followed
----with ]] into the function called and [[ back.
+---Calls between a path's functions, followed with ]] into the function
+---called and [[ back.
 local pathview = require("trail.pathview")
 
 local M = {}
-
-vim.api.nvim_set_hl(0, "TrailCall", { underline = true, bold = true, default = true })
 
 ---Where ]] came from, to go back to with [[.
 local history = {}
@@ -35,48 +32,6 @@ local function graph(path)
     end
   end
   return nodes, step_of, calls
-end
-
-local function name_of(node)
-  return node.short:match("([%w_]+)$") or node.short
-end
-
----Notes for the diff of `file`: each call made in it, and each function in it
----with where it is called from.
-function M.notes(path, file, view)
-  local nodes, step_of, calls = graph(path)
-  if not nodes then
-    return {}
-  end
-  local notes, callers = {}, {}
-  local lines = view.lines("new")
-  for _, c in ipairs(calls) do
-    if c.from.file == file then
-      local hint = { { "→ ", "WarningMsg" }, { c.to.short, "TrailCall" } }
-      if step_of[c.to.id] then
-        table.insert(hint, { " · step " .. step_of[c.to.id], "TrailThread" })
-      end
-      local text, name = lines[c.line] or "", name_of(c.to)
-      local at = text:find(name .. "%s*[%(%[]") or text:find(name, 1, true)
-      local spans = at and { { at - 1, at - 1 + #name, "TrailCall" } } or nil
-      table.insert(notes, { side = "new", line = c.line, hint = hint, spans = spans })
-    end
-    if c.to.file == file then
-      callers[c.to.id] = callers[c.to.id] or {}
-      table.insert(callers[c.to.id], c)
-    end
-  end
-  for id, list in pairs(callers) do
-    local where = vim.tbl_map(function(c)
-      return c.from.short .. " line " .. c.line
-    end, list)
-    table.insert(notes, {
-      side = "new",
-      line = nodes[id].line,
-      hint = { { "← called by ", "TrailThread" }, { table.concat(where, ", "), "TrailThread" } },
-    })
-  end
-  return notes
 end
 
 local function pick(list, label, go)

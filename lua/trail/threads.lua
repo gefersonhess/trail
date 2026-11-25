@@ -94,37 +94,18 @@ local function rows_of(t)
   return rows
 end
 
-local function replies_to(t)
-  return vim.tbl_filter(function(c)
-    return c.reply_to == t.id and not c.sent
-  end, store.comments())
-end
-
----The trail app's hint at the end of a thread's line, and its gutter mark.
-local function hint(t)
-  local first = t.comments[1] or { author = "?", body = "" }
-  local hl = t.resolved and "TrailThread" or "TrailThreadAuthor"
-  local chunks = {
-    { t.resolved and "✓ " or "● ", hl },
-    { first.author .. ": " .. comments.summary(first_line(first.body), 40), "TrailThread" },
-  }
-  if #t.comments > 1 then
-    table.insert(chunks, { " · " .. #t.comments, "TrailThread" })
-  end
-  for _, c in ipairs(replies_to(t)) do
-    table.insert(chunks, { "  ↳ reply " .. comments.check_mark(c), c.unselected and "TrailThread" or "WarningMsg" })
-  end
-  return chunks, { t.resolved and "✓" or "●", hl }
+---A thread's mark in the trail app's gutter.
+local function sign(t)
+  return { t.resolved and "✓" or "●", t.resolved and "TrailThread" or "TrailThreadAuthor" }
 end
 
 ---One line per thread under its line in the diff; <CR> opens the whole
----thread in a popup. In the trail app, a hint at the end of the line.
+---thread in a popup. In the trail app, a mark in the gutter.
 function M.notes(old_path, new_path)
   local notes = {}
   for _, t in ipairs(list) do
     if in_file(t, old_path, new_path) and vim.g.trail_app then
-      local chunks, sign = hint(t)
-      table.insert(notes, { side = t.side, line = t.line, hint = chunks, sign = sign })
+      table.insert(notes, { side = t.side, line = t.line, sign = sign(t) })
     elseif in_file(t, old_path, new_path) then
       local first = t.comments[1] or { author = "?", body = "" }
       local summary = first_line(first.body)

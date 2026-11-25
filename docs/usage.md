@@ -16,7 +16,7 @@ Press `?` anywhere for the keys that work there.
 
 ## The trail app
 
-`trail` also runs on its own, as Neovim with trail's own config: the path's tree on the left, the diff in the middle, threads and the comment box in a pane on the right (side by side hides the tree, leaving the call chain in the diff's winbar, and moves the pane to the bottom), the screens in the tabline and the keys in the status line. Resize the tree or the pane and it keeps that size, the pane separately at the right and at the bottom. Comments and threads don't sit between the code lines there: each shows as a mark in the gutter and a hint at the end of its line, and the pane shows the line's thread with your unsent comments and replies under it. A reply is written now and sent later. Everything you add is selected for sending (☑): `s` in the pane takes a comment out or puts it back, `e` and `d` edit and delete it, and `S` sends the selected ones as one review, replies going to their threads. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
+`trail` also runs on its own, as Neovim with trail's own config: the path's tree on the left, the diff in the middle, threads and the comment box in a pane on the right (side by side hides the tree, leaving the call chain in the diff's winbar, and moves the pane to the bottom), the screens in the tabline and the keys in the status line. Resize the tree or the pane and it keeps that size, the pane separately at the right and at the bottom. Comments and threads don't sit between the code lines there: a comment shows as a mark in the gutter and a hint at the end of its line, a thread as a mark in the gutter, and the pane shows the line's thread with your unsent comments and replies under it. A reply is written now and sent later. Everything you add is selected for sending (☑): `s` in the pane takes a comment out or puts it back, `e` and `d` edit and delete it, and `S` sends the selected ones as one review, replies going to their threads. Every Vim motion works, and your own config and plugins stay out. Put the engine on your `PATH` (with lazy.nvim, `ln -s ~/.local/share/nvim/lazy/trail/engine/target/release/trail ~/.local/bin/trail`), then:
 
 ```sh
 trail                     # pick an open pull request
@@ -44,7 +44,7 @@ Paths screen
 | `R` | Reload |
 | `q` | Quit |
 
-Inside a path (tree on top, diff below)
+Inside a path (tree on top, diff below). The diff marks the line each of `]s`, `[s`, `]c` and `[c` would go to with `◂ ]s` at its end. When `]s` stops on a line calling the next step, the call is underlined. A line out of view is marked on the window's first or last line with how many lines away it is (`↓ ]c +38`), and a line in another file isn't marked.
 
 | Key | Action |
 | --- | --- |
@@ -59,7 +59,7 @@ Inside a path (tree on top, diff below)
 | `]c` `[c` | Next / previous change of this path, across steps |
 | `]h` `[h` | Next / previous hunk in the file shown |
 | `]t` `[t` | Next / previous review thread of this path |
-| `]]` | Follow the call on the line into the function it calls (a step, or a function on the way); off a call, move to the next one. Calls in the path show `→ name · step N` on their line, and functions `← called by …` |
+| `]]` | Follow the call on the line into the function it calls (a step, or a function on the way); off a call, move to the next one |
 | `[[` | Back to the call `]]` followed; with none, up to the line calling this function |
 | `<CR>` in the diff | Open the review thread on the line in a popup |
 | `r` | Reply to the review thread on the line (also in the `T` list); `<Tab>` resolves or reopens it too |
