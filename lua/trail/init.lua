@@ -409,7 +409,7 @@ local function show_target(target, is_node, win, keys, after)
       focus = focus,
       header = target.header,
       jumps = function()
-        return pathview.jumps(target.file)
+        return vim.list_extend(pathview.jumps(target.file), calls.jumps(current, params.new_path))
       end,
       win = win,
       keys = all_keys,

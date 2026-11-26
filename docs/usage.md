@@ -44,7 +44,7 @@ Paths screen
 | `R` | Reload |
 | `q` | Quit |
 
-Inside a path (tree on top, diff below). The diff marks the line each of `]s`, `[s`, `]c` and `[c` would go to with `◂ ]s` at its end. When `]s` stops on a line calling the next step, the call is underlined. A line out of view is marked on the window's first or last line with how many lines away it is (`↓ ]c +38`), and a line in another file isn't marked.
+Inside a path (tree on top, diff below). The diff marks the line each of `]s`, `[s`, `]c` and `[c` would go to with `◂ ]s` at its end. On the cursor's line, `◂ ]]` marks each call `]]` can follow. Every call a mark points at is underlined, and when a line has more than one, the marks name them (`◂ ]] Check  ◂ ]] Save`). A line out of view is marked on the window's first or last line with how many lines away it is (`↓ ]c +38`), and a line in another file isn't marked.
 
 | Key | Action |
 | --- | --- |

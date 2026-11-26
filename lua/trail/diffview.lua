@@ -571,7 +571,8 @@ function M.show(diff, opts)
         end
         chips[p] = chips[p] or {}
         chips[p][at] = chips[p][at] or {}
-        table.insert(chips[p][at], { label = label, far = math.abs(row - cursor), order = #chips[p][at] })
+        table.insert(chips[p][at], { label = label, far = math.abs(row - cursor), order = #chips[p][at],
+          call = at == row and j.call })
       end
     end
     for p, rows in pairs(chips) do
@@ -579,9 +580,17 @@ function M.show(diff, opts)
         table.sort(list, function(a, b)
           return a.far < b.far or (a.far == b.far and a.order < b.order)
         end)
+        -- With more than one call on the line, each chip names the one it goes into.
+        local named = {}
+        for _, c in ipairs(list) do
+          named[c.call or ""] = true
+        end
+        named[""] = nil
+        local several = next(named) and next(named, next(named))
         local virt = { { " " } }
         for _, c in ipairs(list) do
-          vim.list_extend(virt, { { " " }, { " " .. c.label .. " ", "TrailJump" } })
+          local label = several and c.call and (c.label .. " " .. c.call) or c.label
+          vim.list_extend(virt, { { " " }, { " " .. label .. " ", "TrailJump" } })
         end
         vim.api.nvim_buf_set_extmark(p.buf, ns_jumps, row - 1, 0, { virt_text = virt, virt_text_pos = "eol" })
       end
