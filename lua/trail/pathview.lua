@@ -54,11 +54,6 @@ local function list_lines(path, current, done)
   return lines, hls, item_of_row
 end
 
----Folds the user opened, and whether the path shows every function, per
----path, kept while the review is open.
-local expanded_by_path = {}
-local all_by_path = {}
-
 local function step_of_node(path, id)
   for i, step in ipairs(path.steps) do
     if step.node and step.node.id == id then
@@ -86,12 +81,9 @@ end
 local function render_tree(keep_cursor)
   local ctx, path = view.ctx, view.path
   vim.wo[view.tree_win].cursorline = true
-  local expanded = expanded_by_path[path.id] or {}
   local lines, hls, item_of_row
   if path.impact then
     lines, hls, item_of_row = tree.render(path.impact, {
-      expanded = expanded,
-      all = all_by_path[path.id],
       current = view.step,
       station = view.station,
       done = ctx.done_steps(path),
@@ -583,42 +575,15 @@ function M.open(ctx, path, step, target)
     local function item()
       return view.item_of_row[vim.api.nvim_win_get_cursor(0)[1]] or {}
     end
-    local function open_fold(key)
-      local expanded = expanded_by_path[view.path.id] or {}
-      expanded[key] = not expanded[key] or nil
-      expanded_by_path[view.path.id] = expanded
-      render_tree(true)
-    end
     map("<CR>", function()
       local it = item()
-      if it.fold then
-        open_fold(it.fold)
-      elseif it.step then
+      if it.step then
         show_step(it.step, true)
       elseif it.node then
         show_change(it.node.id, true)
       end
-    end, "Open the fold, or show this function below")
-    map("za", function()
-      local it = item()
-      if it.fold or it.toggle then
-        open_fold(it.fold or it.toggle)
-      end
-    end, "Open or close what this row folds")
-    map("zR", function()
-      expanded_by_path[view.path.id] = { ["*"] = true }
-      render_tree(true)
-    end, "Open everything")
+    end, "Show this function below")
     vim.api.nvim_create_autocmd("CursorMoved", { buffer = buf, callback = show_details })
-    map("c", function()
-      expanded_by_path[view.path.id] = nil
-      all_by_path[view.path.id] = nil
-      render_tree()
-    end, "Fold back to the changes")
-    map("a", function()
-      all_by_path[view.path.id] = not all_by_path[view.path.id] or nil
-      render_tree()
-    end, "Show every function on the way, or only the changes")
     map("K", function()
       local it = item()
       if it.node then

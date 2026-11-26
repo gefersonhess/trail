@@ -48,10 +48,7 @@ Inside a path (tree on top, diff below). The diff marks the line each of `]s`, `
 
 | Key | Action |
 | --- | --- |
-| `<CR>` in the tree | Show the function on the row, or open the fold |
-| `za` in the tree | Open or close what the row folds: the functions between it and its caller (`┄2`), or a reviewed branch (`✓ 6 changes`) |
-| `zR` / `c` in the tree | Open everything / fold back to the changes |
-| `a` in the tree | Show every function between the changes |
+| `<CR>` in the tree | Show the function on the row |
 | `K` in the tree | Show the row's code in a popup |
 | `gm` | Map of every path through its packages, this one in colour and the function shown marked `▶`; `n`/`p` colour another path, `<CR>` on a box opens the coloured path at its change there |
 | `<C-p>` | Find a changed function by name and open it |

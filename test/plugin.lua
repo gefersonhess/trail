@@ -293,6 +293,10 @@ do
   check(vim.fn.foldclosed(target) ~= -1 and folded and folded.row == vim.fn.foldclosed(target) - 1,
     "a target in a closed fold shows above the fold with the distance: " .. vim.inspect(jumps.marks()))
   vim.api.nvim_feedkeys("o", "x", false)
+  vim.api.nvim_win_call(w, function()
+    vim.cmd("normal! zt")
+  end)
+  vim.api.nvim_exec_autocmds("WinScrolled", { buffer = vim.api.nvim_win_get_buf(w) })
   check(jumps.marked("]s") and jumps.marked("]s").row == target,
     "unfolded, the mark is on its line again: " .. vim.inspect(jumps.marks()))
 end
@@ -1123,32 +1127,16 @@ local function tree_row(pattern)
     end
   end
 end
-check(#tree_lines() == 5 and tree_row("^◇ Entry$") == 2 and tree_row("^└┄▶ Work  ┄2$") == 3
-  and tree_row("^▸ 1 more entry point reaches this path without other changes$") == 5,
-  "a path opens showing its changes, the functions between them drawn in the connector, once per caller: "
+check(#tree_lines() == 8 and tree_row("^◇ Entry$") == 2 and tree_row("^└─◇ hop1$") == 3 and tree_row("^  └─◇ hop2$") == 4
+  and tree_row("^    └─▶ Work$") == 5 and tree_row("^◇ Other$") == 7 and (tree_row("^└─○ Work$") or tree_row("^└─● Work$")) == 8,
+  "a path opens fully, the functions between the changes as rows and every entry point listed: "
   .. table.concat(tree_lines(), "\n"))
 vim.api.nvim_set_current_win(fold_win)
-vim.api.nvim_win_set_cursor(fold_win, { 3, 0 })
-vim.api.nvim_feedkeys("za", "x", false)
-check(tree_row("^└─◇ hop1$") == 3 and tree_row("^  └─◇ hop2$") == 4 and tree_row("^    └─▶ Work$") == 5,
-  "za on a row opens the functions between it and its caller: " .. table.concat(tree_lines(), "\n"))
-check(vim.api.nvim_win_get_cursor(fold_win)[1] == 5, "the cursor stays on the row")
+vim.api.nvim_win_set_cursor(fold_win, { 5, 0 })
 vim.api.nvim_exec_autocmds("CursorMoved", { buffer = fold_buf })
 check(vim.iter(vim.api.nvim_buf_get_extmarks(fold_buf, -1, { 4, 0 }, { 4, -1 }, { details = true })):any(function(m)
   return m[4].virt_text and m[4].virt_text[1][1] == "   step 1 · a"
 end), "the cursor row shows its details at its end")
-vim.api.nvim_feedkeys("c", "x", false)
-vim.api.nvim_feedkeys("a", "x", false)
-check(tree_row("^└─◇ hop1$") and tree_row("^    └─▶ Work$") and not tree_row("┄"),
-  "a shows every function on the way: " .. table.concat(tree_lines(), "\n"))
-vim.api.nvim_feedkeys("a", "x", false)
-vim.api.nvim_win_set_cursor(fold_win, { tree_row("▸ 1 more entry point"), 0 })
-vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
-check(tree_row("^◇ Other$") and tree_row("^└─● Work$"),
-  "<CR> on the entry points line shows the entry points reaching only changes shown above: " .. table.concat(tree_lines(), "\n"))
-vim.api.nvim_feedkeys("c", "x", false)
-check(tree_row("┄2") and tree_row("▸ 1 more entry point") and not tree_row("Other") and not tree_row("hop"),
-  "c folds back to the changes: " .. table.concat(tree_lines(), "\n"))
 vim.api.nvim_win_set_cursor(fold_win, { tree_row("◇ Entry"), 0 })
 vim.api.nvim_feedkeys("K", "x", false)
 check(vim.wait(10000, function()
@@ -1187,10 +1175,10 @@ do
   check(vim.wait(10000, function()
     return lane_lines()[2] == "▶ Entry" and diff_top():match("func Entry%(%) {") ~= nil
   end), "<CR> on a row shows its function: " .. table.concat(lane_lines(), "\n"))
-  vim.api.nvim_win_set_cursor(fold_win, { 3, 0 })
+  vim.api.nvim_win_set_cursor(fold_win, { 5, 0 })
   vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
   check(vim.wait(10000, function()
-    return lane_lines()[3] == "└┄▶ Work  ┄2"
+    return lane_lines()[5] == "    └─▶ Work"
   end), "<CR> on the change goes back to it: " .. table.concat(lane_lines(), "\n"))
   local work_win = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
     return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match("^trail://diff/")
@@ -1252,7 +1240,7 @@ do
     vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
   end
   check(vim.wait(10000, function()
-    return not vim.api.nvim_win_is_valid(map_win or -1) and lane_lines()[3] == "└┄▶ Work  ┄2"
+    return not vim.api.nvim_win_is_valid(map_win or -1) and lane_lines()[5] == "    └─▶ Work"
   end), "<CR> on a box closes the map and shows the selected path's change there: " .. table.concat(lane_lines(), "\n"))
 
   vim.api.nvim_set_current_win(fold_win)
@@ -1261,8 +1249,8 @@ do
   local at = vim.iter(ipairs(home_lines)):find(function(_, l)
     return l:match("^▾ 1  Work   1/1 ✓$")
   end)
-  check(at and home_lines[at + 1] == "     ◇ Entry" and home_lines[at + 2] == "     └┄▶ Work  ┄2"
-    and home_lines[at + 4]:match("^     ▸ 1 more entry point"),
+  check(at and home_lines[at + 1] == "     ◇ Entry" and home_lines[at + 2] == "     └─◇ hop1"
+    and home_lines[at + 4] == "         └─▶ Work" and home_lines[at + 6] == "     ◇ Other",
     "the paths screen opens the path the review was in, with its tree: " .. table.concat(home_lines, "\n"))
 
   local real_select, offered = vim.ui.select, nil
@@ -1329,8 +1317,8 @@ do
   end
   check(vim.wait(10000, function()
     local l = lines()
-    return l[2] == "▶ Entry" and l[3] == "├─○ First" and l[4] == "└─○ Second" and l[6] == "▸ 1 more entry point reaches this path without other changes"
-  end), "every change has a row, an entry point reaching only them folded below: " .. table.concat(lines(), "\n"))
+    return l[2] == "▶ Entry" and l[3] == "├─○ First" and l[4] == "└─○ Second" and l[6] == "◇ Other" and l[7] == "└─○ Second"
+  end), "every change has a row, an entry point reaching only them listed below: " .. table.concat(lines(), "\n"))
   for _, want in ipairs({ { "]s", 3, "First" }, { "]s", 2, "Entry" }, { "]s", 4, "Second" }, { "[s", 3, "First" } }) do
     vim.api.nvim_feedkeys(want[1], "x", false)
     check(vim.wait(10000, function()
@@ -1341,7 +1329,48 @@ do
   vim.fn.delete(fan, "rf")
 end
 
--- A change reached again shows again under each caller, with the changes below it, folded past five.
+-- Changes reached through the same unchanged functions share their rows: one Run, both changes under it.
+do
+  local shared = vim.fn.tempname()
+  vim.fn.mkdir(shared .. "/a", "p")
+  local function run(cmd)
+    local out = vim.system({ "sh", "-c", cmd }, { cwd = shared, text = true }):wait()
+    assert(out.code == 0, cmd .. ": " .. out.stderr)
+  end
+  local function source(n)
+    return "package a\n\nfunc Entry() {\n\tRun()\n}\n\nfunc Run() {\n\terrorMessage()\n\tSummary()\n}\n\n"
+      .. "func errorMessage() {\n\tSlack()\n}\n\nfunc Slack() int {\n\tShared()\n\treturn " .. n .. "\n}\n\n"
+      .. "func Summary() int {\n\tShared()\n\treturn " .. n .. "\n}\n\nfunc Shared() int {\n\treturn " .. n .. "\n}"
+  end
+  run("git init -q -b main && git config user.email t@t && git config user.name t")
+  vim.fn.writefile(vim.split(source(1), "\n"), shared .. "/a/a.go")
+  run("git add -A && git commit -qm base && git checkout -qb feature")
+  vim.fn.writefile(vim.split(source(2), "\n"), shared .. "/a/a.go")
+  run("git add -A && git commit -qm feature")
+  vim.cmd.cd(shared)
+  vim.cmd("Trail main..feature")
+  local home = vim.api.nvim_get_current_buf()
+  check(vim.wait(15000, function()
+    return table.concat(vim.api.nvim_buf_get_lines(home, 0, -1, false), "\n"):match("\n▸ 1  %S+   0/3\n") ~= nil
+  end), "both changes are in one path: " .. table.concat(vim.api.nvim_buf_get_lines(home, 0, -1, false), "\n"))
+  vim.api.nvim_feedkeys("1", "x", false)
+  local tree_buf = vim.fn.bufnr("trail://path")
+  local function lines()
+    return vim.api.nvim_buf_get_lines(tree_buf, 0, -1, false)
+  end
+  check(vim.wait(10000, function()
+    local l = lines()
+    return #l == 8 and l[2] == "◇ Entry" and l[3] == "└─◇ Run" and l[4] == "  ├─◇ errorMessage"
+      and l[5] == "  │ └─▶ Slack" and l[6] == "  │   └─○ Shared" and l[7] == "  └─○ Summary" and l[8] == "    └─○ Shared"
+  end), "the unchanged functions the changes are reached through show once: " .. table.concat(lines(), "\n"))
+  vim.wait(10000, function()
+    return vim.api.nvim_buf_get_name(0):match("^trail://diff/") ~= nil
+  end)
+  vim.api.nvim_feedkeys("-", "x", false)
+  vim.fn.delete(shared, "rf")
+end
+
+-- A change reached again shows again under each caller, with all the changes below it.
 do
   local again = vim.fn.tempname()
   vim.fn.mkdir(again .. "/a", "p")
@@ -1388,18 +1417,11 @@ do
   check(vim.wait(10000, function()
     local l = lines()
     local b = row("^└─○ B$")
-    return b ~= nil and #l == b + 4 and l[b + 1] == "  ├─○ A" and l[b + 2] == "  │ └─▸ 6 changes"
-      and l[b + 3] == "  └─○ E" and l[b + 4] == "    └─○ F"
-  end), "under B, A and E show again with the changes below them, A's six folded: " .. table.concat(lines(), "\n"))
+    return b ~= nil and #l == b + 9 and l[b + 1] == "  ├─○ A" and l[b + 2] == "  │ ├─○ C1" and l[b + 7] == "  │ └─○ C6"
+      and l[b + 8] == "  └─○ E" and l[b + 9] == "    └─○ F"
+  end), "under B, A and E show again with every change below them: " .. table.concat(lines(), "\n"))
   local win = vim.fn.bufwinid(tree_buf)
   vim.api.nvim_set_current_win(win)
-  vim.api.nvim_win_set_cursor(win, { row("6 changes") or 1, 0 })
-  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
-  local b = row("^└─○ B$") or 0
-  local l = lines()
-  check(#l >= b + 7 and l[b + 2] == "  │ ├─○ C1" and l[b + 7] == "  │ └─○ C6" and not row("changes$")
-    and vim.api.nvim_win_get_cursor(win)[1] == b + 2,
-    "<CR> opens the fold where the cursor is: " .. table.concat(l, "\n"))
   -- Between two branches ]s goes back up to the row they hang from, on the line calling the next one.
   local function diff_line()
     local w = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
@@ -1457,13 +1479,9 @@ do
   end
   vim.api.nvim_feedkeys("mr", "x", false)
   check(vim.wait(5000, function()
-    return row("^├─● A  ✓ 6 changes$") ~= nil
-  end) and row("^├─● E  ✓ 1 change$") and not row("^│ ├─● C1$"),
-    "a branch whose changes are all reviewed folds to one row: " .. table.concat(lines(), "\n"))
-  vim.api.nvim_win_set_cursor(win, { row("^├─● A  ✓"), 0 })
-  vim.api.nvim_feedkeys("za", "x", false)
-  check(row("^├─● A$") and row("^│ ├─● C1$") and row("^│ └─● C6$") and vim.api.nvim_win_get_cursor(win)[1] == row("^├─● A$"),
-    "za opens it: " .. table.concat(lines(), "\n"))
+    return row("^├─● A$") ~= nil
+  end) and row("^│ ├─● C1$") and row("^│ └─● C6$") and row("^├─● E$") and not row("✓"),
+    "a branch whose changes are all reviewed stays open: " .. table.concat(lines(), "\n"))
   vim.api.nvim_win_set_cursor(win, { row("^  ├─● A$"), 0 })
   vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
   check(vim.wait(10000, function()
