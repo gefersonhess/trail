@@ -5,6 +5,7 @@ local M = {}
 local ns = vim.api.nvim_create_namespace("trail.diffview")
 local ns_notes = vim.api.nvim_create_namespace("trail.diffview.notes")
 local ns_focus = vim.api.nvim_create_namespace("trail.diffview.focus")
+local ns_jumps = vim.api.nvim_create_namespace("trail.diffview.jumps")
 local CONTEXT = 3
 local gutters = {}
 local chosen_layout
@@ -41,6 +42,9 @@ local function set_highlights()
   vim.api.nvim_set_hl(0, "TrailChain", { link = "WinBar", default = true })
   vim.api.nvim_set_hl(0, "TrailChainCurrent", { link = "Title", default = true })
   vim.api.nvim_set_hl(0, "TrailPinned", { link = "CursorLine", default = true })
+  vim.api.nvim_set_hl(0, "TrailJump", { link = "DiagnosticVirtualTextWarn", default = true })
+  local warn = vim.api.nvim_get_hl(0, { name = "DiagnosticWarn", link = false }).fg
+  vim.api.nvim_set_hl(0, "TrailJumpCall", { underline = true, sp = warn, default = true })
   -- Code outside the function being reviewed: its colours faded halfway into the background.
   local bg = normal.bg or (vim.o.background == "light" and 0xffffff or 0x0d1117)
   local function fade(fg)
@@ -356,7 +360,8 @@ local function pin(p, side, range)
   local function update()
     local shown = vim.api.nvim_win_is_valid(p.win) and vim.api.nvim_win_get_buf(p.win) == p.buf
     local top = shown and vim.fn.line("w0", p.win)
-    if not shown or top <= first or top > last then
+    p.pinned = shown and top > first and top <= last
+    if not p.pinned then
       if fwin and vim.api.nvim_win_is_valid(fwin) then
         vim.api.nvim_win_close(fwin, true)
       end
@@ -532,11 +537,71 @@ function M.show(diff, opts)
     end
     opts.on_seen(seen)
   end
+  ---Marks where the jump keys land (`opts.jumps`) at the end of each line,
+  ---the call a key leads into underlined. A line out of view is marked on
+  ---the window's first or last line, with how far it is from the cursor.
+  local function draw_jumps()
+    for _, p in ipairs(panes) do
+      if vim.api.nvim_buf_is_valid(p.buf) then
+        vim.api.nvim_buf_clear_namespace(p.buf, ns_jumps, 0, -1)
+      end
+    end
+    if not opts.jumps then
+      return
+    end
+    local cursor = vim.api.nvim_win_get_cursor(pane_of(vim.api.nvim_get_current_win()).win)[1]
+    local chips = {}
+    for _, j in ipairs(opts.jumps()) do
+      local p = #panes == 2 and j.side == "new" and panes[2] or panes[1]
+      if vim.api.nvim_win_is_valid(p.win) and vim.api.nvim_win_get_buf(p.win) == p.buf then
+        local row = row_for(p.view, j.side, j.line)
+        local top, bottom = vim.fn.line("w0", p.win) + (p.pinned and 1 or 0), vim.fn.line("w$", p.win)
+        local at, label = row, "◂ " .. j.key
+        if row > bottom then
+          at, label = bottom, "↓ " .. j.key .. " +" .. (row - cursor)
+        elseif row < top then
+          at, label = top, "↑ " .. j.key .. " -" .. (cursor - row)
+        elseif j.call then
+          local text = vim.api.nvim_buf_get_lines(p.buf, row - 1, row, false)[1] or ""
+          local from = text:find(j.call .. "%s*[%(%[]") or text:find(j.call, 1, true)
+          if from then
+            vim.api.nvim_buf_set_extmark(p.buf, ns_jumps, row - 1, from - 1,
+              { end_col = from - 1 + #j.call, hl_group = "TrailJumpCall" })
+          end
+        end
+        chips[p] = chips[p] or {}
+        chips[p][at] = chips[p][at] or {}
+        table.insert(chips[p][at], { label = label, far = math.abs(row - cursor), order = #chips[p][at],
+          call = at == row and j.call })
+      end
+    end
+    for p, rows in pairs(chips) do
+      for row, list in pairs(rows) do
+        table.sort(list, function(a, b)
+          return a.far < b.far or (a.far == b.far and a.order < b.order)
+        end)
+        -- With more than one call on the line, each chip names the one it goes into.
+        local named = {}
+        for _, c in ipairs(list) do
+          named[c.call or ""] = true
+        end
+        named[""] = nil
+        local several = next(named) and next(named, next(named))
+        local virt = { { " " } }
+        for _, c in ipairs(list) do
+          local label = several and c.call and (c.label .. " " .. c.call) or c.label
+          vim.list_extend(virt, { { " " }, { " " .. label .. " ", "TrailJump" } })
+        end
+        vim.api.nvim_buf_set_extmark(p.buf, ns_jumps, row - 1, 0, { virt_text = virt, virt_text_pos = "eol" })
+      end
+    end
+  end
   for _, p in ipairs(panes) do
     vim.api.nvim_create_autocmd({ "CursorMoved", "WinScrolled" }, {
       buffer = p.buf,
       callback = function()
         report_seen()
+        draw_jumps()
       end,
     })
   end
@@ -560,6 +625,7 @@ function M.show(diff, opts)
       vim.cmd("normal! zvzz")
     end
     report_seen()
+    draw_jumps()
   end
 
   ---The row of a file line in the pane showing its side.

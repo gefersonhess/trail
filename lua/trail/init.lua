@@ -354,10 +354,6 @@ local function show_target(target, is_node, win, keys, after)
       if current then
         local notes = comments.notes(current, params.old_path, params.new_path)
         vim.list_extend(notes, threads.notes(params.old_path, params.new_path))
-        local path = pathview.current()
-        if path and params.new_path then
-          vim.list_extend(notes, calls.notes(path, params.new_path, current))
-        end
         current.annotate(notes)
       end
     end
@@ -412,6 +408,9 @@ local function show_target(target, is_node, win, keys, after)
     local view = diffview.show(diff, {
       focus = focus,
       header = target.header,
+      jumps = function()
+        return vim.list_extend(pathview.jumps(target.file), calls.jumps(current, params.new_path))
+      end,
       win = win,
       keys = all_keys,
       on_redraw = function(again)
@@ -618,6 +617,7 @@ local function path_context()
         end
       end
     end,
+    hunk_start = hunk_start,
     focus_hunk = function(h)
       state.shown.view.focus(hunk_start(h))
     end,

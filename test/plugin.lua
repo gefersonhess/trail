@@ -204,6 +204,90 @@ local gbuf, gwin = graph_buf()
 check(vim.api.nvim_buf_get_lines(gbuf, 0, 1, false)[1]:match("^ Login  ·  step 1 of 3  ·  3 functions$"), "the tree's header shows the step")
 check(current_step_line() == "▶ Login", "the current step is marked in the tree: " .. tostring(current_step_line()))
 
+-- ]s, [s, ]c and [c mark the line each would land on.
+do
+local jumps = {}
+function jumps.window()
+  return vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(w)
+    return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):match("^trail://diff/")
+  end)
+end
+function jumps.marks()
+  local ns = vim.api.nvim_get_namespaces()["trail.diffview.jumps"]
+  local b = vim.api.nvim_win_get_buf(jumps.window())
+  local out = {}
+  for _, m in ipairs(ns and vim.api.nvim_buf_get_extmarks(b, ns, 0, -1, { details = true }) or {}) do
+    local text = vim.iter(m[4].virt_text or {}):map(function(c)
+      return c[1]
+    end):join("")
+    if text ~= "" then
+      table.insert(out, { row = m[2] + 1, text = text, line = vim.api.nvim_buf_get_lines(b, m[2], m[2] + 1, false)[1] })
+    end
+  end
+  return out
+end
+function jumps.marked(key)
+  return vim.iter(jumps.marks()):find(function(m)
+    return m.text:find("◂ " .. key, 1, true) ~= nil
+  end)
+end
+---The line a key's mark points at: the line it is on, or the line as far
+---from the cursor as a mark pinned to the window's edge says.
+function jumps.target(key)
+  local w = jumps.window()
+  for _, m in ipairs(jumps.marks()) do
+    if m.text:find("◂ " .. key, 1, true) then
+      return m.line
+    end
+    local dir, far = m.text:match("([↑↓]) " .. vim.pesc(key) .. " ([+-]%d+)")
+    if dir then
+      local row = vim.api.nvim_win_get_cursor(w)[1] + tonumber(far)
+      return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), row - 1, row, false)[1]
+    end
+  end
+end
+function jumps.lands(key)
+  local line = jumps.target(key)
+  if not line then
+    return false, key .. " has no mark: " .. vim.inspect(jumps.marks())
+  end
+  vim.api.nvim_feedkeys(key, "x", false)
+  return wait_diff_line(line), key .. " was marked on " .. line .. " but landed on " .. vim.api.nvim_get_current_line()
+end
+check(not jumps.target("[s") and not jumps.target("[c"),
+  "on the first change nothing marks [s or [c: " .. vim.inspect(jumps.marks()))
+local same = jumps.marked("]s") and jumps.marked("]c") and jumps.marked("]s").row == jumps.marked("]c").row
+check(same and #jumps.marks() == 1
+  and jumps.marked("]s").text:match("◂ %]s.*◂ %]c"),
+  "]s and ]c landing on the same line share it: " .. vim.inspect(jumps.marks()))
+check(jumps.lands("]s"))
+check(jumps.lands("[s"))
+check(jumps.lands("]c"))
+check(jumps.lands("[c"))
+check(current_step_line() == "▶ Login", "back at Login: " .. tostring(current_step_line()))
+-- A target scrolled out of view is pinned to the window's edge, with how far it is.
+do
+  local w = jumps.window()
+  local height, cursor = vim.api.nvim_win_get_height(w), vim.api.nvim_win_get_cursor(w)[1]
+  local target = (jumps.marked("]s") or { row = 0 }).row
+  vim.api.nvim_win_set_height(w, 2)
+  vim.api.nvim_win_call(w, function()
+    vim.fn.winrestview({ topline = cursor })
+  end)
+  vim.api.nvim_exec_autocmds("WinScrolled", { buffer = vim.api.nvim_win_get_buf(w) })
+  local bottom = vim.fn.line("w$", w)
+  local pinned = vim.iter(jumps.marks()):find(function(m)
+    return m.row == bottom
+  end)
+  check(target > bottom and pinned and pinned.text:find("↓ ]s +" .. (target - cursor), 1, true),
+    "a target below the window shows on its last line with the distance: " .. vim.inspect(jumps.marks()))
+  vim.api.nvim_win_set_height(w, height)
+  vim.api.nvim_exec_autocmds("WinScrolled", { buffer = vim.api.nvim_win_get_buf(w) })
+  check(jumps.marked("]s") and jumps.marked("]s").row == target and not jumps.marked("]s").text:find("↓", 1, true),
+    "back in view, the mark is on its line again: " .. vim.inspect(jumps.marks()))
+end
+end
+
 vim.api.nvim_feedkeys("]s", "x", false)
 check(wait_diff_line('\treturn h != ""'), "]s moves to the next step, on its first change")
 check(current_step_line():match("VerifyHash"), "the tree follows the step")
@@ -1324,6 +1408,42 @@ do
       return row("▶%s+" .. want[1] .. "$") == vim.api.nvim_win_get_cursor(win)[1] and (not want[2] or diff_line() == want[2])
     end), "]s goes to " .. want[1] .. (want[2] and (" on " .. want[2]) or "") .. ", never to a repeat: " .. diff_line() .. "\n"
       .. table.concat(lines(), "\n"))
+    if want[1] == "C1" then
+      -- The stop on the caller's line is marked, and the call it leads into underlined.
+      local w, b
+      vim.wait(10000, function()
+        w = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(x)
+          return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(x)):match("^trail://diff/")
+        end)
+        b = w and vim.api.nvim_win_get_buf(w)
+        return b and vim.list_contains(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\tC2()")
+      end)
+      -- ]s goes by step, not by the cursor: bring its line into view to see the mark on it.
+      for r, l in ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false)) do
+        if l == "\tC2()" then
+          vim.api.nvim_win_set_cursor(w, { r, 0 })
+        end
+      end
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = b })
+      local ns = vim.api.nvim_get_namespaces()["trail.diffview.jumps"] or -1
+      local chip, underlined
+      for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, ns, 0, -1, { details = true })) do
+        local line = vim.api.nvim_buf_get_lines(b, m[2], m[2] + 1, false)[1]
+        if line == "\tC2()" then
+          chip = chip or vim.iter(m[4].virt_text or {}):any(function(c)
+            return c[1]:find("◂ ]s", 1, true) ~= nil
+          end)
+          underlined = underlined or (m[4].hl_group == "TrailJumpCall" and m[3] == 1 and m[4].end_col == 3)
+        end
+      end
+      local text = vim.iter(vim.api.nvim_buf_get_extmarks(b, ns, 0, -1, { details = true })):map(function(m)
+        return vim.iter(m[4].virt_text or {}):map(function(c)
+          return c[1]
+        end):join("")
+      end):join("")
+      check(chip and underlined and not text:find("C2", 1, true),
+        "]s marks the call line it stops on, the call underlined, the chips unnamed with one call: " .. text)
+    end
   end
   vim.api.nvim_feedkeys("mr", "x", false)
   check(vim.wait(5000, function()
@@ -1341,6 +1461,71 @@ do
   end), "<CR> on a change shown again goes to where it first shows: " .. table.concat(lines(), "\n"))
   vim.api.nvim_feedkeys("-", "x", false)
   vim.fn.delete(again, "rf")
+end
+
+-- On a line calling several functions, the chips name the call each goes into, and every such call is underlined.
+do
+  local two = vim.fn.tempname()
+  vim.fn.mkdir(two .. "/a", "p")
+  local function run(cmd)
+    local out = vim.system({ "sh", "-c", cmd }, { cwd = two, text = true }):wait()
+    assert(out.code == 0, cmd .. ": " .. out.stderr)
+  end
+  local function source(n)
+    return "package a\n\nfunc Entry() int {\n\tif Check() && Save() {\n\t\treturn " .. n .. "\n\t}\n\treturn 0\n}\n\n"
+      .. "func Check() bool {\n\treturn " .. n .. " > 0\n}\n\nfunc Save() bool {\n\treturn " .. n .. " > 1\n}\n"
+  end
+  run("git init -q -b main && git config user.email t@t && git config user.name t")
+  vim.fn.writefile(vim.split(source(1), "\n"), two .. "/a/a.go")
+  run("git add -A && git commit -qm base && git checkout -qb feature")
+  vim.fn.writefile(vim.split(source(2), "\n"), two .. "/a/a.go")
+  run("git add -A && git commit -qm feature")
+  vim.cmd.cd(two)
+  vim.cmd("Trail main..feature")
+  local home = vim.api.nvim_get_current_buf()
+  check(vim.wait(15000, function()
+    return table.concat(vim.api.nvim_buf_get_lines(home, 0, -1, false), "\n"):match("1  Entry") ~= nil
+  end), "the path loads: " .. table.concat(vim.api.nvim_buf_get_lines(home, 0, -1, false), "\n"))
+  vim.api.nvim_feedkeys("1", "x", false)
+  local w, b
+  local function on_if_line()
+    vim.wait(10000, function()
+      w = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(x)
+        return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(x)):match("^trail://diff/")
+      end)
+      b = w and vim.api.nvim_win_get_buf(w)
+      return b and vim.list_contains(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\tif Check() && Save() {")
+    end)
+    local r = vim.iter(ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false))):find(function(_, l)
+      return l == "\tif Check() && Save() {"
+    end)
+    vim.api.nvim_set_current_win(w)
+    vim.api.nvim_win_set_cursor(w, { r, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = b })
+    local ns = vim.api.nvim_get_namespaces()["trail.diffview.jumps"] or -1
+    local text, under = "", {}
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, ns, { r - 1, 0 }, { r - 1, -1 }, { details = true })) do
+      text = text .. vim.iter(m[4].virt_text or {}):map(function(c)
+        return c[1]
+      end):join("")
+      if m[4].hl_group == "TrailJumpCall" then
+        under[vim.api.nvim_buf_get_text(b, r - 1, m[3], r - 1, m[4].end_col, {})[1]] = true
+      end
+    end
+    return text, under
+  end
+  local text, under = on_if_line()
+  check(text:find("◂ ]] Check", 1, true) and text:find("◂ ]] Save", 1, true) and under.Check and under.Save,
+    "]] names each call on the line, and underlines it: " .. text .. " " .. vim.inspect(under))
+  vim.api.nvim_feedkeys("]s", "x", false)
+  vim.wait(10000, function()
+    return vim.api.nvim_get_current_line() == "\treturn 2 > 0"
+  end)
+  text, under = on_if_line()
+  check(text:find("◂ ]s Save", 1, true) and text:find("◂ ]] Check", 1, true) and under.Check and under.Save,
+    "from Check, ]s stops on the line calling Save, and its chip says so among ]]'s: " .. text)
+  vim.api.nvim_feedkeys("-", "x", false)
+  vim.fn.delete(two, "rf")
 end
 
 -- An engine that stops while working out the impact: the screen says so instead of waiting forever.
@@ -2067,16 +2252,16 @@ end
 local function cursor_text()
   return vim.api.nvim_get_current_line()
 end
-check(step_now() == 1 and hint_on("\treturn VerifyHash(user)"):match("→ VerifyHash · step 2"),
-  "a call to another step shows where it goes: " .. hint_on("\treturn VerifyHash(user)"))
+check(step_now() == 1 and hint_on("\treturn VerifyHash(user)") == "",
+  "a call says nothing at the end of its line: " .. hint_on("\treturn VerifyHash(user)"))
 vim.api.nvim_set_current_win(win_of("^trail://diff/"))
 vim.api.nvim_win_set_cursor(0, { diff_text_row("\treturn VerifyHash(user)"), 0 })
 vim.api.nvim_feedkeys("]]", "x", false)
 check(vim.wait(5000, function()
   return step_now() == 2 and cursor_text() == '\treturn h != ""'
 end), "]] on a call follows it into the step it calls, at its first change: step " .. tostring(step_now()) .. ", " .. cursor_text())
-check(hint_on("func VerifyHash(h string) bool {"):match("← called by Login line 9"),
-  "the function says where it is called from: " .. hint_on("func VerifyHash(h string) bool {"))
+check(hint_on("func VerifyHash(h string) bool {") == "",
+  "nor does the called function: " .. hint_on("func VerifyHash(h string) bool {"))
 local function folded(text)
   return vim.fn.foldclosed(diff_text_row(text)) ~= -1
 end
@@ -2210,8 +2395,9 @@ check(hint_at(mine_row):match("◆ blocking · not sent: hashOf lowercases ☑")
   "a comment shows as a hint at the end of its line, selected for sending: " .. hint_at(mine_row))
 check(gutter_at(mine_row):match("^◆ "), "and as a mark in the gutter: " .. gutter_at(mine_row))
 local thread_row = row_of(newfile[9])
-check(hint_at(thread_row):match("● bob: why%?") and gutter_at(thread_row):match("^● "),
-  "a GitHub thread shows the same way: " .. hint_at(thread_row) .. " / " .. gutter_at(thread_row))
+check(not hint_at(thread_row):match("bob") and gutter_at(thread_row):match("^● "),
+  "a GitHub thread shows as a mark in the gutter, with nothing at the end of the line: " .. hint_at(thread_row) .. " / "
+  .. gutter_at(thread_row))
 check(gutter_at(row_of(newfile[1])):match("^  "), "lines without one keep the gutter aligned")
 check(evaluated(app.tabline(), { use_tabline = true }):match(" Send " .. before + 1 .. " "), "the tabline counts the comments to send")
 vim.api.nvim_win_set_cursor(diff_win, { mine_row, 0 })
@@ -2242,7 +2428,6 @@ vim.api.nvim_set_current_win(pane_win())
 vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "x", false)
 check(vim.api.nvim_get_current_win() == diff_win and pane_win(), "<Esc> in the pane goes back to the diff, leaving it open")
 check(pane_text():match("bob.*☑ you · reply · not sent\n +then test it"), "the reply shows under the thread in the pane: " .. pane_text())
-check(hint_at(thread_row):match("● bob: why%?.*↳ reply ☑"), "and on the thread's line: " .. hint_at(thread_row))
 check(evaluated(app.tabline(), { use_tabline = true }):match(" Send " .. before + 2 .. " "), "replies count as comments to send")
 vim.api.nvim_set_current_win(pane_win())
 vim.api.nvim_win_set_cursor(0, { vim.fn.search("then test it", "n"), 0 })

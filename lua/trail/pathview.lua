@@ -222,6 +222,11 @@ local function show_step(i, focus_tree, hunk)
   end)
 end
 
+---A line of `file` to show, as a hunk starting there.
+local function line_target(file, line)
+  return { file = file, new = { start = line, len = 1 }, old = { start = 0, len = 0 } }
+end
+
 ---Shows an unchanged function from the tree in the diff window, in its file,
 ---at `line` or its first line.
 local function show_function(node, line)
@@ -241,7 +246,7 @@ local function show_change(id, focus_tree, line)
   local i = step_of_node(view.path, id)
   local node = pathmap.graph(view.path.impact).nodes[id]
   if i then
-    show_step(i, focus_tree, line and { file = node.file, new = { start = line, len = 1 }, old = { start = 0, len = 0 } })
+    show_step(i, focus_tree, line and line_target(node.file, line))
   else
     show_function(node, line)
   end
@@ -298,21 +303,23 @@ function M.map()
   })
 end
 
----Moves to the next or previous step. Going forward follows the tree: on the
----way from one branch to the next, the walk stops first at the row they hang
----from, on the line calling the next one, then goes into it. A branch it
----doesn't call by name (a type it uses) follows the one before directly,
----unless the walk is climbing out of a deeper branch.
-function M.step(delta)
-  if not valid() then
-    return
-  end
+local walks = setmetatable({}, { __mode = "k" })
+
+local function walk_of(impact)
+  walks[impact] = walks[impact] or tree.walk(impact)
+  return walks[impact]
+end
+
+---Where the next or previous step is, without moving there: `{ step, hunk? }`
+---for a step, `{ change, line?, call? }` for a function of the path, or nil
+---at either end. Going forward follows the tree: on the way from one branch
+---to the next, the walk stops first at the row they hang from, on the line
+---calling the next one (`call`), then goes into it. A branch it doesn't call
+---by name (a type it uses) follows the one before directly, unless the walk
+---is climbing out of a deeper branch.
+local function step_move(delta)
   local path = view.path
-  local function last()
-    vim.notify(delta > 0 and "trail: last step of this path" or "trail: first step of this path", vim.log.levels.INFO)
-  end
-  local focus_tree = vim.api.nvim_get_current_win() == view.tree_win
-  local order = delta > 0 and path.impact and tree.walk(path.impact) or {}
+  local order = delta > 0 and path.impact and walk_of(path.impact) or {}
   local index = {}
   for k, r in ipairs(order) do
     index[r.id] = index[r.id] or k
@@ -320,15 +327,11 @@ function M.step(delta)
   local from = index[view.station]
   if not from then
     local target = view.step + delta
-    if target < 1 or target > #path.steps then
-      return last()
-    end
-    return show_step(target, focus_tree)
+    return target >= 1 and target <= #path.steps and { step = target } or nil
   end
   local pending = view.pending
-  view.pending = nil
   if pending and pending.path == path and pending.at == view.station then
-    return show_change(pending.to, focus_tree)
+    return { change = pending.to }
   end
   local to
   for k = from + 1, #order do
@@ -338,7 +341,7 @@ function M.step(delta)
     end
   end
   if not to then
-    return last()
+    return nil
   end
   local function chain(k)
     local out = {}
@@ -363,32 +366,123 @@ function M.step(delta)
   end
   local line = shared and call_line(order[shared].id, order[to].call)
   if stop ~= from and (order[from].parent ~= stop or line) then
-    view.pending = { path = path, at = order[stop].id, to = order[to].id }
-    return show_change(order[stop].id, focus_tree, line)
+    return {
+      change = order[stop].id,
+      line = line,
+      call = line and order[to].call,
+      pending = { path = path, at = order[stop].id, to = order[to].id },
+    }
   end
-  show_change(order[to].id, focus_tree)
+  return { change = order[to].id }
+end
+
+---Where the next change of the path is (dir 1) or the previous one, without
+---moving there: `{ here = hunk }` in the diff shown, or `{ step, hunk }`.
+local function change_move(dir)
+  local ctx, steps = view.ctx, view.path.steps
+  local hunks = ctx.hunks_of(steps[view.step])
+  local found = ctx.next_hunk(hunks, dir)
+  if found == false then
+    return { step = view.step, hunk = dir > 0 and hunks[1] or hunks[#hunks] }
+  end
+  if found then
+    return { here = found }
+  end
+  local target = view.step + dir
+  if target < 1 or target > #steps then
+    return nil
+  end
+  local next_hunks = ctx.hunks_of(steps[target])
+  return { step = target, hunk = dir > 0 and next_hunks[1] or next_hunks[#next_hunks] }
+end
+
+local function make(move, focus_tree)
+  if move.here then
+    view.ctx.focus_hunk(move.here)
+  elseif move.step then
+    show_step(move.step, focus_tree, move.hunk)
+  else
+    view.pending = move.pending
+    show_change(move.change, focus_tree, move.line)
+  end
+end
+
+---The file, side and line a move lands on, as `show_step` and `show_change`
+---would show it.
+local function landing(move)
+  local ctx = view.ctx
+  if move.here then
+    return move.here.file, ctx.hunk_start(move.here)
+  end
+  local i, hunk = move.step, move.hunk
+  if move.change then
+    local node = pathmap.graph(view.path.impact).nodes[move.change]
+    i = step_of_node(view.path, move.change)
+    if not i then
+      return node.file, "new", move.line or node.line
+    end
+    hunk = move.line and line_target(node.file, move.line)
+  end
+  local target = view.path.steps[i]
+  hunk = hunk or (target.node and first_change(target))
+  if hunk then
+    return hunk.file, ctx.hunk_start(hunk)
+  end
+  local shown = target.node or target.hunk
+  local on_new = shown.new and (target.node ~= nil or shown.new.len > 0)
+  return shown.file, on_new and "new" or "old", math.max((on_new and shown.new or shown.old).start, 1)
+end
+
+---Where ]s, [s, ]c and [c would land in `file`: `{ key, side, line, call? }`,
+---`call` naming the function a stop on a calling line leads into.
+function M.jumps(file)
+  if not valid() then
+    return {}
+  end
+  local out = {}
+  for _, key in ipairs({ "[s", "]s", "[c", "]c" }) do
+    local dir = key:sub(1, 1) == "]" and 1 or -1
+    local move
+    if key:sub(2) == "s" then
+      move = step_move(dir)
+    else
+      move = change_move(dir)
+    end
+    if move then
+      local at, side, line = landing(move)
+      if at == file then
+        local call = move.call and pathmap.graph(view.path.impact).nodes[move.call]
+        table.insert(out, { key = key, side = side, line = line, call = call and call.short:match("([%w_]+)$") })
+      end
+    end
+  end
+  return out
+end
+
+---Moves to the next or previous step, as `step_move` finds it.
+function M.step(delta)
+  if not valid() then
+    return
+  end
+  local move = step_move(delta)
+  view.pending = nil
+  if not move then
+    vim.notify(delta > 0 and "trail: last step of this path" or "trail: first step of this path", vim.log.levels.INFO)
+    return
+  end
+  make(move, vim.api.nvim_get_current_win() == view.tree_win)
 end
 
 function M.change(dir)
   if not valid() then
     return
   end
-  local ctx, steps = view.ctx, view.path.steps
-  local hunks = ctx.hunks_of(steps[view.step])
-  local found = ctx.next_hunk(hunks, dir)
-  if found == false then
-    return show_step(view.step, false, dir > 0 and hunks[1] or hunks[#hunks])
-  end
-  if found then
-    return ctx.focus_hunk(found)
-  end
-  local target = view.step + dir
-  if target < 1 or target > #steps then
+  local move = change_move(dir)
+  if not move then
     vim.notify(dir > 0 and "trail: last change of this path" or "trail: first change of this path", vim.log.levels.INFO)
     return
   end
-  local next_hunks = ctx.hunks_of(steps[target])
-  show_step(target, false, dir > 0 and next_hunks[1] or next_hunks[#next_hunks])
+  make(move, false)
 end
 
 ---Moves to the next review thread of the path (dir 1) or the previous one.
@@ -412,7 +506,7 @@ function M.go(step, file, line)
   if not valid() then
     return
   end
-  show_step(step, false, line and { file = file, new = { start = line, len = 1 }, old = { start = 0, len = 0 } } or nil)
+  show_step(step, false, line and line_target(file, line) or nil)
 end
 
 ---The path and step being shown, if the path view is open.

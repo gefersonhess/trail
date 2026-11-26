@@ -30,7 +30,7 @@ Two levels, like a file explorer.
 - `gm` opens the map: a floating window with the review's packages as boxes, callers above what they call, and every path as a numbered route (①, ②) through the packages it reaches. Only the selected path is in colour, the function shown is marked `▶`, and a call to a package already drawn elsewhere is listed in its caller's box (`→ store ②`). `n`/`p` select another path; `<CR>` on a box opens the selected path at its first change in that package.
 - Test files and hunks in no path show as a list.
 - A scrollable diff below, unified by default and side by side with `t`, with unchanged stretches folded.
-- `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen. `]s` follows the tree: between two branches it stops at the row they hang from, on the line calling the next one, before going into it. A step opens on its function's first change.
+- `]s`/`[s` in the diff (or `n`/`p` in the graph) move between steps, `]h`/`[h` between hunks, `-` goes back to the paths screen. `]s` follows the tree: between two branches it stops at the row they hang from, on the line calling the next one, before going into it. A step opens on its function's first change. The diff marks the line `]s`, `[s`, `]c` and `[c` would land on (`◂ ]s` at its end, pinned to the window's edge when out of view), with the call underlined when `]s` stops on a caller's line, and the calls `]]` can follow marked on the cursor's line.
 - `<CR>` on a node in the graph jumps the diff to it.
 - `K` shows a function's code in a popup. `gd` opens it in a separate Neovim in a floating terminal, with the user's own config and LSP.
 

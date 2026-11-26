@@ -1,11 +1,8 @@
----Calls between a path's functions: where each is made, shown in the diff on
----the calling line and on the called function's first line, and followed
----with ]] into the function called and [[ back.
+---Calls between a path's functions, followed with ]] into the function
+---called and [[ back.
 local pathview = require("trail.pathview")
 
 local M = {}
-
-vim.api.nvim_set_hl(0, "TrailCall", { underline = true, bold = true, default = true })
 
 ---Where ]] came from, to go back to with [[.
 local history = {}
@@ -37,48 +34,6 @@ local function graph(path)
   return nodes, step_of, calls
 end
 
-local function name_of(node)
-  return node.short:match("([%w_]+)$") or node.short
-end
-
----Notes for the diff of `file`: each call made in it, and each function in it
----with where it is called from.
-function M.notes(path, file, view)
-  local nodes, step_of, calls = graph(path)
-  if not nodes then
-    return {}
-  end
-  local notes, callers = {}, {}
-  local lines = view.lines("new")
-  for _, c in ipairs(calls) do
-    if c.from.file == file then
-      local hint = { { "→ ", "WarningMsg" }, { c.to.short, "TrailCall" } }
-      if step_of[c.to.id] then
-        table.insert(hint, { " · step " .. step_of[c.to.id], "TrailThread" })
-      end
-      local text, name = lines[c.line] or "", name_of(c.to)
-      local at = text:find(name .. "%s*[%(%[]") or text:find(name, 1, true)
-      local spans = at and { { at - 1, at - 1 + #name, "TrailCall" } } or nil
-      table.insert(notes, { side = "new", line = c.line, hint = hint, spans = spans })
-    end
-    if c.to.file == file then
-      callers[c.to.id] = callers[c.to.id] or {}
-      table.insert(callers[c.to.id], c)
-    end
-  end
-  for id, list in pairs(callers) do
-    local where = vim.tbl_map(function(c)
-      return c.from.short .. " line " .. c.line
-    end, list)
-    table.insert(notes, {
-      side = "new",
-      line = nodes[id].line,
-      hint = { { "← called by ", "TrailThread" }, { table.concat(where, ", "), "TrailThread" } },
-    })
-  end
-  return notes
-end
-
 local function pick(list, label, go)
   if #list == 1 then
     return go(list[1])
@@ -92,6 +47,36 @@ local function pick(list, label, go)
   end)
 end
 
+---The calls ]] can follow from `here` in `file`, one per function called,
+---and the line of the next call below.
+local function followable(calls, file, here)
+  local on_line, seen, below = {}, {}, nil
+  for _, c in ipairs(calls) do
+    if c.from.file == file and here.side == "new" then
+      if c.line == here.line and not seen[c.to.id] then
+        seen[c.to.id] = true
+        table.insert(on_line, { node = c.to, label = c.to.short })
+      elseif c.line > here.line and (not below or c.line < below) then
+        below = c.line
+      end
+    end
+  end
+  return on_line, below
+end
+
+---Where ]] goes from the cursor's line: a mark on that line for each call
+---on it, naming the function called.
+function M.jumps(view, file)
+  local _, _, calls = graph(pathview.current())
+  local here = view and view.line_at_cursor()
+  if not (calls and here) then
+    return {}
+  end
+  return vim.tbl_map(function(c)
+    return { key = "]]", side = "new", line = here.line, call = c.node.short:match("([%w_]+)$") }
+  end, (followable(calls, file, here)))
+end
+
 ---]]: follows the call on the cursor's line into the function it calls, a
 ---step of the path or a function on the way; on a line without one, moves
 ---to the next call below.
@@ -102,16 +87,7 @@ function M.follow(view, file)
   if not (nodes and here) then
     return
   end
-  local on_line, below = {}, nil
-  for _, c in ipairs(calls) do
-    if c.from.file == file and here.side == "new" then
-      if c.line == here.line then
-        table.insert(on_line, { node = c.to, label = c.to.short })
-      elseif c.line > here.line and (not below or c.line < below) then
-        below = c.line
-      end
-    end
-  end
+  local on_line, below = followable(calls, file, here)
   if #on_line == 0 then
     if below then
       view.focus("new", below)
