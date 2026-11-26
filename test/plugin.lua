@@ -35,6 +35,7 @@ local cache = repo .. "-cache"
 vim.env.XDG_CACHE_HOME = cache
 
 vim.env.TRAIL_GOPLS = repo .. "-no-gopls"
+vim.g.trail_lsp = false
 vim.g.trail_ignore = { "*.md" }
 vim.cmd.cd(repo)
 vim.cmd("Trail main..feature")
@@ -663,6 +664,9 @@ vim.api.nvim_feedkeys("R", "x", false)
 check(vim.wait(10000, function()
   return sent.impact ~= nil
 end) and sent.impact.lsp == true, "the language server is on by default: " .. vim.inspect(sent.impact))
+-- The rest of the test has no gopls, so it goes back to matching calls by name.
+vim.g.trail_lsp = false
+vim.api.nvim_feedkeys("R", "x", false)
 vim.wait(10000, function()
   return home_line("^%S+ 1  Login .-  0/3$") ~= nil
 end)
