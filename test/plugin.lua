@@ -1463,7 +1463,8 @@ do
   vim.fn.delete(again, "rf")
 end
 
--- On a line calling several functions, the chips name the call each goes into, and every such call is underlined.
+-- On a line calling several functions, ]] goes into the first, 2]] into the second; the chips say so in the order
+-- of the calls, name them, and underline each.
 do
   local two = vim.fn.tempname()
   vim.fn.mkdir(two .. "/a", "p")
@@ -1472,8 +1473,8 @@ do
     assert(out.code == 0, cmd .. ": " .. out.stderr)
   end
   local function source(n)
-    return "package a\n\nfunc Entry() int {\n\tif Check() && Save() {\n\t\treturn " .. n .. "\n\t}\n\treturn 0\n}\n\n"
-      .. "func Check() bool {\n\treturn " .. n .. " > 0\n}\n\nfunc Save() bool {\n\treturn " .. n .. " > 1\n}\n"
+    return "package a\n\nfunc Entry() int {\n\tif Save(Check()) {\n\t\treturn " .. n .. "\n\t}\n\treturn 0\n}\n\n"
+      .. "func Check() bool {\n\treturn " .. n .. " > 0\n}\n\nfunc Save(ok bool) bool {\n\treturn ok && " .. n .. " > 1\n}\n"
   end
   run("git init -q -b main && git config user.email t@t && git config user.name t")
   vim.fn.writefile(vim.split(source(1), "\n"), two .. "/a/a.go")
@@ -1494,10 +1495,10 @@ do
         return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(x)):match("^trail://diff/")
       end)
       b = w and vim.api.nvim_win_get_buf(w)
-      return b and vim.list_contains(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\tif Check() && Save() {")
+      return b and vim.list_contains(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\tif Save(Check()) {")
     end)
     local r = vim.iter(ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false))):find(function(_, l)
-      return l == "\tif Check() && Save() {"
+      return l == "\tif Save(Check()) {"
     end)
     vim.api.nvim_set_current_win(w)
     vim.api.nvim_win_set_cursor(w, { r, 0 })
@@ -1515,15 +1516,22 @@ do
     return text, under
   end
   local text, under = on_if_line()
-  check(text:find("◂ ]] Check", 1, true) and text:find("◂ ]] Save", 1, true) and under.Check and under.Save,
-    "]] names each call on the line, and underlines it: " .. text .. " " .. vim.inspect(under))
-  vim.api.nvim_feedkeys("]s", "x", false)
-  vim.wait(10000, function()
-    return vim.api.nvim_get_current_line() == "\treturn 2 > 0"
-  end)
+  local first, second = text:find("◂ ]] Save", 1, true), text:find("◂ 2]] Check", 1, true)
+  check(first and second and first < second and under.Check and under.Save,
+    "]] and 2]] name the calls in the order they are made, each underlined: " .. text .. " " .. vim.inspect(under))
+  vim.api.nvim_feedkeys("]]", "x", false)
+  check(vim.wait(10000, function()
+    return vim.api.nvim_get_current_line() == "\treturn ok && 1 > 1"
+  end), "]] goes into the first call, without asking: " .. vim.api.nvim_get_current_line())
   text, under = on_if_line()
-  check(text:find("◂ ]s Save", 1, true) and text:find("◂ ]] Check", 1, true) and under.Check and under.Save,
-    "from Check, ]s stops on the line calling Save, and its chip says so among ]]'s: " .. text)
+  check(text:find("◂ ]s Check", 1, true) and under.Check and under.Save,
+    "from Save, ]s stops on the line calling Check, and its chip says so among ]]'s: " .. text)
+  vim.api.nvim_feedkeys("2]]", "x", false)
+  check(vim.wait(10000, function()
+    return vim.api.nvim_get_current_line() == "\treturn 1 > 0"
+  end), "2]] goes into the second: " .. vim.api.nvim_get_current_line())
+  vim.api.nvim_feedkeys("[[", "x", false)
+  vim.api.nvim_feedkeys("[[", "x", false)
   vim.api.nvim_feedkeys("-", "x", false)
   vim.fn.delete(two, "rf")
 end

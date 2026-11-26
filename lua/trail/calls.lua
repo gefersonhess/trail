@@ -48,46 +48,58 @@ local function pick(list, label, go)
 end
 
 ---The calls ]] can follow from `here` in `file`, one per function called,
----and the line of the next call below.
-local function followable(calls, file, here)
+---in the order they are made on the line, and the line of the next call
+---below.
+local function followable(view, calls, file, here)
   local on_line, seen, below = {}, {}, nil
   for _, c in ipairs(calls) do
     if c.from.file == file and here.side == "new" then
       if c.line == here.line and not seen[c.to.id] then
         seen[c.to.id] = true
-        table.insert(on_line, { node = c.to, label = c.to.short })
+        table.insert(on_line, { node = c.to, name = c.to.short:match("([%w_]+)$") })
       elseif c.line > here.line and (not below or c.line < below) then
         below = c.line
       end
     end
   end
+  local text = view.lines("new")[here.line] or ""
+  local function at(c)
+    return text:find(c.name .. "%s*[%(%[]") or text:find(c.name, 1, true) or math.huge
+  end
+  table.sort(on_line, function(a, b)
+    return at(a) < at(b)
+  end)
   return on_line, below
 end
 
 ---Where ]] goes from the cursor's line: a mark on that line for each call
----on it, naming the function called.
+---on it, `]]` for the first, `2]]` for the second and so on, naming the
+---function called.
 function M.jumps(view, file)
   local _, _, calls = graph(pathview.current())
   local here = view and view.line_at_cursor()
   if not (calls and here) then
     return {}
   end
-  return vim.tbl_map(function(c)
-    return { key = "]]", side = "new", line = here.line, call = c.node.short:match("([%w_]+)$") }
-  end, (followable(calls, file, here)))
+  local out = {}
+  for k, c in ipairs((followable(view, calls, file, here))) do
+    table.insert(out, { key = (k > 1 and k or "") .. "]]", side = "new", line = here.line, call = c.name })
+  end
+  return out
 end
 
 ---]]: follows the call on the cursor's line into the function it calls, a
----step of the path or a function on the way; on a line without one, moves
----to the next call below.
-function M.follow(view, file)
+---step of the path or a function on the way; with several, the first, or
+---the count-th for a count. On a line without one, moves to the next call
+---below.
+function M.follow(view, file, count)
   local path, step = pathview.current()
   local nodes, step_of, calls = graph(path)
   local here = view and view.line_at_cursor()
   if not (nodes and here) then
     return
   end
-  local on_line, below = followable(calls, file, here)
+  local on_line, below = followable(view, calls, file, here)
   if #on_line == 0 then
     if below then
       view.focus("new", below)
@@ -96,14 +108,17 @@ function M.follow(view, file)
     end
     return
   end
-  pick(on_line, "Follow the call into", function(c)
-    table.insert(history, { step = step, file = file, line = here.line })
-    if step_of[c.node.id] then
-      pathview.go(step_of[c.node.id])
-    else
-      pathview.go(step, c.node.file, c.node.line)
-    end
-  end)
+  local c = on_line[math.max(count or 1, 1)]
+  if not c then
+    vim.notify(("trail: this line makes %d calls into the path"):format(#on_line), vim.log.levels.INFO)
+    return
+  end
+  table.insert(history, { step = step, file = file, line = here.line })
+  if step_of[c.node.id] then
+    pathview.go(step_of[c.node.id])
+  else
+    pathview.go(step, c.node.file, c.node.line)
+  end
 end
 
 ---[[: goes back to where ]] came from; with nowhere to go back to, up to the

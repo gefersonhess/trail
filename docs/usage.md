@@ -44,7 +44,7 @@ Paths screen
 | `R` | Reload |
 | `q` | Quit |
 
-Inside a path (tree on top, diff below). The diff marks the line each of `]s`, `[s`, `]c` and `[c` would go to with `◂ ]s` at its end. On the cursor's line, `◂ ]]` marks each call `]]` can follow. Every call a mark points at is underlined, and when a line has more than one, the marks name them (`◂ ]] Check  ◂ ]] Save`). A line out of view is marked on the window's first or last line with how many lines away it is (`↓ ]c +38`), and a line in another file isn't marked.
+Inside a path (tree on top, diff below). The diff marks the line each of `]s`, `[s`, `]c` and `[c` would go to with `◂ ]s` at its end. On the cursor's line, `◂ ]]` marks the call `]]` follows, and `◂ 2]]`, `◂ 3]]` the calls after it, in the order the line makes them. Every call a mark points at is underlined, and when a line has more than one, the marks name them (`◂ ]] Wrap  ◂ 2]] Keys`). A line out of view is marked on the window's first or last line with how many lines away it is (`↓ ]c +38`), and a line in another file isn't marked.
 
 | Key | Action |
 | --- | --- |
@@ -59,7 +59,7 @@ Inside a path (tree on top, diff below). The diff marks the line each of `]s`, `
 | `]c` `[c` | Next / previous change of this path, across steps |
 | `]h` `[h` | Next / previous hunk in the file shown |
 | `]t` `[t` | Next / previous review thread of this path |
-| `]]` | Follow the call on the line into the function it calls (a step, or a function on the way); off a call, move to the next one |
+| `]]` | Follow the call on the line into the function it calls (a step, or a function on the way); `2]]` the line's second call, and so on; off a call, move to the next one |
 | `[[` | Back to the call `]]` followed; with none, up to the line calling this function |
 | `<CR>` in the diff | Open the review thread on the line in a popup |
 | `r` | Reply to the review thread on the line (also in the `T` list); `<Tab>` resolves or reopens it too |
