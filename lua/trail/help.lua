@@ -42,8 +42,7 @@ local screens = {
       { "]t", "thread" }, { "[t", "thread" }, { "gp", "switch path" }, { "<C-P>", "find function" },
     }, back) },
     { "Tree", {
-      { "<CR>", "open" }, { "za", "fold or unfold row" }, { "zR", "open everything" }, { "a", "every function" },
-      { "c", "fold back" }, { "K", "peek function" }, { "gm", "map" },
+      { "<CR>", "open" }, { "K", "peek function" }, { "gm", "map" },
     } },
     { "Review", { { "mr", "mark path" } } },
   },
