@@ -285,6 +285,16 @@ do
   vim.api.nvim_exec_autocmds("WinScrolled", { buffer = vim.api.nvim_win_get_buf(w) })
   check(jumps.marked("]s") and jumps.marked("]s").row == target and not jumps.marked("]s").text:find("↓", 1, true),
     "back in view, the mark is on its line again: " .. vim.inspect(jumps.marks()))
+  -- A target in folded code is marked on the line just above the fold.
+  vim.api.nvim_feedkeys("o", "x", false)
+  local folded = vim.iter(jumps.marks()):find(function(m)
+    return m.text:find("↓ ]s +" .. (target - vim.api.nvim_win_get_cursor(w)[1]), 1, true) ~= nil
+  end)
+  check(vim.fn.foldclosed(target) ~= -1 and folded and folded.row == vim.fn.foldclosed(target) - 1,
+    "a target in a closed fold shows above the fold with the distance: " .. vim.inspect(jumps.marks()))
+  vim.api.nvim_feedkeys("o", "x", false)
+  check(jumps.marked("]s") and jumps.marked("]s").row == target,
+    "unfolded, the mark is on its line again: " .. vim.inspect(jumps.marks()))
 end
 end
 
@@ -2288,6 +2298,19 @@ end) and vim.iter(outside):all(function(t)
 end), "a step shows the whole file, everything outside its function dimmed")
 vim.api.nvim_feedkeys("o", "x", false)
 check(vim.iter(outside):all(folded) and not vim.iter(inside):any(folded), "o folds away what is outside the function")
+do
+  local w = win_of("^trail://diff/")
+  local ns = vim.api.nvim_get_namespaces()["trail.diffview.jumps"]
+  local up = vim.iter(vim.api.nvim_buf_get_extmarks(vim.api.nvim_win_get_buf(w), ns, 0, -1, { details = true }))
+    :find(function(m)
+      return vim.iter(m[4].virt_text or {}):any(function(c)
+        return c[1]:find("↑ [s -", 1, true) ~= nil
+      end)
+    end)
+  local row = up and up[2] + 1
+  check(row and vim.fn.foldclosed(row) == -1 and vim.fn.foldclosed(row - 1) ~= -1,
+    "a target in a closed fold above shows on the line just below the fold")
+end
 vim.api.nvim_feedkeys("o", "x", false)
 check(not vim.iter(outside):any(folded), "and o again shows it")
 vim.api.nvim_win_set_cursor(0, { diff_text_row("func VerifyHash(h string) bool {"), 0 })

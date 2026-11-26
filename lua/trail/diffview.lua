@@ -539,7 +539,8 @@ function M.show(diff, opts)
   end
   ---Marks where the jump keys land (`opts.jumps`) at the end of each line,
   ---the call a key leads into underlined. A line out of view is marked on
-  ---the window's first or last line, with how far it is from the cursor.
+  ---the window's first or last line, and one in a closed fold on the line
+  ---next to the fold, with how far it is from the cursor.
   local function draw_jumps()
     for _, p in ipairs(panes) do
       if vim.api.nvim_buf_is_valid(p.buf) then
@@ -556,11 +557,16 @@ function M.show(diff, opts)
       if vim.api.nvim_win_is_valid(p.win) and vim.api.nvim_win_get_buf(p.win) == p.buf then
         local row = row_for(p.view, j.side, j.line)
         local top, bottom = vim.fn.line("w0", p.win) + (p.pinned and 1 or 0), vim.fn.line("w$", p.win)
-        local at, label = row, "◂ " .. j.key
-        if row > bottom then
-          at, label = bottom, "↓ " .. j.key .. " +" .. (row - cursor)
-        elseif row < top then
-          at, label = top, "↑ " .. j.key .. " -" .. (cursor - row)
+        local fold = vim.api.nvim_win_call(p.win, function()
+          return { vim.fn.foldclosed(row), vim.fn.foldclosedend(row) }
+        end)
+        local folded = fold[1] ~= -1
+        local near = folded and (row > cursor and fold[1] - 1 or fold[2] + 1) or row
+        local at, label = math.max(top, math.min(near, bottom)), "◂ " .. j.key
+        if near > bottom or (folded and row > cursor) then
+          label = "↓ " .. j.key .. " +" .. (row - cursor)
+        elseif near < top or folded then
+          label = "↑ " .. j.key .. " -" .. (cursor - row)
         elseif j.call then
           local text = vim.api.nvim_buf_get_lines(p.buf, row - 1, row, false)[1] or ""
           local from = text:find(j.call .. "%s*[%(%[]") or text:find(j.call, 1, true)
@@ -827,6 +833,7 @@ function M.show(diff, opts)
       apply_folds(p.win, p.folds, kind)
     end
     vim.cmd("normal! zz")
+    draw_jumps()
   end
 
   for _, p in ipairs(panes) do
