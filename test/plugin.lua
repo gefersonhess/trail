@@ -1436,7 +1436,13 @@ do
           underlined = underlined or (m[4].hl_group == "TrailJumpCall" and m[3] == 1 and m[4].end_col == 3)
         end
       end
-      check(chip and underlined, "]s marks the call line it stops on, the call underlined")
+      local text = vim.iter(vim.api.nvim_buf_get_extmarks(b, ns, 0, -1, { details = true })):map(function(m)
+        return vim.iter(m[4].virt_text or {}):map(function(c)
+          return c[1]
+        end):join("")
+      end):join("")
+      check(chip and underlined and not text:find("C2", 1, true),
+        "]s marks the call line it stops on, the call underlined, the chips unnamed with one call: " .. text)
     end
   end
   vim.api.nvim_feedkeys("mr", "x", false)
@@ -1455,6 +1461,71 @@ do
   end), "<CR> on a change shown again goes to where it first shows: " .. table.concat(lines(), "\n"))
   vim.api.nvim_feedkeys("-", "x", false)
   vim.fn.delete(again, "rf")
+end
+
+-- On a line calling several functions, the chips name the call each goes into, and every such call is underlined.
+do
+  local two = vim.fn.tempname()
+  vim.fn.mkdir(two .. "/a", "p")
+  local function run(cmd)
+    local out = vim.system({ "sh", "-c", cmd }, { cwd = two, text = true }):wait()
+    assert(out.code == 0, cmd .. ": " .. out.stderr)
+  end
+  local function source(n)
+    return "package a\n\nfunc Entry() int {\n\tif Check() && Save() {\n\t\treturn " .. n .. "\n\t}\n\treturn 0\n}\n\n"
+      .. "func Check() bool {\n\treturn " .. n .. " > 0\n}\n\nfunc Save() bool {\n\treturn " .. n .. " > 1\n}\n"
+  end
+  run("git init -q -b main && git config user.email t@t && git config user.name t")
+  vim.fn.writefile(vim.split(source(1), "\n"), two .. "/a/a.go")
+  run("git add -A && git commit -qm base && git checkout -qb feature")
+  vim.fn.writefile(vim.split(source(2), "\n"), two .. "/a/a.go")
+  run("git add -A && git commit -qm feature")
+  vim.cmd.cd(two)
+  vim.cmd("Trail main..feature")
+  local home = vim.api.nvim_get_current_buf()
+  check(vim.wait(15000, function()
+    return table.concat(vim.api.nvim_buf_get_lines(home, 0, -1, false), "\n"):match("1  Entry") ~= nil
+  end), "the path loads: " .. table.concat(vim.api.nvim_buf_get_lines(home, 0, -1, false), "\n"))
+  vim.api.nvim_feedkeys("1", "x", false)
+  local w, b
+  local function on_if_line()
+    vim.wait(10000, function()
+      w = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(function(x)
+        return vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(x)):match("^trail://diff/")
+      end)
+      b = w and vim.api.nvim_win_get_buf(w)
+      return b and vim.list_contains(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\tif Check() && Save() {")
+    end)
+    local r = vim.iter(ipairs(vim.api.nvim_buf_get_lines(b, 0, -1, false))):find(function(_, l)
+      return l == "\tif Check() && Save() {"
+    end)
+    vim.api.nvim_set_current_win(w)
+    vim.api.nvim_win_set_cursor(w, { r, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = b })
+    local ns = vim.api.nvim_get_namespaces()["trail.diffview.jumps"] or -1
+    local text, under = "", {}
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(b, ns, { r - 1, 0 }, { r - 1, -1 }, { details = true })) do
+      text = text .. vim.iter(m[4].virt_text or {}):map(function(c)
+        return c[1]
+      end):join("")
+      if m[4].hl_group == "TrailJumpCall" then
+        under[vim.api.nvim_buf_get_text(b, r - 1, m[3], r - 1, m[4].end_col, {})[1]] = true
+      end
+    end
+    return text, under
+  end
+  local text, under = on_if_line()
+  check(text:find("◂ ]] Check", 1, true) and text:find("◂ ]] Save", 1, true) and under.Check and under.Save,
+    "]] names each call on the line, and underlines it: " .. text .. " " .. vim.inspect(under))
+  vim.api.nvim_feedkeys("]s", "x", false)
+  vim.wait(10000, function()
+    return vim.api.nvim_get_current_line() == "\treturn 2 > 0"
+  end)
+  text, under = on_if_line()
+  check(text:find("◂ ]s Save", 1, true) and text:find("◂ ]] Check", 1, true) and under.Check and under.Save,
+    "from Check, ]s stops on the line calling Save, and its chip says so among ]]'s: " .. text)
+  vim.api.nvim_feedkeys("-", "x", false)
+  vim.fn.delete(two, "rf")
 end
 
 -- An engine that stops while working out the impact: the screen says so instead of waiting forever.
